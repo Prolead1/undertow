@@ -24,5 +24,8 @@ logs/
 *.log
 .ipynb_checkpoints/
 
+# Pi agent config (local only — never commit)
+.pi/
+
 # OS
 .DS_Store
