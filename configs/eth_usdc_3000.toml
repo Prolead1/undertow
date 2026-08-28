@@ -1,28 +1,55 @@
-# Undertow — USDC/WETH 0.30% pool configuration skeleton.
+# Undertow — USDC/WETH 0.30% pool: the primary study pool (PLAN.md §7).
 #
-# Scaffold placeholder (T00). The real field set and semantics are defined and
-# populated by T01 (undertow.data.config / config.py). This file only declares
-# the section names so the layout is visible from day one.
+# Pinned window: 2022-01-01 → 2024-12-31 UTC, fully post-EIP-1559.
 #
-# Secrets never live in this file. If a value may come from the environment,
-# use a ${ENV_VAR} placeholder that config.py expands at load time (raising
-# ConfigError when the variable is unset). The expanded value is never logged.
+# Secrets never live in this file. When a value may come from the environment, use a ${ENV_VAR}
+# placeholder that undertow.data.config.load_config expands at load time (raising ConfigError
+# when the variable is unset). The expanded value is never logged or written to a manifest —
+# log/record the host only.
+#
+# Token ordering is contractual: Uniswap orders tokens by address and 0xA0b8…eB48 (USDC) sorts
+# below 0xC02a…6Cc2 (WETH), so token0 == USDC (6 dp) and token1 == WETH (18 dp). Getting this
+# backwards silently inverts every price in the thesis (CONTRACTS.md §3.0 price orientation).
 
 [pool]
-# address = "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8"   # USDC/WETH, 0.30%
-# token0_symbol = "USDC"
-# token1_symbol = "WETH"
+address = "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8"  # USDC/WETH, 0.30%
+token0_symbol = "USDC"
+token1_symbol = "WETH"
+token0_decimals = 6
+token1_decimals = 18
+fee_tier = 3000
+tick_spacing = 60
+deployment_block = 12370624  # pool factory creation (verified on-chain)
 
 [window]
-# start_utc / end_utc, or start_block / end_block
+# Exactly one of (start_block/end_block) or (start_utc/end_utc). Dates are resolved to blocks by
+# T07's block index (last block with timestamp <= end_utc); end_utc is inclusive.
+start_utc = "2022-01-01T00:00:00Z"
+end_utc = "2024-12-31T23:59:59Z"
 
 [regime]
-# lookback_days, vol_threshold, drift_threshold
+# Pre-committed thresholds (PLAN.md §7); sweepable via T12's sensitivity_sweep.
+lookback_days = 30
+vol_threshold = 0.80
+drift_threshold = 0.05
+periods_per_year = 525600  # 365 * 1440 minute bars
 
 [endpoints]
-# graph_url = "${GRAPH_API_URL}"
-# rpc_url = "${ETH_RPC_URL}"
-# reference_base_url = "https://api.binance.com"
+# The Graph: official Uniswap v3 (Ethereum mainnet) subgraph on the decentralized network.
+# T05 owns the queries; this is the GraphQL endpoint it posts to.
+graph_url = "https://gateway.thegraph.com/api/${GRAPH_API_KEY}/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV"
+rpc_url = "${ETH_RPC_URL}"  # archive node required
+reference_base_url = "https://api.binance.com"
 
 [paths]
-# cache_dir / output_dir
+cache_dir = "data/cache/eth_usdc_3000"
+output_dir = "data/datasets/eth_usdc_3000"
+
+# Order-of-magnitude gas estimates for the NonfungiblePositionManager path (mint/burn/collect)
+# plus a ballpark swap figure. Overrides the defaults in undertow.data.config.GAS_UNITS; T14 /
+# undertow.sim may calibrate these against real receipts without touching code.
+[gas.units]
+mint = 400000
+burn = 250000
+collect = 150000
+swap = 180000
