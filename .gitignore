@@ -1,0 +1,28 @@
+# Python / uv
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Data & artifacts
+data/raw/
+data/processed/
+data/cache/
+*.parquet
+*.parquet.gzip
+*.arrow
+*.sqlite
+*.db
+
+# Logs & notebooks scratch
+logs/
+*.log
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
