@@ -577,6 +577,31 @@ def test_load_config_gas_units_override(tmp_path: Path, monkeypatch: pytest.Monk
     assert cfg.gas_units["swap"] == 180_000
 
 
+def test_load_config_gas_must_be_table(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-table [gas] (e.g. `gas = \"foo\"`) is rejected, matching every other section."""
+    _set_env(monkeypatch)
+    gas_block = "[gas.units]\nmint = 400000\nburn = 250000\ncollect = 150000\nswap = 180000\n"
+    body = 'gas = "not-a-table"\n' + GOOD_TOML.replace(gas_block, "")
+    p = _write(tmp_path, body)
+    with pytest.raises(ConfigError, match=r"\[gas\].*table"):
+        load_config(p)
+
+
+def test_load_config_env_expansion_only_in_endpoints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """${VAR} placeholder outside [endpoints] stays literal; expansion applies to endpoints only."""
+    _set_env(monkeypatch)
+    body = GOOD_TOML.replace(
+        'cache_dir = "data/cache/test"', 'cache_dir = "data/cache/${UNSET_DIR}"'
+    )
+    p = _write(tmp_path, body)
+    cfg = load_config(p)
+    assert str(cfg.cache_dir) == "data/cache/${UNSET_DIR}"  # literal, never expanded
+    # and the endpoints fields were still expanded.
+    assert cfg.endpoints.rpc_url == "https://eth-mainnet.example.test/v2/rpc-secret"
+
+
 def test_load_config_gas_units_must_be_complete(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

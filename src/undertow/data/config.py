@@ -531,6 +531,8 @@ def load_config(path: str | Path) -> DataConfig:
     cache_dir = Path(_need_str(paths, "cache_dir", f"{where}[paths]"))
     output_dir = Path(_need_str(paths, "output_dir", f"{where}[paths]"))
     gas = raw.get("gas")
+    if gas is not None and not isinstance(gas, dict):
+        raise ConfigError(f"{where}: section [gas] must be a table, got {gas!r}")
     gas_units = _parse_gas(gas if isinstance(gas, dict) else {}, where)
     return DataConfig(
         pool=pool,
