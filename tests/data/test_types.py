@@ -7,12 +7,14 @@ and ``CheckResult`` (frozen, severity-typed, non-shared ``metrics`` default).
 
 from __future__ import annotations
 
+from collections.abc import MutableMapping
 from dataclasses import FrozenInstanceError
-from typing import MutableMapping, cast
+from typing import cast
 
 import pytest
 
 from undertow.data.types import (
+    TICK_SPACING,
     Address,
     BlockNumber,
     CheckResult,
@@ -26,7 +28,6 @@ from undertow.data.types import (
     ReorgDetectedError,
     Route,
     SchemaViolationError,
-    TICK_SPACING,
     Tick,
     TransientNetworkError,
     UndertowDataError,
@@ -41,7 +42,7 @@ def test_fee_tier_spacing_table_matches_protocol() -> None:
         FeeTier.BPS_30: 60,
         FeeTier.BPS_100: 200,
     }
-    assert TICK_SPACING == expected
+    assert expected == TICK_SPACING
     # Every FeeTier member has a spacing entry and vice versa (no silent gaps).
     assert set(TICK_SPACING) == set(FeeTier)
 

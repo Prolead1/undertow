@@ -19,9 +19,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Skip ``network``-marked tests unless ``--run-network`` is passed.
 
     Uses explicit ``skip`` (not deselection) so that a ``--collect-only``/

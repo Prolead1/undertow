@@ -17,15 +17,15 @@ from __future__ import annotations
 import os
 import re
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from types import MappingProxyType
-from typing import Mapping
 from urllib.parse import urlsplit
 
-from undertow.data.types import Address, BlockNumber, ConfigError, FeeTier, TICK_SPACING
+from undertow.data.types import TICK_SPACING, Address, BlockNumber, ConfigError, FeeTier
 
 # ---------------------------------------------------------------------------
 # Pinned constants (CONTRACTS.md §2). No float anywhere: Q-numbers are ints,
@@ -96,9 +96,7 @@ class PoolConfig:
                 f"PoolConfig: token1_decimals {self.token1_decimals} must be within 0..18"
             )
         if self.deployment_block <= 0:
-            raise ConfigError(
-                f"PoolConfig: deployment_block {self.deployment_block} must be > 0"
-            )
+            raise ConfigError(f"PoolConfig: deployment_block {self.deployment_block} must be > 0")
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,8 +157,8 @@ class WindowConfig:
                     "WindowConfig: end_utc must be timezone-aware UTC "
                     "(naive datetimes are not allowed)"
                 )
-            start_utc = start.astimezone(timezone.utc)
-            end_utc = end.astimezone(timezone.utc)
+            start_utc = start.astimezone(UTC)
+            end_utc = end.astimezone(UTC)
             if start_utc > end_utc:
                 raise ConfigError(
                     f"WindowConfig: start_utc {start_utc.isoformat()} must be <= end_utc "
@@ -187,8 +185,8 @@ class WindowConfig:
                     "WindowConfig: eval_start_utc must be timezone-aware UTC "
                     "(naive datetimes are not allowed)"
                 )
-            train_end = train_end.astimezone(timezone.utc)
-            eval_start = eval_start.astimezone(timezone.utc)
+            train_end = train_end.astimezone(UTC)
+            eval_start = eval_start.astimezone(UTC)
             if train_end > eval_start:
                 raise ConfigError(
                     f"WindowConfig: train_end_utc {train_end.isoformat()} must be <= "
@@ -199,13 +197,16 @@ class WindowConfig:
             # Containment into the window is only checkable when the window itself is given as
             # dates; a block-only window has no datetime reference to contain them against
             # (ADR-003). `end_utc` is inclusive, so the split may touch it.
-            if self.start_utc is not None and self.end_utc is not None:
-                if not (self.start_utc <= train_end <= eval_start <= self.end_utc):
-                    raise ConfigError(
-                        f"WindowConfig: split ({train_end.isoformat()}.."
-                        f"{eval_start.isoformat()}) must fall inside window "
-                        f"({self.start_utc.isoformat()}..{self.end_utc.isoformat()})"
-                    )
+            if (
+                self.start_utc is not None
+                and self.end_utc is not None
+                and not (self.start_utc <= train_end <= eval_start <= self.end_utc)
+            ):
+                raise ConfigError(
+                    f"WindowConfig: split ({train_end.isoformat()}.."
+                    f"{eval_start.isoformat()}) must fall inside window "
+                    f"({self.start_utc.isoformat()}..{self.end_utc.isoformat()})"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,9 +294,7 @@ _POOL_KEYS = frozenset(
 _WINDOW_KEYS = frozenset(
     {"start_block", "end_block", "start_utc", "end_utc", "train_end_utc", "eval_start_utc"}
 )
-_REGIME_KEYS = frozenset(
-    {"lookback_days", "vol_threshold", "drift_threshold", "periods_per_year"}
-)
+_REGIME_KEYS = frozenset({"lookback_days", "vol_threshold", "drift_threshold", "periods_per_year"})
 _ENDPOINT_KEYS = frozenset(
     {
         "graph_url",
@@ -417,7 +416,7 @@ def _to_aware_utc(value: str, field: str, where: str) -> datetime:
             f"{where}.window: {field} {value!r} must be timezone-aware UTC "
             "(naive datetimes are not allowed)"
         )
-    return dt.astimezone(timezone.utc)
+    return dt.astimezone(UTC)
 
 
 def _parse_window(section: Mapping[str, object], where: str) -> WindowConfig:
@@ -495,8 +494,7 @@ def _parse_gas(section: Mapping[str, object], where: str) -> Mapping[str, int]:
     units = _table(section, "units", f"{where}[gas]")
     if set(units) != set(_GAS_UNIT_KEYS):
         raise ConfigError(
-            f"{where}[gas.units]: must define exactly {sorted(_GAS_UNIT_KEYS)}; "
-            f"got {sorted(units)}"
+            f"{where}[gas.units]: must define exactly {sorted(_GAS_UNIT_KEYS)}; got {sorted(units)}"
         )
     out: dict[str, int] = {}
     for key in _GAS_UNIT_KEYS:

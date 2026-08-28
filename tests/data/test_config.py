@@ -8,7 +8,7 @@ into messages or ``repr``), the walk-forward split validation, and the pinned co
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -19,20 +19,20 @@ from undertow.data.config import (
     GLOBAL_TICK_SENTINEL,
     MAX_TICK,
     MIN_TICK,
+    Q96,
+    Q128,
+    TICK_BASE,
     DataConfig,
     EndpointConfig,
     PoolConfig,
-    Q96,
-    Q128,
     RegimeConfig,
-    TICK_BASE,
     WindowConfig,
     default_pools,
     load_config,
 )
 from undertow.data.types import Address, BlockNumber, ConfigError, FeeTier
 
-UTC = timezone.utc
+UTC = UTC
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "configs"
 
@@ -121,7 +121,7 @@ def _set_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_pinned_constants_exact() -> None:
     assert Q96 == 2**96
     assert Q128 == 2**128
-    assert TICK_BASE == Decimal("1.0001")
+    assert Decimal("1.0001") == TICK_BASE
     assert MIN_TICK == -887272
     assert MAX_TICK == 887272
     assert GLOBAL_TICK_SENTINEL == -(2**31)
@@ -159,7 +159,7 @@ def test_pool_address_must_be_lowercase_checksum_stripped_42chars() -> None:
     bad_addresses = [
         "",  # empty
         "0x1234",  # too short
-        "0x" + "a" * 40,  # too short (missing 0x prefix length)
+        "0x" + "a" * 38,  # too short (40 chars total)
         "0x" + "a" * 39 + "xyz",  # non-hex tail
         "0x" + "A" * 40,  # uppercase hex digits
         "0x" + "g" * 40,  # invalid hex digit
@@ -510,7 +510,9 @@ def test_load_config_rejects_fee_tier_spacing_mismatch(
     assert "60" in msg
 
 
-def test_load_config_rejects_unknown_fee_tier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_config_rejects_unknown_fee_tier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _set_env(monkeypatch)
     p = _write(tmp_path, GOOD_TOML.replace("fee_tier = 3000", "fee_tier = 5000"))
     with pytest.raises(ConfigError) as excinfo:
@@ -531,7 +533,9 @@ def test_load_config_invalid_toml_raises(tmp_path: Path) -> None:
         load_config(p)
 
 
-def test_load_config_missing_section_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_config_missing_section_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _set_env(monkeypatch)
     p = _write(tmp_path, _drop_section(GOOD_TOML, "[regime]"))
     with pytest.raises(ConfigError, match="missing required section") as excinfo:
@@ -554,7 +558,9 @@ def test_load_config_bad_datetime_rejected(tmp_path: Path, monkeypatch: pytest.M
         load_config(p)
 
 
-def test_load_config_naive_datetime_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_config_naive_datetime_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _set_env(monkeypatch)
     p = _write(tmp_path, GOOD_TOML.replace("2022-01-01T00:00:00Z", "2022-01-01"))
     with pytest.raises(ConfigError, match="must be timezone-aware UTC"):
@@ -571,7 +577,9 @@ def test_load_config_gas_units_override(tmp_path: Path, monkeypatch: pytest.Monk
     assert cfg.gas_units["swap"] == 180_000
 
 
-def test_load_config_gas_units_must_be_complete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_config_gas_units_must_be_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _set_env(monkeypatch)
     p = _write(tmp_path, GOOD_TOML.replace("\ncollect = 150000", ""))
     with pytest.raises(ConfigError, match="must define exactly"):

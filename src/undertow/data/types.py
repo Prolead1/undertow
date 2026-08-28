@@ -5,15 +5,17 @@ rename, retype or reorder anything declared here; only extensions are permitted.
 I/O and no math: every fetcher, transform and validator imports its primitives from here so the
 modules stay decoupled.
 
-``EventType``, ``FeeTier``, ``Regime`` and ``Route`` are ``str`` / ``int`` mixin enums so their
-values serialize directly into Parquet string / int columns without conversion helpers.
+``EventType``, ``FeeTier``, ``Regime`` and ``Route`` are ``str`` / ``int`` mixin enums
+(`enum.StrEnum` / `int-Enum`) so their values serialize directly into Parquet string / int
+columns.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Literal, Mapping, NewType
+from enum import Enum, StrEnum
+from typing import Literal, NewType
 
 Address = NewType("Address", str)
 """Lowercase ``0x``-prefixed, 42-char, checksum-stripped Ethereum address."""
@@ -25,18 +27,18 @@ Tick = NewType("Tick", int)
 """Uniswap V3 tick index (raw; grid-alignment is applied by the caller)."""
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     """The pool log streams. ``str`` mixin -> Parquet ``string`` column."""
 
     SWAP = "swap"
     MINT = "mint"
     BURN = "burn"
     COLLECT = "collect"
-    FLASH = "flash"  # fetched for completeness; contributes fee growth, no liquidity change
+    FLASH = "flash"  # fetched; contributes fee growth, no liquidity change
 
 
 class FeeTier(int, Enum):
-    """Fee tiers in basis points (hundredths of a percent). ``int`` mixin -> Parquet ``int`` column."""
+    """Fee tiers in basis points; ``int`` mixin -> Parquet ``int`` column."""
 
     BPS_1 = 100  # 0.01%, tick spacing 1
     BPS_5 = 500  # 0.05%, tick spacing 10
@@ -52,7 +54,7 @@ TICK_SPACING: dict[FeeTier, int] = {
 }
 
 
-class Regime(str, Enum):
+class Regime(StrEnum):
     """Regime labels produced by T12 from the reference feed (CONTRACTS.md §6.3)."""
 
     BULL = "bull"
@@ -62,7 +64,7 @@ class Regime(str, Enum):
     UNKNOWN = "unknown"  # window not yet full (first 30 days) — never silently dropped
 
 
-class Route(str, Enum):
+class Route(StrEnum):
     """Data source routes. ``BIGQUERY`` is the escape hatch; not implemented in v1."""
 
     THEGRAPH = "thegraph"
