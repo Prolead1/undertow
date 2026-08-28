@@ -1,0 +1,28 @@
+# Undertow — USDC/WETH 0.30% pool configuration skeleton.
+#
+# Scaffold placeholder (T00). The real field set and semantics are defined and
+# populated by T01 (undertow.data.config / config.py). This file only declares
+# the section names so the layout is visible from day one.
+#
+# Secrets never live in this file. If a value may come from the environment,
+# use a ${ENV_VAR} placeholder that config.py expands at load time (raising
+# ConfigError when the variable is unset). The expanded value is never logged.
+
+[pool]
+# address = "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8"   # USDC/WETH, 0.30%
+# token0_symbol = "USDC"
+# token1_symbol = "WETH"
+
+[window]
+# start_utc / end_utc, or start_block / end_block
+
+[regime]
+# lookback_days, vol_threshold, drift_threshold
+
+[endpoints]
+# graph_url = "${GRAPH_API_URL}"
+# rpc_url = "${ETH_RPC_URL}"
+# reference_base_url = "https://api.binance.com"
+
+[paths]
+# cache_dir / output_dir

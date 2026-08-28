@@ -23,5 +23,21 @@ uv sync
 
 ## Status
 
-- [ ] Data pipeline scaffolding
+- [x] Data pipeline scaffolding (T00)
 - [ ] AMM simulator scaffolding
+
+## Running network-flavoured tests
+
+Most tests run entirely against fixtures and never touch the network. The handful
+marked `@pytest.mark.network` hit live endpoints and are **skipped by default**.
+To run them, pass the `--run-network` flag:
+
+```bash
+uv run pytest            # fixtures only; network-marked tests skipped
+uv run pytest --run-network   # also runs the @pytest.mark.network tests
+```
+
+This flag is wired up in `tests/conftest.py` (`pytest_addoption` +
+`pytest_collection_modifyitems`); it is not part of pytest's `addopts`, so it
+never collides with a later `-m` selector. Later pipeline tasks use it to run
+their live fetcher checks.
