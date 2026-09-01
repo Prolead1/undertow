@@ -1,0 +1,47 @@
+# Undertow — USDC/WETH 0.05% pool: the fee-tier-contrast pool for RQ1 (PLAN.md §7).
+#
+# Same pinned window as the 0.30% config: 2022-01-01 → 2024-12-31 UTC.
+#
+# Secrets never live in this file. When a value may come from the environment, use a ${ENV_VAR}
+# placeholder that undertow.data.config.load_config expands at load time (raising ConfigError
+# when the variable is unset). The expanded value is never logged or written to a manifest —
+# log/record the host only.
+#
+# Token ordering is contractual: Uniswap orders tokens by address and 0xA0b8…eB48 (USDC) sorts
+# below 0xC02a…6Cc2 (WETH), so token0 == USDC (6 dp) and token1 == WETH (18 dp) for both pinned
+# pools (CONTRACTS.md §3.0 price orientation).
+
+[pool]
+address = "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"  # USDC/WETH, 0.05%
+token0_symbol = "USDC"
+token1_symbol = "WETH"
+token0_decimals = 6
+token1_decimals = 18
+fee_tier = 500
+tick_spacing = 10
+deployment_block = 12376729  # pool factory creation (verified on-chain)
+
+[window]
+start_utc = "2022-01-01T00:00:00Z"
+end_utc = "2024-12-31T23:59:59Z"
+
+[regime]
+lookback_days = 30
+vol_threshold = 0.80
+drift_threshold = 0.05
+periods_per_year = 525600  # 365 * 1440 minute bars
+
+[endpoints]
+graph_url = "https://gateway.thegraph.com/api/${GRAPH_API_KEY}/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV"
+rpc_url = "${ETH_RPC_URL}"  # archive node required
+reference_base_url = "https://api.binance.com"
+
+[paths]
+cache_dir = "data/cache/eth_usdc_500"
+output_dir = "data/datasets/eth_usdc_500"
+
+[gas.units]
+mint = 400000
+burn = 250000
+collect = 150000
+swap = 180000
