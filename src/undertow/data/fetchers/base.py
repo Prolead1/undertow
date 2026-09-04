@@ -418,8 +418,10 @@ class BaseHttpFetcher:
         """Perform one HTTP request to ``url`` with backoff/jitter on transient failures.
 
         Retries only ``RateLimitError`` (HTTP 429) and ``TransientNetworkError`` (5xx, connection
-        reset, read timeout, JSON-RPC transient phrase). A non-retryable 4xx raises
-        ``PermanentFetchError`` immediately. Returns the 2xx ``requests.Response``.
+        reset, read timeout). A non-retryable 4xx raises ``PermanentFetchError`` immediately.
+        Returns the 2xx ``requests.Response``. A JSON-RPC ``error`` body is *not* inspected here —
+        subclasses pass the response to :meth:`_raise_for_jsonrpc`; its transient classification
+        is retried downstream of this method, not by this loop (see that method).
 
         ``context`` is a secret-free string (pass ``self._describe(...)``) folded into every error
         message so a final failure names the block range without naming the URL or any key.
@@ -464,7 +466,10 @@ class BaseHttpFetcher:
         A body carrying an ``error`` is generally a :class:`PermanentFetchError`; it is a
         retryable :class:`RateLimitError` only when the message matches a phrase in
         ``TRANSIENT_ERROR_PATTERNS``. Subclasses call this after ``_request`` when a response may
-        be JSON-RPC-shaped.
+        be JSON-RPC-shaped. Note: this base class does *not* retry the transient
+        :class:`RateLimitError` raised here — the classification happens after ``_request`` has
+        returned; subclass fetchers (T05/T06) that hit provider ``error`` bodies should add their
+        own retry around this classification. See review note.
         """
         if not isinstance(payload, dict):
             return
@@ -518,7 +523,15 @@ class BaseHttpFetcher:
             return left + right
 
     def _fetch_one(self, request: FetchRequest, start: int, end: int) -> tuple[list[dict], bool]:
-        """Serve one chunk: cache hit -> rows + ``used_cache=True``; else network -> cache + rows."""
+        """Serve one chunk: cache hit -> rows + ``used_cache=True``; else network -> cache + rows.
+
+        Note: HTTP-status transients (429/5xx/timeout/reset) are retried with exponential
+        backoff inside :meth:`_request`. A JSON-RPC ``error`` body classified as transient by
+        :meth:`_raise_for_jsonrpc` raises :class:`RateLimitError` *here* (after ``_request`` has
+        already returned the 2xx), which is **not** retried by this base class — subclass
+        fetchers (T05/T06) that hit provider ``error`` bodies may add their own retry around the
+        JSON-RPC classification. See review note and PR body.
+        """
         cached = self._cache_read(request, start, end)
         if cached is not None:
             return cached, True
