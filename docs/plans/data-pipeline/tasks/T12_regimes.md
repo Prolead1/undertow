@@ -22,8 +22,7 @@ tests/data/fixtures/reference_series.json
 docs/decisions/001-regime-drift-definition.md
 ```
 
-That last file is the **repo-visible** copy of ADR-001. `.pi/` is never committed, so the vault ADR alone
-would leave your docstring citing a path that does not exist in the repo (`PLAN.md` §0.3). Write a short
+`docs/decisions/001-regime-drift-definition.md` is the ADR you own here (`PLAN.md` §0.3). Write a short
 standalone version — context, the dimensional-inconsistency problem, the decision, the consequence — that
 makes sense to someone who has never seen this plan, and cite `docs/decisions/001-…` from
 `window_drift`'s docstring.
@@ -42,7 +41,7 @@ import T08's fixture.
 - `~/Documents/fyp/lesson_plan/10_data_evaluation_roadmap.md` §10.3 ("Defining regimes concretely").
 - `~/Documents/fyp/lesson_plan/09_research_gap_problem_statement.md` §9.2 G4 — the four canonical bins
   and the reason they must come from the reference feed rather than the pool tick.
-- **`.pi/plans/data-pipeline/adr/001-regime-drift-definition.md`** — read this before you write
+- **`docs/decisions/001-regime-drift-definition.md`** — read this before you write
   `window_drift`. It changes the roadmap's formula for `μ`, deliberately, and explains why.
 
 ## What to build

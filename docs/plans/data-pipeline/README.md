@@ -1,9 +1,7 @@
 # Plan: `undertow.data` — Uniswap V3 data pipeline
 
-> **Versioned copy.** This is a snapshot of the live plan kept in the vault at
-> `.pi/plans/data-pipeline/` (gitignored). The planner agents still own and update the `.pi`
-> source; this copy is for repo readers. ADRs mentioned below as `adr/*.md` live here in
-> [`docs/decisions/`](../decisions/).
+> **Source of truth.** This directory — `docs/plans/data-pipeline/` — is the canonical plan. ADRs
+> mentioned below as `adr/*.md` live in [`docs/decisions/`](../decisions/).
 
 Multi-agent execution plan for the thesis's Week-1 critical-path deliverable.
 

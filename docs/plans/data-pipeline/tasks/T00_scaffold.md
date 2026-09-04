@@ -93,4 +93,4 @@ These are not smoke tests — they are the architecture guards the whole plan le
 
 `git checkout -b chore-data-scaffold` off `main` → implement → `uv run pytest` → launch the
 `code-reviewer` subagent → fix findings → commit → push → open PR against `main` → update
-`.pi/plans/data-pipeline/STATUS.md`. Do not merge.
+`docs/plans/data-pipeline/STATUS.md`. Once the branch is pushed, remove the temporary worktree. Do not merge.

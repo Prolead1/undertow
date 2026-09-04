@@ -77,8 +77,7 @@ State: `fee_growth_global_{0,1}_x128`, `current_tick`, `current_liquidity`, and 
   **mark the result's provenance** so T13 can quantify any residual. If you conclude full
   re-simulation is out of scope for this task, implement the single-segment exact path, raise a clearly
   named `FeeGrowthApproximation` warning on crossing swaps, record the decision in
-  `.pi/plans/data-pipeline/adr/002-swap-segment-apportionment.md` **and** its repo-visible copy
-  `docs/decisions/002-swap-segment-apportionment.md` (per `PLAN.md` §0.3 — cite the repo path from the
+  `docs/decisions/002-swap-segment-apportionment.md` (per `PLAN.md` §0.3 — cite that path from the
   code), and make sure the `exact` flag on `FeeAccrual` reflects it.
   Do not silently approximate.
 - `cross_tick(tick, upward)` — mirrors `Tick.cross`: `fee_growth_outside = wrapping_sub_256(
@@ -142,8 +141,8 @@ severity.
 - `exact` provenance is propagated honestly through `FeeAccrual` — no path returns `exact=True` on an
   approximated computation. The reviewer is instructed to treat a silently-wrong numeric result as
   Critical; this is the module where that applies most.
-- If you took the approximation route on multi-tick swaps, both copies of ADR-002 exist (vault + 
-  `docs/decisions/`) and quantify the expected error (e.g. "affects N% of swaps in the pinned window").
+- If you took the approximation route on multi-tick swaps, ADR-002 exists at `docs/decisions/` and
+  quantifies the expected error (e.g. "affects N% of swaps in the pinned window").
 
 ## Handoff notes for your PR body
 

@@ -17,25 +17,22 @@ Supporting: `09_research_gap_problem_statement.md` §9.2 (G1–G4), `05_concentr
 ## 0. Read this first (all agents)
 
 1. This plan is **normative**. Do not redesign it. If you believe a task's design is wrong, write an
-   ADR note in `.pi/plans/data-pipeline/adr/` and flag it in your PR description — do not silently
+   ADR note in `docs/decisions/NNN-slug.md` and flag it in your PR description — do not silently
    deviate, because other agents are coding against your interface *as written here*.
 2. **`CONTRACTS.md` in this directory is frozen.** Every column name, type, unit, sign convention and
    function signature in it is a cross-task contract. Implement exactly that. Extending is allowed
    (add a column, add a keyword-only argument with a default); renaming, retyping, or reordering is not.
-3. **ADRs live in two places, deliberately.** `.pi/` is never committed (`undertow/AGENTS.md`), so an ADR
-   kept only here is invisible to anyone reading the repo — and code that cites `adr/002-…` in a
-   docstring would point at nothing. So when you raise an ADR:
-   - write the full decision record to `.pi/plans/data-pipeline/adr/NNN-slug.md` (planning history, stays
-     in the vault), **and**
-   - commit a short version to `undertow/docs/decisions/NNN-slug.md` in the repo, and cite *that* path
-     from any code comment or docstring.
-   The vault copy may reference this plan; the repo copy must stand alone (a reader of the repo has never
-   seen `PLAN.md`). `docs/decisions/` is owned by whichever task raises the ADR.
+3. **ADRs live in `docs/decisions/`.** When you raise an ADR, write the full decision record to
+   `docs/decisions/NNN-slug.md` and cite *that* path from any code comment or docstring — a reader of the
+   repo must be able to follow it from this plan. `docs/decisions/` is owned by whichever task raises
+   the ADR.
 4. Obey `undertow/AGENTS.md` without exception: branch first → write code + tests → `uv run pytest`
    green → **`code-reviewer` subagent review** → address findings → commit → push → open PR against
    `main`. **Never** commit to `main`, **never** merge your own PR, **never** commit `.pi/`.
-5. One task = one branch = one PR. Your task file lists the **files you own**. Do not touch files owned
-   by another task — that is how parallel PRs stay conflict-free.
+5. One task = one branch = one PR. **Work in your own git worktree**, so parallel agents never edit the
+   same files on disk; when your branch is pushed and the PR is open, remove that worktree. Your task
+   file lists the **files you own**. Do not touch files owned by another task — that is how parallel
+   PRs stay conflict-free.
 6. Update `STATUS.md` (in this directory) when you start and when you finish. It is the handoff board.
 
 ---
@@ -337,7 +334,7 @@ A task is done when **all** of these hold:
 | Archive-node access / rate limits | T04, T06 | provider-agnostic RPC client, block-range chunking with backoff, raw-response cache on disk |
 | Non-reproducible regime labels | T12 | thresholds pre-committed in config + a sensitivity-sweep API |
 | Float precision loss on Q128 | all | strings in parquet, `int` in Python, reviewer instruction to reject float coercion |
-| Two agents editing one file | all | the file-ownership map in §2 + stacked-branch rule in §3.2 |
+| Two agents editing one file | all | per-agent git worktrees (§0.5, §9) + the file-ownership map in §2 + stacked-branch rule in §3.2 |
 
 ---
 
@@ -348,10 +345,11 @@ file, `CONTRACTS.md`, and `PLAN.md`. Launch pattern per task:
 
 ```
 Agent(subagent_type="general-purpose",
-      prompt="Read /home/dev/Documents/fyp/.pi/plans/data-pipeline/PLAN.md and CONTRACTS.md, then
-              execute tasks/T05_thegraph_fetcher.md end to end in /home/dev/Documents/fyp/undertow,
-              including the mandatory code-reviewer gate and the PR. Report the branch, PR, pytest
-              summary and reviewer verdict.")
+      isolation="worktree",   # each parallel agent gets its own git worktree: no file conflicts
+      prompt="Read docs/plans/data-pipeline/PLAN.md and CONTRACTS.md, then
+              execute tasks/T05_thegraph_fetcher.md end to end in the repo checkout, including
+              the mandatory code-reviewer gate and the PR. Once the branch is pushed, remove the
+              temporary worktree. Report the branch, PR, pytest summary and reviewer verdict.")
 ```
 
 Sequencing:

@@ -1,7 +1,7 @@
 # ADR 001 — Regime drift `μ` is the total window log return
 
 **Status:** accepted (planner decision, pre-committed before any data is seen)
-**Repo copy:** T12 commits a standalone short version to `undertow/docs/decisions/001-regime-drift-definition.md` and cites *that* path from `regimes.py`'s docstring (`.pi/` is never committed — see `PLAN.md` §0.3).
+**Source of truth:** this file is the canonical ADR-001. T12 writes the standalone final version here and cites *that* path from `regimes.py`'s docstring (see `PLAN.md` §0.3).
 **Affects:** T12 (`transforms/regimes.py`), the thesis text of `lesson_plan/10_data_evaluation_roadmap.md` §10.3
 
 ## Context
