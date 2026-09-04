@@ -9,16 +9,16 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | Task | State | Branch | PR | pytest | Reviewer | Notes |
 |---|---|---|---|---|---|---|
 | T00 scaffold | merged | chore-data-scaffold | #2 | 4 passed, 1 skipped | APPROVE (merged by human) | |
-| T01 config/types | pr-open | feature-data-config | #3 | 53 passed, 1 skipped | APPROVE (x2) | rescued from crashed agent; ADR-003 raised |
-| T02 fixedpoint | pr-open | feature-data-fixedpoint | #4 | 27 passed, 1 skipped | APPROVE (x2) | exact integer TickMath/price/liquidity ports; fixture anchored via routes 1/2/3 |
-| T03 schemas | todo | — | — | — | — | |
-| T04 fetcher base | todo | — | — | — | — | |
+| T01 config/types | merged | feature-data-config | #3 | 53 passed, 1 skipped | APPROVE (x2) | rescued from crashed agent; ADR-003 raised |
+| T02 fixedpoint | merged | feature-data-fixedpoint | #4 | 27 passed, 1 skipped | APPROVE (x2) | exact integer TickMath/price/liquidity ports; fixture anchored via routes 1/2/3 |
+| T03 schemas | in-progress | feature-data-schemas | — | — | — | wave 2, launched in parallel |
+| T04 fetcher base | in-progress | feature-data-fetcher-base | — | — | — | wave 2, launched in parallel |
 | T05 thegraph | todo | — | — | — | — | |
 | T06 rpc | todo | — | — | — | — | |
 | T07 gas | todo | — | — | — | — | |
 | T08 reference | todo | — | — | — | — | |
 | T09 storage | todo | — | — | — | — | |
-| T10 feegrowth | todo | — | — | — | — | |
+| T10 feegrowth | in-progress | feature-data-feegrowth | — | — | — | wave 2, launched in parallel |
 | T11 align | todo | — | — | — | — | |
 | T12 regimes | todo | — | — | — | — | |
 | T13 validation | todo | — | — | — | — | |
