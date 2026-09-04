@@ -43,7 +43,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 import pyarrow as pa
@@ -412,7 +412,7 @@ class BaseHttpFetcher:
         *,
         method: str = "GET",
         headers: Mapping[str, str] | None = None,
-        json: object = None,
+        json: Any = None,
         context: str = "",
     ) -> requests.Response:
         """Perform one HTTP request to ``url`` with backoff/jitter on transient failures.
