@@ -1,0 +1,10 @@
+{
+  "source": "Dune Analytics",
+  "queried_at_utc": null,
+  "dashboard_url": null,
+  "pool": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+  "status": "unavailable",
+  "monthly": null,
+  "tolerance_pct": null,
+  "notes": "[T15] Dune access was NOT available in the sandbox that authored this task (no Dune account, no network). The six sql/dune queries were authored and reviewed but not executed, so no magnitudes are recorded here — deliberately. A fabricated expected magnitude is worse than none, because T13 would trust it. When Dune access exists: run sql/dune/*.sql in order, verify the header-comment expectations (lifetime swaps ~1e6; off-grid mint share in 05 EXACTLY 0; both swap directions > 0 in 02), then transcribe the monthly counts from 03 into 'monthly', set queried_at_utc + dashboard_url, pick tolerance_pct (suggested 2.0: Dune buckets by event timestamp while our fetchers bucket by (block_number, log_index), so a few events legitimately float across month boundaries), and flip 'status' to 'available'. If 05's off-grid share is not zero, stop and re-check our grid/tick assumptions before trusting anything."
+}
