@@ -32,7 +32,9 @@ drift_threshold = 0.05
 periods_per_year = 525600  # 365 * 1440 minute bars
 
 [endpoints]
-graph_url = "https://gateway.thegraph.com/api/${GRAPH_API_KEY}/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV"
+# The gateway base URL includes the ${GRAPH_API_KEY}; the subgraph deployment id lives in code
+# (``SUBGRAPH_ID``, appended by ``TheGraphFetcher._endpoint()``) — never here, so the id is never
+graph_url = "https://gateway.thegraph.com/api/${GRAPH_API_KEY}"
 rpc_url = "${ETH_RPC_URL}"  # archive node required
 reference_base_url = "https://api.binance.com"
 

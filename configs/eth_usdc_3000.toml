@@ -36,8 +36,10 @@ periods_per_year = 525600  # 365 * 1440 minute bars
 
 [endpoints]
 # The Graph: official Uniswap v3 (Ethereum mainnet) subgraph on the decentralized network.
-# T05 owns the queries; this is the GraphQL endpoint it posts to.
-graph_url = "https://gateway.thegraph.com/api/${GRAPH_API_KEY}/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV"
+# T05 owns the queries; this is the GraphQL endpoint it posts to. The gateway base URL includes the
+# ${GRAPH_API_KEY}; the subgraph deployment id lives in code (``SUBGRAPH_ID``, appended by
+# ``TheGraphFetcher._endpoint()``) — never here, so the id is never duplicated.
+graph_url = "https://gateway.thegraph.com/api/${GRAPH_API_KEY}"
 rpc_url = "${ETH_RPC_URL}"  # archive node required
 reference_base_url = "https://api.binance.com"
 

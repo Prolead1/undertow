@@ -39,8 +39,8 @@ CONFIG_DIR = Path(__file__).resolve().parents[2] / "configs"
 USDC_WETH_3000 = "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8"
 USDC_WETH_500 = "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"
 
-# A small, valid config used as the template for the load_config rejection tests. The graph_url is
-# a shortened shape — the real subgraph id lives in configs/*.toml (asserted elsewhere).
+# A small, valid config used as the template for the load_config rejection tests. graph_url is
+# gateway base + key only; the subgraph id lives in code and _endpoint() appends it. See thegraph.py.
 GOOD_TOML = """\
 [pool]
 address = "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8"
@@ -63,7 +63,7 @@ drift_threshold = 0.05
 periods_per_year = 525600
 
 [endpoints]
-graph_url = "https://gateway.thegraph.com/api/${GRAPH_API_KEY}/subgraphs/id/abc"
+graph_url = "https://gateway.thegraph.com/api/${GRAPH_API_KEY}"
 rpc_url = "${ETH_RPC_URL}"
 reference_base_url = "https://api.binance.com"
 
@@ -465,11 +465,11 @@ def test_load_config_round_trip_real_configs(
     assert cfg.regime == RegimeConfig(
         lookback_days=30, vol_threshold=0.8, drift_threshold=0.05, periods_per_year=525600
     )
-    # ${GRAPH_API_KEY} and ${ETH_RPC_URL} were expanded, in place, at load time.
-    assert cfg.endpoints.graph_url == (
-        "https://gateway.thegraph.com/api/test-key-0123456789/subgraphs/id/"
-        "5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV"
-    )
+    # ${GRAPH_API_KEY}and ${ETH_RPC_URL} were expanded,in place,at load time.The graph_url is
+    # the gateway base + key only: paying the subgraph id here too would double the path at
+    # at fetch time, when _endpoint() appends /subgraphs/id/ + SUBGRAPH_ID, the gateway answers
+    # with HTTP 404. (Regression guard for bug-config-graph-url.
+    assert cfg.endpoints.graph_url == "https://gateway.thegraph.com/api/test-key-0123456789"
     assert cfg.endpoints.rpc_url == "https://eth-mainnet.example.test/v2/rpc-secret"
     assert cfg.endpoints.reference_base_url == "https://api.binance.com"
     assert cfg.endpoints.max_concurrency == 4

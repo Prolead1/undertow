@@ -26,6 +26,7 @@ logs/
 
 # Pi agent config (local only — never commit)
 .pi/
+.env
 
 # OS
 .DS_Store
