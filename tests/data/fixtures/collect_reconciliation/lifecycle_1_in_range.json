@@ -1,0 +1,180 @@
+{
+ "_comment": "SYNTHETIC \u2014 live capture unavailable in this sandbox. The pinned pool's real RPC data cannot be captured here (archive eth_call needs a personal token; no GRAPH_API_KEY/no Dune). This lifecycle is hand-derived to be protocol-faithful: grid-aligned ticks, mint/burn amounts computed with the T02 fixedpoint ports (amounts_for_liquidity / get_amount{0,1}_delta at tick_to_sqrt_price_x96 boundaries), amounts sign-consistent with the tick movement they claim, (block_number, log_index) monotone, timestamps UTC and monotone, fee_growth_global monotone across observations. fee_growth_* magnitudes are illustrative, NOT derived from roadmap equations (3)-(6) \u2014 T13 computes the expected reconstructed fees with T10's engine and compares against the collect.amount0/1 here. 'state after the block' (eth_call semantics).",
+ "pool": {
+  "address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+  "token0_symbol": "USDC",
+  "token1_symbol": "WETH",
+  "token0_decimals": 6,
+  "token1_decimals": 18,
+  "fee_tier": 3000,
+  "tick_spacing": 60
+ },
+ "lifecycle": 1,
+ "block_range": [
+  13386500,
+  13386900
+ ],
+ "tx_hashes": {
+  "mint": "0x00000000000000000000000000000000000000000000000000000000000003e9",
+  "swaps": [
+   "0x00000000000000000000000000000000000000000000000000000000000003ea",
+   "0x00000000000000000000000000000000000000000000000000000000000003eb",
+   "0x00000000000000000000000000000000000000000000000000000000000003ec"
+  ],
+  "burn": "0x000000000000000000000000000000000000000000000000000000000000041b",
+  "collect": "0x000000000000000000000000000000000000000000000000000000000000041c"
+ },
+ "position": {
+  "owner": "0x1111111111111111111111111111111111111111",
+  "tick_lower": 195000,
+  "tick_upper": 201000,
+  "exits_range": false
+ },
+ "events": [
+  {
+   "block_number": 13386500,
+   "log_index": 0,
+   "block_timestamp": "2022-02-08T00:00:00Z",
+   "tx_hash": "0x00000000000000000000000000000000000000000000000000000000000003e9",
+   "pool_address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+   "event_type": "mint",
+   "owner": "0x1111111111111111111111111111111111111111",
+   "tick_lower": 195000,
+   "tick_upper": 201000,
+   "liquidity_amount": "5000000000000000000",
+   "amount0": "57824009226822",
+   "amount1": "5557749327432510238473",
+   "sender": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "block_number": 13386550,
+   "log_index": 0,
+   "block_timestamp": "2022-02-08T00:10:00Z",
+   "tx_hash": "0x00000000000000000000000000000000000000000000000000000000000003ea",
+   "pool_address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+   "event_type": "swap",
+   "amount0": "123310597237",
+   "amount1": "-41050760594219615442",
+   "sqrt_price_x96": "1445681280943188627253593512505956",
+   "liquidity": "15000000000000000000",
+   "tick": 196245,
+   "sender": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "recipient": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "block_number": 13386620,
+   "log_index": 0,
+   "block_timestamp": "2022-02-08T00:24:00Z",
+   "tx_hash": "0x00000000000000000000000000000000000000000000000000000000000003eb",
+   "pool_address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+   "event_type": "swap",
+   "amount0": "-205527938030",
+   "amount1": "68414513797541837196",
+   "sqrt_price_x96": "1445319923862022892286997236876022",
+   "liquidity": "15000000000000000000",
+   "tick": 196240,
+   "sender": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "recipient": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "block_number": 13386750,
+   "log_index": 0,
+   "block_timestamp": "2022-02-08T00:50:00Z",
+   "tx_hash": "0x00000000000000000000000000000000000000000000000000000000000003ec",
+   "pool_address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+   "event_type": "swap",
+   "amount0": "328820040989",
+   "amount1": "-109471432159788372232",
+   "sqrt_price_x96": "1445898138556544557392726050762044",
+   "liquidity": "15000000000000000000",
+   "tick": 196248,
+   "sender": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "recipient": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "block_number": 13386900,
+   "log_index": 0,
+   "block_timestamp": "2022-02-08T01:20:00Z",
+   "tx_hash": "0x000000000000000000000000000000000000000000000000000000000000041b",
+   "pool_address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+   "event_type": "burn",
+   "owner": "0x1111111111111111111111111111111111111111",
+   "tick_lower": 195000,
+   "tick_upper": 201000,
+   "liquidity_amount": "5000000000000000000",
+   "amount0": "57824009226822",
+   "amount1": "5557749327432510238473",
+   "sender": null
+  },
+  {
+   "block_number": 13386900,
+   "log_index": 1,
+   "block_timestamp": "2022-02-08T01:20:00Z",
+   "tx_hash": "0x000000000000000000000000000000000000000000000000000000000000041c",
+   "pool_address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+   "event_type": "collect",
+   "owner": "0x1111111111111111111111111111111111111111",
+   "recipient": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "tick_lower": 195000,
+   "tick_upper": 201000,
+   "amount0": "35000000",
+   "amount1": "2400000000000000"
+  }
+ ],
+ "observations": [
+  {
+   "block_number": 13386500,
+   "_state_after_block": true,
+   "slot0": {
+    "sqrt_price_x96": "1445464455854409094576225936599710",
+    "tick": 196242
+   },
+   "fee_growth_global_0_x128": "245472016230501318647318615910821729000",
+   "fee_growth_global_1_x128": "119633798852400312152855859009087866000",
+   "liquidity": "15000000000000000000",
+   "ticks": {
+    "195000": {
+     "liquidity_gross": "5000000000000000000",
+     "liquidity_net": "5000000000000000000",
+     "fee_growth_outside_0_x128": "0",
+     "fee_growth_outside_1_x128": "0",
+     "initialized": true
+    },
+    "201000": {
+     "liquidity_gross": "5000000000000000000",
+     "liquidity_net": "-5000000000000000000",
+     "fee_growth_outside_0_x128": "0",
+     "fee_growth_outside_1_x128": "0",
+     "initialized": true
+    }
+   }
+  },
+  {
+   "block_number": 13386900,
+   "_state_after_block": true,
+   "slot0": {
+    "sqrt_price_x96": "1445898138556544557392726050762044",
+    "tick": 196248
+   },
+   "fee_growth_global_0_x128": "245472016260501318647318615910821729000",
+   "fee_growth_global_1_x128": "119633810852400312152855859009087866000",
+   "liquidity": "15000000000000000000",
+   "ticks": {
+    "195000": {
+     "liquidity_gross": "5000000000000000000",
+     "liquidity_net": "5000000000000000000",
+     "fee_growth_outside_0_x128": "81824005410167106215772871970273909666",
+     "fee_growth_outside_1_x128": "39877932950800104050951953003029288666",
+     "initialized": true
+    },
+    "201000": {
+     "liquidity_gross": "5000000000000000000",
+     "liquidity_net": "-5000000000000000000",
+     "fee_growth_outside_0_x128": "122736008115250659323659307955410864500",
+     "fee_growth_outside_1_x128": "59816899426200156076427929504543933000",
+     "initialized": true
+    }
+   }
+  }
+ ]
+}

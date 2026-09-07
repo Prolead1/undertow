@@ -1,0 +1,21 @@
+{
+ "_comment": "SYNTHETIC - live capture unavailable in this sandbox. One Mint log for the pinned pool: owner/tickLower/tickUpper are INDEXED (topics[1..3]); sender is NON-indexed and carried in data word 0 (the T06 trap); amount is uint128, amount0/amount1 unsigned uint256. Envelope is a Geth eth_getLogs shape; values are hand-derived, not trimmed from a live response.",
+ "logs": [
+  {
+   "address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+   "topics": [
+    "0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde",
+    "0x0000000000000000000000001111111111111111111111111111111111111111",
+    "0x000000000000000000000000000000000000000000000000000000000002f9b8",
+    "0x0000000000000000000000000000000000000000000000000000000000031128"
+   ],
+   "data": "0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0000000000000000000000000000000000000000000000004563918244f400000000000000000000000000000000000000000000000000000000349733878a4600000000000000000000000000000000000000000000012d49440f14f8ee6f09",
+   "blockNumber": "0xcc3d3c",
+   "blockHash": "0xb000000000000000000000000000000000000000000000000000000000cc3d3c",
+   "transactionHash": "0x00000000000000000000000000000000000000000000000000000000000000c9",
+   "transactionIndex": "0x0",
+   "logIndex": "0x0",
+   "removed": false
+  }
+ ]
+}

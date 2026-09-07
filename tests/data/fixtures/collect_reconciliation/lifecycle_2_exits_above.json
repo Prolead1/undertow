@@ -1,0 +1,164 @@
+{
+ "_comment": "SYNTHETIC \u2014 live capture unavailable in this sandbox. The pinned pool's real RPC data cannot be captured here (archive eth_call needs a personal token; no GRAPH_API_KEY/no Dune). This lifecycle is hand-derived to be protocol-faithful: grid-aligned ticks, mint/burn amounts computed with the T02 fixedpoint ports (amounts_for_liquidity / get_amount{0,1}_delta at tick_to_sqrt_price_x96 boundaries), amounts sign-consistent with the tick movement they claim, (block_number, log_index) monotone, timestamps UTC and monotone, fee_growth_global monotone across observations. fee_growth_* magnitudes are illustrative, NOT derived from roadmap equations (3)-(6) \u2014 T13 computes the expected reconstructed fees with T10's engine and compares against the collect.amount0/1 here. 'state after the block' (eth_call semantics).",
+ "pool": {
+  "address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+  "token0_symbol": "USDC",
+  "token1_symbol": "WETH",
+  "token0_decimals": 6,
+  "token1_decimals": 18,
+  "fee_tier": 3000,
+  "tick_spacing": 60
+ },
+ "lifecycle": 2,
+ "block_range": [
+  13387500,
+  13387800
+ ],
+ "tx_hashes": {
+  "mint": "0x00000000000000000000000000000000000000000000000000000000000007d1",
+  "swaps": [
+   "0x00000000000000000000000000000000000000000000000000000000000007d2",
+   "0x00000000000000000000000000000000000000000000000000000000000007d3"
+  ],
+  "burn": "0x0000000000000000000000000000000000000000000000000000000000000803",
+  "collect": "0x0000000000000000000000000000000000000000000000000000000000000804"
+ },
+ "position": {
+  "owner": "0x2222222222222222222222222222222222222222",
+  "tick_lower": 196200,
+  "tick_upper": 202200,
+  "exits_range": true
+ },
+ "events": [
+  {
+   "block_number": 13387500,
+   "log_index": 0,
+   "block_timestamp": "2022-02-08T03:20:00Z",
+   "tx_hash": "0x00000000000000000000000000000000000000000000000000000000000007d1",
+   "pool_address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+   "event_type": "mint",
+   "owner": "0x2222222222222222222222222222222222222222",
+   "tick_lower": 196200,
+   "tick_upper": 202200,
+   "liquidity_amount": "5000000000000000000",
+   "amount0": "68359757471974",
+   "amount1": "1162537186622758121378",
+   "sender": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "block_number": 13387560,
+   "log_index": 0,
+   "block_timestamp": "2022-02-08T03:32:00Z",
+   "tx_hash": "0x00000000000000000000000000000000000000000000000000000000000007d2",
+   "pool_address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+   "event_type": "swap",
+   "amount0": "105902666554602",
+   "amount1": "-40462133285591114617855",
+   "sqrt_price_x96": "1659180487296051579005569158604109",
+   "liquidity": "15000000000000000000",
+   "tick": 199000,
+   "sender": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "recipient": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "block_number": 13387660,
+   "log_index": 0,
+   "block_timestamp": "2022-02-08T03:52:00Z",
+   "tx_hash": "0x00000000000000000000000000000000000000000000000000000000000007d3",
+   "pool_address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+   "event_type": "swap",
+   "amount0": "114986977897336",
+   "amount1": "-60072331805239377624618",
+   "sqrt_price_x96": "1976475185087805964521793822621568",
+   "liquidity": "15000000000000000000",
+   "tick": 202500,
+   "sender": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "recipient": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "block_number": 13387800,
+   "log_index": 0,
+   "block_timestamp": "2022-02-08T04:20:00Z",
+   "tx_hash": "0x0000000000000000000000000000000000000000000000000000000000000803",
+   "pool_address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+   "event_type": "burn",
+   "owner": "0x2222222222222222222222222222222222222222",
+   "tick_lower": 196200,
+   "tick_upper": 202200,
+   "liquidity_amount": "5000000000000000000",
+   "amount0": "68359757471974",
+   "amount1": "1162537186622758121378",
+   "sender": null
+  },
+  {
+   "block_number": 13387800,
+   "log_index": 1,
+   "block_timestamp": "2022-02-08T04:20:00Z",
+   "tx_hash": "0x0000000000000000000000000000000000000000000000000000000000000804",
+   "pool_address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+   "event_type": "collect",
+   "owner": "0x2222222222222222222222222222222222222222",
+   "recipient": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "tick_lower": 196200,
+   "tick_upper": 202200,
+   "amount0": "30000000",
+   "amount1": "2100000000000000"
+  }
+ ],
+ "observations": [
+  {
+   "block_number": 13387500,
+   "_state_after_block": true,
+   "slot0": {
+    "sqrt_price_x96": "1445464455854409094576225936599710",
+    "tick": 196242
+   },
+   "fee_growth_global_0_x128": "245472076230501318647318615910821729000",
+   "fee_growth_global_1_x128": "119633822852400312152855859009087866000",
+   "liquidity": "15000000000000000000",
+   "ticks": {
+    "196200": {
+     "liquidity_gross": "5000000000000000000",
+     "liquidity_net": "5000000000000000000",
+     "fee_growth_outside_0_x128": "0",
+     "fee_growth_outside_1_x128": "0",
+     "initialized": true
+    },
+    "202200": {
+     "liquidity_gross": "5000000000000000000",
+     "liquidity_net": "-5000000000000000000",
+     "fee_growth_outside_0_x128": "0",
+     "fee_growth_outside_1_x128": "0",
+     "initialized": true
+    }
+   }
+  },
+  {
+   "block_number": 13387800,
+   "_state_after_block": true,
+   "slot0": {
+    "sqrt_price_x96": "1976475185087805964521793822621568",
+    "tick": 202500
+   },
+   "fee_growth_global_0_x128": "245472086230501318647318615910821729000",
+   "fee_growth_global_1_x128": "119633826852400312152855859009087866000",
+   "liquidity": "15000000000000000000",
+   "ticks": {
+    "196200": {
+     "liquidity_gross": "5000000000000000000",
+     "liquidity_net": "5000000000000000000",
+     "fee_growth_outside_0_x128": "81824005410167106215772871970273909666",
+     "fee_growth_outside_1_x128": "39877932950800104050951953003029288666",
+     "initialized": true
+    },
+    "202200": {
+     "liquidity_gross": "5000000000000000000",
+     "liquidity_net": "-5000000000000000000",
+     "fee_growth_outside_0_x128": "61368004057625329661829653977705432250",
+     "fee_growth_outside_1_x128": "29908449713100078038213964752271966500",
+     "initialized": true
+    }
+   }
+  }
+ ]
+}

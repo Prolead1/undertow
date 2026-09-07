@@ -1,0 +1,21 @@
+{
+ "_comment": "SYNTHETIC - live capture unavailable in this sandbox. One Collect log for the pinned pool: owner/tickLower/tickUpper indexed; recipient is NON-indexed in data word 0; amount0/amount1 are uint128 (fees withdrawn). Envelope is a Geth eth_getLogs shape; values are hand-derived, not trimmed from a live response.",
+ "logs": [
+  {
+   "address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+   "topics": [
+    "0x70935338e69775456a85ddef226c395fb668b63fa0115f5f20610b388e6ca9c0",
+    "0x0000000000000000000000001111111111111111111111111111111111111111",
+    "0x000000000000000000000000000000000000000000000000000000000002f9b8",
+    "0x0000000000000000000000000000000000000000000000000000000000031128"
+   ],
+   "data": "0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0000000000000000000000000000000000000000000000000000000001312d000000000000000000000000000000000000000000000000000005543df729c000",
+   "blockNumber": "0xcc3d3e",
+   "blockHash": "0xb000000000000000000000000000000000000000000000000000000000cc3d3e",
+   "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000191",
+   "transactionIndex": "0x0",
+   "logIndex": "0x0",
+   "removed": false
+  }
+ ]
+}

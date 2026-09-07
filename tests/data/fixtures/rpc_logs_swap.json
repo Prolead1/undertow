@@ -1,0 +1,50 @@
+{
+ "_comment": "SYNTHETIC - live capture unavailable in this sandbox. Three Swap logs for the pinned pool: log 0 anchors sqrt_price_x96 at the $3000 CONTRACTS 3.0 value (tick 196242) with a NEGATIVE amount0 (int256 two's-complement sign extension); log 2 carries a NEGATIVE int24 tick (-202010) to pin the right-aligned-int24 sign-extension path. amount0/amount1 are signed int256 with opposite signs; logs 0-1 share block 13385010 as different logIndex values, log 2 sits on 13385011. Envelopes are Geth eth_getLogs shapes. Field values are NOT trimmed from a live response - this sandbox has no archive RPC access.",
+ "logs": [
+  {
+   "address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+   "topics": [
+    "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67",
+    "0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+   ],
+   "data": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffff804cdfadcc000000000000000000000000000000000000000000000009e77903b4865b780800000000000000000000000000000000000047516b2849e2ed4c41c036d4e0a9000000000000000000000000000000000000000000000000d02ab486cedc0000000000000000000000000000000000000000000000000000000000000002fe92",
+   "blockNumber": "0xcc3d32",
+   "blockHash": "0xb000000000000000000000000000000000000000000000000000000000cc3d32",
+   "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000065",
+   "transactionIndex": "0x0",
+   "logIndex": "0x0",
+   "removed": false
+  },
+  {
+   "address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+   "topics": [
+    "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67",
+    "0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   ],
+   "data": "0x00000000000000000000000000000000000000000000000000000076212a30dafffffffffffffffffffffffffffffffffffffffffffffff6d66cda0a080f8c290000000000000000000000000000000000004746269c08e0d5235f09c0025b1a000000000000000000000000000000000000000000000000d02ab486cedc0000000000000000000000000000000000000000000000000000000000000002fe94",
+   "blockNumber": "0xcc3d32",
+   "blockHash": "0xb000000000000000000000000000000000000000000000000000000000cc3d32",
+   "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000066",
+   "transactionIndex": "0x0",
+   "logIndex": "0x1",
+   "removed": false
+  },
+  {
+   "address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+   "topics": [
+    "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67",
+    "0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+   ],
+   "data": "0xffffffffffffffffffffffffffffffffffffffffffffffd85f9a6b52e5b37d850000000000000000000000000000000000000000000000000000011ea3434ee900000000000000000000000000000000000000000002b1343a149a31ca12492f000000000000000000000000000000000000000000000000d02ab486cedc0000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffceae6",
+   "blockNumber": "0xcc3d33",
+   "blockHash": "0xb000000000000000000000000000000000000000000000000000000000cc3d33",
+   "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000067",
+   "transactionIndex": "0x0",
+   "logIndex": "0x0",
+   "removed": false
+  }
+ ]
+}
