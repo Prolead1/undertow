@@ -703,14 +703,12 @@ class RpcFetcher(BaseHttpFetcher):
         self, address: Address, topic0: str, start: int, end: int, context: str
     ) -> list[dict]:
         params: list[object] = [
-            [
-                {
-                    "address": str(address),
-                    "topics": [topic0],
-                    "fromBlock": hex(start),
-                    "toBlock": hex(end),
-                }
-            ]
+            {
+                "address": str(address),
+                "topics": [topic0],
+                "fromBlock": hex(start),
+                "toBlock": hex(end),
+            }
         ]
         result = self._jsonrpc("eth_getLogs", params, context)
         if not isinstance(result, list):
