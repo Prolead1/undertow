@@ -19,7 +19,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | T08 reference | in-progress | feature-data-reference | — | — | — | wave 3, launched in parallel |
 | T09 storage | in-progress | feature-data-storage | — | — | — | wave 3, launched in parallel |
 | T10 feegrowth | merged | feature-data-feegrowth | #10 | 237 passed, 1 skipped | APPROVE | **exact** multi-tick apportionment; ADR-002 never exists (see below) |
-| T11 align | in-progress | feature-data-event-tape | — | — | — | tiny_dataset() factory delivered in conftest.py; tape built on polars join_asof backward |
+| T11 align | pr-open | feature-data-event-tape | #22 | 21 align; 438 total tests/data | APPROVE | tiny_dataset() in conftest.py; backward-only polars join_asof; post-assembly key-uniqueness re-check catches dup gas block; mypy blocked by pre-existing numpy/py3.14 drift (T12 identical) |
 | T12 regimes | in-progress | feature-data-regimes | — | — | — | wave 3, launched in parallel |
 | T13 validation | todo | — | — | — | — | |
 | T14 cli | todo | — | — | — | — | |
