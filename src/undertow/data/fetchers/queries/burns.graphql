@@ -1,0 +1,38 @@
+# T05 (Route A) — one page of Burn entities for the pool over [cursorBlock, endBlock].
+#
+# Same pagination discipline as swaps.graphql (see that file): cursor on the
+# (transaction.blockNumber, logIndex) ordering key, boundary de-dup client-side,
+# `_meta` for indexer-lag detection, never `skip`.
+#
+# Note: the Burn event has no sender, and the subgraph's Burn entity mirrors that —
+# there is no `sender` field to request, so the `sender` column is null on burn rows.
+query BurnPage($pool: String!, $cursorBlock: BigInt!, $endBlock: BigInt!, $first: Int!) {
+  burns(
+    first: $first
+    orderBy: transaction__blockNumber
+    orderDirection: asc
+    where: { pool: $pool, transaction_: { blockNumber_gte: $cursorBlock, blockNumber_lte: $endBlock } }
+  ) {
+    id
+    transaction {
+      id
+      blockNumber
+    }
+    timestamp
+    logIndex
+    pool {
+      id
+    }
+    owner
+    tickLower
+    tickUpper
+    amount
+    amount0
+    amount1
+  }
+  _meta {
+    block {
+      number
+    }
+  }
+}

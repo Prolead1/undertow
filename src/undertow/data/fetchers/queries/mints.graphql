@@ -1,0 +1,36 @@
+# T05 (Route A) — one page of Mint entities for the pool over [cursorBlock, endBlock].
+#
+# Same pagination discipline as swaps.graphql (see that file): cursor on the
+# (transaction.blockNumber, logIndex) ordering key, boundary de-dup client-side,
+# `_meta` for indexer-lag detection, never `skip`.
+query MintPage($pool: String!, $cursorBlock: BigInt!, $endBlock: BigInt!, $first: Int!) {
+  mints(
+    first: $first
+    orderBy: transaction__blockNumber
+    orderDirection: asc
+    where: { pool: $pool, transaction_: { blockNumber_gte: $cursorBlock, blockNumber_lte: $endBlock } }
+  ) {
+    id
+    transaction {
+      id
+      blockNumber
+    }
+    timestamp
+    logIndex
+    pool {
+      id
+    }
+    owner
+    sender
+    tickLower
+    tickUpper
+    amount
+    amount0
+    amount1
+  }
+  _meta {
+    block {
+      number
+    }
+  }
+}

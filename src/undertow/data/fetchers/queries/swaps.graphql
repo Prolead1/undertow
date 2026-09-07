@@ -1,0 +1,44 @@
+# T05 (Route A) — one page of Swap entities for the pool over [cursorBlock, endBlock].
+#
+# Cursor pagination on the ordering key (CONTRACTS.md §5.2, T05 brief pitfall 1):
+#   * orderBy `transaction__blockNumber` ascending (the subgraph exposes ONE orderBy field,
+#     so the intra-block tie-break happens client-side on logIndex via boundary de-dup);
+#   * where `transaction_: { blockNumber_gte: $cursorBlock, blockNumber_lte: $endBlock }`,
+#     so the cursor advances by block and the fetcher de-duplicates the overlap on
+#     (block_number, log_index) at every page boundary;
+#   * never `skip` — the hosted service caps it at 5000 and silently returns nothing beyond.
+#
+# `_meta { block { number } }` is requested on EVERY page so the fetcher can refuse a page
+# whose indexed head is below $endBlock (indexer lag) instead of returning a short table
+# that looks complete.
+query SwapPage($pool: String!, $cursorBlock: BigInt!, $endBlock: BigInt!, $first: Int!) {
+  swaps(
+    first: $first
+    orderBy: transaction__blockNumber
+    orderDirection: asc
+    where: { pool: $pool, transaction_: { blockNumber_gte: $cursorBlock, blockNumber_lte: $endBlock } }
+  ) {
+    id
+    transaction {
+      id
+      blockNumber
+    }
+    timestamp
+    logIndex
+    pool {
+      id
+    }
+    amount0
+    amount1
+    sqrtPriceX96
+    liquidity
+    tick
+    sender
+    recipient
+  }
+  _meta {
+    block {
+      number
+    }
+  }
+}

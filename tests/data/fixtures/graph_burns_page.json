@@ -1,0 +1,70 @@
+{
+  "_comment": "synthetic - LIVE CAPTURE UNAVAILABLE in this sandbox (no GRAPH_API_KEY set; the decentralized gateway is not reachable from the sandbox network; no archive RPC token). Never present these values as a real capture. FIELD VALUES ARE SYNTHETIC-BUT-PROTOCOL-FAITHFUL, BUILT AROUND THE CONTRACTS.md 3.0 ANCHORS OF THE PINNED POOL (sqrt_price_x96 -> tick ~196256, positive ~+196k USDC/WETH; tick grid spacing 60; swap sign convention positive=INTO the pool; token0 BigDecimal at 6dp, token1 at 18dp). Block timestamps are synthetic per-block values on a linear mainnet-cadence model: ts(block) = ts(12370624) + 13 * (block - 12370624) seconds, anchored at ts(12370624) = 2021-05-08T00:00:00+00:00 UTC. T06 must reproduce this convention over the SAME block range so crosscheck_routes can compare block_timestamp field-by-field. Recorded block range: 12370626, 12370628, 12370632. Real values, synthetic envelope: only the paging wrapper is fabricated (the >1000-row cursor-pagination test replicates these field values across synthetic 100-row pages at blocks 100000..100025; the empty data-array page here is the empty-page case).",
+  "pages": [
+    {
+      "data": {
+        "burns": [
+          {
+            "id": "0x858a853f1e5e93be15ab4bb6d4f662c7510838f5731f44f24dd8b7718112340c#0",
+            "transaction": {
+              "id": "0x858a853f1e5e93be15ab4bb6d4f662c7510838f5731f44f24dd8b7718112340c",
+              "blockNumber": "12370626"
+            },
+            "timestamp": "1620432026",
+            "logIndex": 0,
+            "pool": {
+              "id": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8"
+            },
+            "owner": "0xc36442b4a4522e871399cd717abdd847ab11fe88",
+            "tickLower": 195000,
+            "tickUpper": 198960,
+            "amount": "100000000000000000000000",
+            "amount0": "476.164500",
+            "amount1": "189985.123456789012345678"
+          },
+          {
+            "id": "0x842602f3755d2e6b479fdc4f30277d1c0678078b3c9fe7429627587c064beaf0#1",
+            "transaction": {
+              "id": "0x842602f3755d2e6b479fdc4f30277d1c0678078b3c9fe7429627587c064beaf0",
+              "blockNumber": "12370628"
+            },
+            "timestamp": "1620432052",
+            "logIndex": 1,
+            "pool": {
+              "id": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8"
+            },
+            "owner": "0xc36442b4a4522e871399cd717abdd847ab11fe88",
+            "tickLower": 196020,
+            "tickUpper": 198600,
+            "amount": "500000000000000000000",
+            "amount0": "12.500000",
+            "amount1": "800.000000000000000000"
+          },
+          {
+            "id": "0xaa533309e503e4b012528f114dc98c1ad1963c3b7f44873e8cf21e004edf20b5#2",
+            "transaction": {
+              "id": "0xaa533309e503e4b012528f114dc98c1ad1963c3b7f44873e8cf21e004edf20b5",
+              "blockNumber": "12370632"
+            },
+            "timestamp": "1620432104",
+            "logIndex": 2,
+            "pool": {
+              "id": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8"
+            },
+            "owner": "0xc36442b4a4522e871399cd717abdd847ab11fe88",
+            "tickLower": 194400,
+            "tickUpper": 197340,
+            "amount": "250000000000000000000",
+            "amount0": "512.000000",
+            "amount1": "2.000000000000000000"
+          }
+        ],
+        "_meta": {
+          "block": {
+            "number": "16210000"
+          }
+        }
+      }
+    }
+  ]
+}
