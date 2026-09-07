@@ -18,9 +18,10 @@ pure bytes->rows. Three things are verified:
    Mint's **non-indexed** ``sender`` (read from data, not topics), Burn's null
    ``sender``, negative tick ranges, and the three loud-failure defences:
    wrong ``topics[0]``, truncated ``data``, out-of-range ticks.
-3. **eth_call return decoders** against ``rpc_ticks_call.json``: the packed
-   248-bit slot0 word, signed ``liquidity_net`` (int128), exact Q128 globals,
-   and the ``ticks(int24)`` calldata builder.
+3. **eth_call return decoders** against ``rpc_ticks_call.json``: the seven ABI
+   words of ``slot0()`` (sqrtPriceX96, tick in words 0 and 1), signed
+   ``liquidity_net`` (int128), exact Q128 globals, and the ``ticks(int24)``
+   calldata builder.
 """
 
 from __future__ import annotations
@@ -345,10 +346,23 @@ def _ticks_fixture() -> dict:
     return json.loads((FIXTURES / "rpc_ticks_call.json").read_text(encoding="utf-8"))
 
 
-def test_slot0_packed_word_decode() -> None:
+def test_slot0_seven_word_decode() -> None:
     slot0 = decode_slot0_return(_ticks_fixture()["slot0"])
     assert slot0.sqrt_price_x96 == 1446501726624926496477173928747177
     assert slot0.tick == 196242
+
+
+def test_slot0_negative_tick_canonical_sign_extension() -> None:
+    """A negative int24 tick is sign-extended across its whole 32-byte word
+    (all-ones high part). decode_slot0_return must read only the low 24 bits and
+    sign-extend from bit 23, tolerating the canonical form."""
+    sqrt = 1446501726624926496477173928747177
+    neg_tick = (-202010) & ((1 << 256) - 1)  # canonical sign extension
+    data = _w32(sqrt) + _w32(neg_tick)[2:] + _w32(0)[2:] * 5
+    assert len(data) - 2 == 448  # 7 words
+    slot0 = decode_slot0_return(data)
+    assert slot0.sqrt_price_x96 == sqrt
+    assert slot0.tick == -202010
 
 
 def test_ticks_return_signed_liquidity_net_and_exact_q128() -> None:
