@@ -26,7 +26,11 @@ query CollectPage($pool: String!, $cursorBlock: BigInt!, $endBlock: BigInt!, $fi
       id
     }
     owner
-    recipient
+# the canonical Uniswap-v3 subgraph "Collect" entity has NO recipient field (verified
+# live against the pinned id AND the Uniswap/v3-subgraph schema.graphql): the fees
+# withdrawer lives only in the on-chain Collect event log -> RpcFetcher supplies that
+# column (T06. T13's route agreement asserts both routes produce the same
+# COLLECT_SCHEMA, so this field must never be re-requested from the graph.
     tickLower
     tickUpper
     amount0

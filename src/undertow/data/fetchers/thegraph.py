@@ -564,6 +564,7 @@ class TheGraphFetcher(BaseHttpFetcher):
             "event_type": stream,
         }
         if stream == "swap":
+            liquidity = row.get("liquidity")
             decoded.update(
                 {
                     "amount0": encode_uint(
@@ -579,7 +580,11 @@ class TheGraphFetcher(BaseHttpFetcher):
                     "sqrt_price_x96": encode_uint(
                         _as_int(row.get("sqrtPriceX96"), field="sqrtPriceX96")
                     ),
-                    "liquidity": encode_uint(_as_int(row.get("liquidity"), field="liquidity")),
+                    "liquidity": (
+                        encode_uint(_as_int(liquidity, field="liquidity"))
+                        if liquidity is not None
+                        else None
+                    ),
                     "tick": _as_int(row.get("tick"), field="tick"),
                     "sender": _address(row.get("sender"), field="sender"),
                     "recipient": _address(row.get("recipient"), field="recipient"),
@@ -609,10 +614,15 @@ class TheGraphFetcher(BaseHttpFetcher):
                 }
             )
         elif stream == "collect":
+            recipient = row.get("recipient")
             decoded.update(
                 {
                     "owner": _address(row.get("owner"), field="owner"),
-                    "recipient": _address(row.get("recipient"), field="recipient"),
+                    "recipient": (
+                        _address(recipient, field="recipient")
+                        if recipient is not None
+                        else None
+                    ),
                     "tick_lower": _as_int(row.get("tickLower"), field="tickLower"),
                     "tick_upper": _as_int(row.get("tickUpper"), field="tickUpper"),
                     "amount0": encode_uint(
