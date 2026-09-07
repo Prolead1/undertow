@@ -425,7 +425,7 @@ def _encode_uint(value: int) -> str:
 
 @dataclass(frozen=True, slots=True)
 class Slot0:
-    """Decoded ``slot0()`` return (packed 248-bit single word; §packing below)."""
+    """Decoded ``slot0()`` return (first two of the ABI-encoded 7 words)."""
 
     sqrt_price_x96: int
     tick: int
@@ -455,18 +455,16 @@ def decode_slot0_return(return_data: str) -> Slot0:
     uint16 observationCardinality, uint16 observationCardinalityNext, uint8
     feeProtocol, bool unlocked)``.
 
-    The 7 components total 248 bits and are packed RIGHT-ALIGNED into a single
-    32-byte word (Solidity's compact-tuple return rule): [8 pad][160 sqrt][24
-    tick][16 index][16 cardinality][16 next][8 protocol][8 unlocked].
+    The ABI encodes each return value into its OWN 32-byte word (7 words = 224
+    bytes, each right-aligned) — NOT a single bit-packed word. Only the first two
+    (sqrtPriceX96, tick) are needed here; the rest are ignored.
     """
     where = "decode_slot0_return"
-    value = _word_int(_single_word(return_data, where))
-    sqrt_price_x96 = value >> 88  # bits 247..88
+    words = _words(return_data, 7, where)
+    sqrt_price_x96 = _word_int(words[0])
     if sqrt_price_x96 <= 0:
         raise SchemaViolationError(f"{where}: sqrt_price_x96 must be positive")
-    tick = (value >> 64) & 0xFFFFFF
-    if tick >= (1 << 23):  # int24 sign extension
-        tick -= 1 << 24
+    tick = _int24_from_data_word(words[1])
     return Slot0(
         sqrt_price_x96=sqrt_price_x96,
         tick=_tick_set_or_raise(tick, f"{where}.tick"),

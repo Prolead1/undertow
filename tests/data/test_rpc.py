@@ -261,6 +261,30 @@ def test_fetch_empty_page_returns_empty_table(mocked_http, tmp_path: Path) -> No
     validate_table(table, SCHEMA_REGISTRY["swap"])
 
 
+def test_eth_get_logs_filter_is_a_single_object(mocked_http, tmp_path: Path) -> None:
+    """Regression: the filter must be params[0] as a dict, not wrapped in a second
+    list. The live gateway rejects a doubly-nested filter [[{...}]] with JSON-RPC
+    'Invalid params' (Alchemy: 'invalid type: sequence, expected Filter object')."""
+    resp = _Responder(mocked_http)
+    seen: list[object] = []
+
+    def get_logs(params: list[object]) -> object:
+        seen.append(params)
+        if not isinstance(params[0], dict):
+            raise _RpcError("Invalid params", code=-32602)
+        return []
+
+    resp.handlers["eth_getLogs"] = get_logs
+    table = _maker(tmp_path).fetch(_req("swap", 13385040, 13385040)).table
+    assert table.num_rows == 0
+    filt = seen[0][0]
+    assert isinstance(filt, dict)
+    assert filt["address"] == str(POOL.address)
+    assert filt["topics"] == [TOPIC_SWAP]
+    assert filt["fromBlock"] == hex(13385040)
+    assert filt["toBlock"] == hex(13385040)
+
+
 def test_fetch_flash_inline_log(mocked_http, tmp_path: Path) -> None:
     """Flash decode through the transport (no flash fixture exists: the pinned
     pools have negligible flash volume; T10 needs to know it is decoded)."""
