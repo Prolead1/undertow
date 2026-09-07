@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import random
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -55,7 +56,6 @@ POOL3000 = default_pools()["USDC_WETH_3000"]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 GRAPH_SECRET = "topsecret-api-key-9f8e7d"
 GRAPH_URL = f"https://gateway.test/api/{GRAPH_SECRET}"
-LIQ = "123456789012345678901234567890"  # pool active liquidity carried by every synthetic swap row
 
 
 def _noop_sleep(_: float) -> None:
@@ -153,7 +153,6 @@ def _swap_row(block: int, log_index: int, *, amount0: str = "-1234.567891",
         "amount0": amount0,
         "amount1": amount1,
         "sqrtPriceX96": "1446501726624926496477173928747177",
-        "liquidity": LIQ,
         "tick": 196256,
         "sender": "0xe592427a0aece92de3edea1f18e0157c05861564",
         "recipient": "0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45",
@@ -212,7 +211,7 @@ def test_decode_swap_row_field_by_field(mocked_http, tmp_path: Path) -> None:
     assert row["amount0"] == str(int(Decimal("-1234.567891") * 10**6))
     assert row["amount1"] == str(int(Decimal("+0.411522630333333333") * 10**18))
     assert row["sqrt_price_x96"] == str(int(r0["sqrtPriceX96"]))
-    assert row["liquidity"] == str(int(r0["liquidity"]))
+    assert row["liquidity"] is None  # The Graph's Swap entity has no liquidity; RPC supplies it
     assert row["tick"] == int(r0["tick"])
     assert row["sender"] == r0["sender"].lower()
     assert row["recipient"] == r0["recipient"].lower()
@@ -674,4 +673,114 @@ def test_collect_rows_decode(mocked_http, tmp_path: Path) -> None:
     for r in rows:
         assert int(r["amount0"]) >= 0 and int(r["amount1"]) >= 0
         assert r["tick_lower"] % 60 == 0 and r["tick_upper"] % 60 == 0
+        # The Graph's Collect entity has no recipient; RPC supplies it
+        assert r["recipient"] is None
     assert int(rows[0]["amount1"]) == int(Decimal("0.000012345678901234") * 10**18)
+
+
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 13. LIVE: the pinned subgraph's schema must provide every field our queries request
+# ---------------------------------------------------------------------------
+# The T05 fixture suite is responses-mocked and can never catch a subgraph deployment
+# whose schema drifted from what swaps.graphql / collects.graphql request. This test is
+# the tripwire: it introspects the live gateway's GraphQL types and asserts every field the
+# committed query files request truly exists. Network-marked: only runs with --run-network
+# (tests/conftest.py). Requires GRAPH_API_KEY in the environment. A stale subgraph id (or a
+# redeployed one of a different shape) blows up HERE, not at some later pull.
+
+
+_ENTITY_TYPE = {"swaps": "Swap", "mints": "Mint", "burns": "Burn", "collects": "Collect"}
+
+
+def _query_top_level_fields(entity: str) -> set[str]:
+    """Top-level field names inside the entity's selection block in the query file.
+
+    Parses the committed queries/<entity>.graphql (this repo owns it, one field per line) by
+    brace-matching the entity's selection block and collecting field names at depth 0. Nested
+    sub-fields (transaction { id blockNumber }, pool { id }) are asserted separately against
+    their own types in the live test.
+    """
+    text = thegraph._query_text(entity)
+    start = text.index(entity + "(")
+    depth = 0
+    close_paren = start
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                close_paren = i
+                break
+    open_brace = text.index("{", close_paren)
+    depth = 0
+    end = open_brace
+    for i in range(open_brace, len(text)):
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    block_text = text[open_brace + 1 : end]
+    names = set()
+    depth = 0
+    for raw in block_text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("}"):
+            depth -= line.count("}")
+            continue
+        first = line.split(None, 1)[0]
+        if depth == 0:
+            names.add(first)
+        depth += line.count("{") - line.count("}")
+    return names
+
+
+def _introspect_fields(fetcher: TheGraphFetcher, type_name: str) -> set[str]:
+    query = "{ __type(name: " + json.dumps(type_name) + ") { fields { name } } }"
+    data = fetcher._graphql(query, {}, "live schema check " + type_name)
+    type_info = data.get("__type") if isinstance(data, dict) else None
+    if type_info is None:
+        raise AssertionError(
+            "pinned subgraph " + SUBGRAPH_ID + " disables introspection for " + type_name
+        )
+    return {f["name"] for f in type_info["fields"]}
+
+
+@pytest.mark.network
+def test_live_subgraph_schema_supports_requested_fields(tmp_path: Path) -> None:
+    """Live gate check: every field our query files request exists in the pinned schema.
+
+    Skipped unless --run-network. Requires GRAPH_API_KEY in the environment (KeyError if
+    unset; never a silent skip, never fabrication). Posts through the fetcher's own transport
+    (_graphql), which retries and keeps the key out of logs and errors - a stale schema is
+    exactly what this test exists to catch, so a failure names the field, never the secret.
+    """
+    key = os.environ["GRAPH_API_KEY"]
+    endpoints = EndpointConfig(
+        graph_url="https://gateway.thegraph.com/api/" + key,
+        rpc_url="https://unused.invalid/rpc",
+        reference_base_url="https://unused.invalid/ref",
+    )
+    fetcher = TheGraphFetcher(endpoints, tmp_path / "live-schema-cache")
+    for entity, type_name in _ENTITY_TYPE.items():
+        missing = sorted(_query_top_level_fields(entity) - _introspect_fields(fetcher, type_name))
+        assert not missing, (
+            "pinned subgraph " + SUBGRAPH_ID + " lacks field(s) " + ", ".join(missing)
+            + " on " + type_name + " requested by " + entity + ".graphql"
+            + " - update queries/*.graphql and/or the pinned subgraph id (see T05 handoff note)"
+        )
+    for type_name, required in (("Transaction", {"id", "blockNumber"}), ("Pool", {"id"})):
+        missing = sorted(required - _introspect_fields(fetcher, type_name))
+        assert not missing, (
+            "pinned subgraph " + SUBGRAPH_ID + " lacks decoder infrastructure field(s) "
+            + ", ".join(missing) + " on " + type_name
+        )

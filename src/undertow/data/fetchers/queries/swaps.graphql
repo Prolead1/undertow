@@ -30,8 +30,12 @@ query SwapPage($pool: String!, $cursorBlock: BigInt!, $endBlock: BigInt!, $first
     }
     amount0
     amount1
+# the canonical Uniswap-v3 subgraph "Swap" entity has NO liquidity field (verified live
+# against the pinned id AND the Uniswap/v3-subgraph schema.graphql): the pool active
+# liquidity after a swap lives only in the on-chain Swap event log -> RpcFetcher supplies
+# that column (T06). T13's route agreement asserts both routes produce the same SWAP_SCHEMA,
+# so this field must never be re-requested from the graph.
     sqrtPriceX96
-    liquidity
     tick
     sender
     recipient

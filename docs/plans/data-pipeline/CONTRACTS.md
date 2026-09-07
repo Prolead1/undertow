@@ -310,7 +310,7 @@ These six come first, in this order:
 | `amount0` | `string`→`int` | **signed** `int256`, raw token units. **Positive = flowed INTO the pool.** |
 | `amount1` | `string`→`int` | signed `int256`, raw token units, same convention |
 | `sqrt_price_x96` | `string`→`int` | `uint160`, pool sqrt price **after** the swap |
-| `liquidity` | `string`→`int` | `uint128`, active liquidity **after** the swap |
+| `liquidity` | `string`→`int` | `uint128`, active liquidity **after** the swap. **RPC-only**: the Uniswap-v3 subgraph's `Swap` entity has no `liquidity` field (confirmed live), so Route A leaves this null; RpcFetcher's `decode_swap` supplies it from the on-chain `Swap` event log. |
 | `tick` | `int32` | pool tick **after** the swap |
 | `sender` | `string` | lowercase address |
 | `recipient` | `string` | lowercase address |
@@ -341,6 +341,8 @@ exception anywhere in this contract.
 ### 4.3 `collect`
 
 `owner`, `recipient`, `tick_lower`, `tick_upper`, `amount0` (`uint128`), `amount1` (`uint128`).
+`recipient` is **RPC-only**: the subgraph's `Collect` entity has no `recipient` field (confirmed live), so
+Route A leaves it null; RpcFetcher's `decode_collect` supplies it from the on-chain `Collect` event log.
 Semantics note that T13 depends on: `Collect.amount0/1` are the amounts **withdrawn**, which include
 fees that accrued *before* this window. A `Burn` immediately followed by a `Collect` in the same tx
 withdraws principal + fees together — reconciliation must use the `Burn(amount0,amount1)` to separate

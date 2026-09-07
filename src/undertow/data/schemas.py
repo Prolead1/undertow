@@ -92,7 +92,7 @@ _SWAP_UNITS: dict[str, str] = {
     "amount0": "raw token0 units, signed int256, positive=flowed INTO the pool",
     "amount1": "raw token1 units, signed int256, positive=flowed INTO the pool",
     "sqrt_price_x96": "uint160 pool sqrt price after the swap, Q64.96",
-    "liquidity": "uint128 active liquidity after the swap",
+    "liquidity": "uint128 active liquidity after the swap; RPC-only (null on The Graph route)",
     "tick": "pool tick after the swap (int32)",
     "sender": "lowercase 0x-prefixed address",
     "recipient": "lowercase 0x-prefixed address",
@@ -112,7 +112,7 @@ _MINT_BURN_UNITS: dict[str, str] = {
 _COLLECT_UNITS: dict[str, str] = {
     **_KEY_UNITS,
     "owner": "lowercase 0x-prefixed address",
-    "recipient": "lowercase 0x-prefixed address",
+    "recipient": "lowercase 0x-prefixed address; RPC-only (null on The Graph route)",
     "tick_lower": "lower tick, on the spacing grid (int32)",
     "tick_upper": "upper tick, on the spacing grid, > tick_lower (int32)",
     "amount0": "raw token0 units withdrawn, unsigned uint128",
@@ -217,7 +217,7 @@ SWAP_SCHEMA: Final[pa.Schema] = _build_schema(
         pa.field("amount0", pa.string(), nullable=False),
         pa.field("amount1", pa.string(), nullable=False),
         pa.field("sqrt_price_x96", pa.string(), nullable=False),
-        pa.field("liquidity", pa.string(), nullable=False),
+        pa.field("liquidity", pa.string(), nullable=True),
         pa.field("tick", pa.int32(), nullable=False),
         pa.field("sender", pa.string(), nullable=False),
         pa.field("recipient", pa.string(), nullable=False),
@@ -260,7 +260,7 @@ COLLECT_SCHEMA: Final[pa.Schema] = _build_schema(
     _key_fields()
     + [
         pa.field("owner", pa.string(), nullable=False),
-        pa.field("recipient", pa.string(), nullable=False),
+        pa.field("recipient", pa.string(), nullable=True),
         pa.field("tick_lower", pa.int32(), nullable=False),
         pa.field("tick_upper", pa.int32(), nullable=False),
         pa.field("amount0", pa.string(), nullable=False),
