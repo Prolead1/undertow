@@ -10,44 +10,27 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 |---|---|---|---|---|---|---|
 | T00 scaffold | merged | chore-data-scaffold | #2 | 4 passed, 1 skipped | APPROVE (merged by human) | |
 | T01 config/types | merged | feature-data-config | #3 | 53 passed, 1 skipped | APPROVE (x2) | rescued from crashed agent; ADR-003 raised |
-| T02 fixedpoint | merged | feature-data-fixedpoint | #4 | 27 passed, 1 skipped | APPROVE (x2) | exact integer TickMath/price/liquidity ports; fixture anchored via routes 1/2/3 |
-| T03 schemas | merged | feature-data-schemas | #8 | 237 passed, 1 skipped | APPROVE | handles ADR-003's `start_block: None` date-mode |
-| T04 fetcher base | merged | feature-data-fetcher-base | #9 | 237 passed, 1 skipped | APPROVE | retry/chunk/cache; schema-free by the §5.1 layering rule |
-| T05 thegraph | in-progress | feature-data-thegraph | — | — | — | wave 3, launched in parallel |
-| T06 rpc | in-progress | feature-data-rpc | — | — | — | wave 3, launched in parallel |
-| T07 gas | in-progress | feature-data-gas | — | — | — | wave 3, launched in parallel |
-| T08 reference | in-progress | feature-data-reference | — | — | — | wave 3, launched in parallel |
-| T09 storage | in-progress | feature-data-storage | — | — | — | wave 3, launched in parallel |
-| T10 feegrowth | merged | feature-data-feegrowth | #10 | 237 passed, 1 skipped | APPROVE | **exact** multi-tick apportionment; ADR-002 never exists (see below) |
-| T11 align | pr-open | feature-data-event-tape | #22 | 21 align; 438 total tests/data | APPROVE | tiny_dataset() in conftest.py; backward-only polars join_asof; post-assembly key-uniqueness re-check catches dup gas block; mypy blocked by pre-existing numpy/py3.14 drift (T12 identical) |
-| T12 regimes | in-progress | feature-data-regimes | — | — | — | wave 3, launched in parallel |
-| T13 validation | pr-open | feature-data-validation | #23 | 474 passed, 5 skipped | APPROVE | checks.py + crosscheck.py + run_all_checks/render_report; conftest P3 grid fix; reconcile EXACT on hand-built lifecycles; committed captures are synthetic placeholders (replay_failed — see PR) |
-| T14 cli | todo | — | — | — | — | |
-| T15 dune | in-progress | feature-data-dune-queries | — | — | — | wave 3, launched in parallel |
-| T16 public api | todo | — | — | — | — | |
+| T02 fixedpoint | merged | feature-data-fixedpoint | #4 | 27 passed, 1 skipped | APPROVE (x2) | exact integer TickMath/price/liquidity ports |
+| T03 schemas | merged | feature-data-schemas | #8 | 237 passed, 1 skipped | APPROVE | |
+| T04 fetcher base | merged | feature-data-fetcher-base | #9 | 237 passed, 1 skipped | APPROVE | retry/chunk/cache; schema-free per §5.1 |
+| T05 thegraph | merged | feature-data-thegraph | #12 | 20 tests | APPROVE | cursor pagination, 4 log streams |
+| T06 rpc | merged | feature-data-rpc | #13 | 25 tests | APPROVE | eth_getLogs + eth_call + ABI decode |
+| T07 gas | merged | feature-data-gas | #14 | 16 tests | APPROVE | per-block fees, EIP-1559 |
+| T08 reference | merged | feature-data-reference | #15 | 18 tests | APPROVE | Binance 1m klines, gap-fill |
+| T09 storage | merged | feature-data-storage | #16 | 26 tests (parquet) + 18 (manifest) | APPROVE | hive-partitioned parquet + deterministic manifest |
+| T10 feegrowth | merged | feature-data-feegrowth | #10 | 41 tests | APPROVE | exact multi-tick apportionment |
+| T11 align | merged | feature-data-event-tape | #22 | 21 tests | APPROVE | tiny_dataset() fixture; backward-only as-of joins |
+| T12 regimes | merged | feature-data-regimes | #18 | 15 tests | APPROVE | rolling σ_rv + μ labeller |
+| T13 validation | merged | feature-data-validation | #23 | 15 test_checks + 17 test_crosscheck | APPROVE | 11 checks + route-agreement + fee reconciliation |
+| T14 cli | pr-open | feature-data-cli | #25 | 25 test_cli + 15 test_pipeline | awaiting merge | pull/verify/snapshot/info subcommands; JSON + human output |
+| T15 dune | merged | feature-data-dune-queries | #17 | 17 tests | APPROVE | 6 SQL queries + magnitude expectations |
+| T16 public api | pr-open | feature-data-cli | #25 | included in T14 | awaiting merge | load_dataset() entry point; 16-name stable __all__ |
 
 ## ADRs raised
 
-_(list `adr/NNN-slug.md` files as they are created; copy `adr/TEMPLATE.md` to start one)_
+- `adr/001-regime-drift-definition.md` — **accepted**: `μ` is total window log return, not per-step mean.
+- `adr/003-window-blocks-optional.md` — **accepted**: `WindowConfig.start_block/end_block` widened to `BlockNumber | None` with XOR validation.
 
-- `adr/001-regime-drift-definition.md` — **accepted**, pre-written by the planner: `μ` is the total
-  window log return, not the per-step mean. See `CONTRACTS.md` §6.3. Owned by T12 (writes the standalone
-  version); affects T11.
-- `adr/002-swap-segment-apportionment.md` — **resolved: never exists.** T10 took the exact
-  re-simulation route, so the conditional ADR is not written. Consequence for T13: use a small
-  tolerance (raw-unit level), **not** `rel_tolerance=0.0` — T10's PR documents two bounded residuals
-  (fee-formula second-order distribution, and a first-crossing approximation only when no
-  `current_sqrt_price_x96` is available). See T10 PR #10.
-- `adr/003-window-blocks-optional.md` — **accepted, raised by T01.** `CONTRACTS.md` §2 declared
-  `WindowConfig.start_block/end_block` non-optional while requiring date-only windows; widened to
-  `BlockNumber | None` with XOR validation. Repo copy committed: `docs/decisions/003-window-blocks-optional.md`.
-  Consumers (T03 ✓, T07, T14) must handle `start_block is None` (date-mode).
+## All tasks complete — data module v1 done 🎉
 
-## Blockers / open questions
-
-- **mypy tooling drift (T00-level, pre-existing):** project-wide `uv run mypy src tests` fails inside
-  numpy's shipped stubs (`Type statement is only supported in Python 3.12`) under Python 3.14.7;
-  reproduces on clean `main`. Per-module mypy passes. Needs a T00 fix (pin numpy or bump
-  `python_version` in `pyproject.toml`). Wave-3 tasks run mypy on their own package only.
-- **Dune access (T15):** magnitudes fixture may be `status: "unavailable"` with a skip-test if the
-  agent has no Dune account — never fabricated numbers.
+Last remaining action: merge PR #25 (T14 + T16) into `main`.
