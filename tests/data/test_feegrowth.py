@@ -603,6 +603,43 @@ def test_apply_liquidity_event_rejects_non_mint_burn() -> None:
         t.apply_liquidity_event({"block_number": 1, "event_type": "collect"})
 
 
+def test_zero_amount_burn_is_noop_even_on_uninitialized_ticks() -> None:
+    """Real-chain finding (T13 real-data capture): the pool emits burn(0) events
+    (fee collection) over arbitrarily wide tick ranges whose boundaries are often
+    uninitialized. They move no liquidity, so they must be a no-op — a previous
+    version crashed with KeyError deleting a tick that was never added."""
+    t = _tracker(current_tick=198120, current_liquidity=3 * 10**18)
+    before_ticks = dict(t.ticks)
+    before_liq = t.current_liquidity
+    t.apply_liquidity_event({
+        "block_number": 1, "event_type": "burn",
+        "tick_lower": 198480, "tick_upper": 212340,  # upper bound far from the
+        "liquidity_amount": "0",                    # path, uninitialized in the tracker
+    })
+    assert t.current_liquidity == before_liq
+    assert t.ticks == before_ticks
+    assert t.block_number == 1
+
+
+def test_apply_swap_allows_same_tick_no_direction_signal() -> None:
+    """Real-chain finding (T13 real-data capture): a swap whose price moves but
+    stays within the same tick (post_tick == pre_tick) is legitimate on-chain —
+    it still accrues fees — and carries no tick-direction signal. It must be
+    accepted for BOTH input tokens, not raise. Regression for the find that made
+    reconcile_fees_against_collect fail on real data."""
+    t = _tracker(current_tick=198000, current_liquidity=3 * 10**18)
+    # a token0-IN swap that leaves the tick unchanged (price fell within the tick)
+    t.apply_swap({
+        "block_number": 1, "event_type": "swap", "amount0": "5", "amount1": "-7",
+        "sqrt_price_x96": str(R[0] * 99 // 100), "tick": 198000,
+    })
+    # a token0-OUT swap that leaves the tick unchanged (price rose within the tick)
+    t.apply_swap({
+        "block_number": 2, "event_type": "swap", "amount0": "-5", "amount1": "7",
+        "sqrt_price_x96": str(R[0] * 101 // 100), "tick": 198000,
+    })
+
+
 # ---------------------------------------------------------------------------
 # 11. The ~20-event replay fixture — hand-computed expected state.
 # ---------------------------------------------------------------------------

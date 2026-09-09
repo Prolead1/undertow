@@ -335,6 +335,10 @@ def _snapshot_state(fee_growth: pa.Table, block: int) -> FeeGrowthState | None:
             current_tick = int(_py(fee_growth, i, "current_tick"))
             current_liquidity = _as_int(_py(fee_growth, i, "current_liquidity"))
         else:
+            initialized = bool(_py(fee_growth, i, "initialized"))
+            if not initialized:
+                continue  # uninitialized ticks are NOT in the tracker's dict —
+                # the engine only crosses initialized ticks (on-chain semantics)
             ticks[tick] = TickState(
                 fee_growth_outside_0_x128=_as_int(_py(fee_growth, i, "fee_growth_outside_0_x128")),
                 fee_growth_outside_1_x128=_as_int(_py(fee_growth, i, "fee_growth_outside_1_x128")),

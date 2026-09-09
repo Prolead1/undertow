@@ -318,9 +318,12 @@ class FeeGrowthTracker:
         if pre_price is None:
             pre_price = tick_to_sqrt_price_x96(pre_tick)
             approximated = True
-        if (amount0 > 0) != (post_tick <= pre_tick):
+        if (amount0 > 0) != (post_tick < pre_tick) and post_tick != pre_tick:
             # The pool's raw price is token1-per-token0, so a token0-in swap (amount0
-            # > 0) drives the tick DOWN and a token1-in swap drives it UP.
+            # > 0) drives the tick DOWN and a token1-in swap drives it UP. A swap
+            # whose price moves but stays within the same tick (post_tick == pre_tick)
+            # is legitimate — it still accrues fees — and carries no direction
+            # signal, so it is allowed for either input token.
             raise ValueError(
                 f"swap row direction disagrees with its amounts: amount0={amount0} "
                 f"implies token0 {'in' if amount0 > 0 else 'out'} but the price moved "
@@ -422,6 +425,16 @@ class FeeGrowthTracker:
         tick_upper = _as_int(row["tick_upper"])
         liquidity_amount = _as_int(row["liquidity_amount"])
         delta = liquidity_amount if etype == "mint" else -liquidity_amount
+
+        if delta == 0:
+            # A zero-amount burn is the pool's fee-collection no-op (burn(0) then
+            # collect): it moves no liquidity and so touches no tick state. Real-chain
+            # finding: such events target an arbitrarily wide tick range whose
+            # boundaries are often uninitialized, and treating them as real updates
+            # crashes (deleting a tick that was never added). No-op: just advance the
+            # block number.
+            self.block_number = BlockNumber(_as_int(row["block_number"]))
+            return
 
         for t, d in ((tick_lower, delta), (tick_upper, -delta)):
             before = self.ticks.get(t)
