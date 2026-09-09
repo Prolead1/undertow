@@ -425,10 +425,11 @@ def _encode_uint(value: int) -> str:
 
 @dataclass(frozen=True, slots=True)
 class Slot0:
-    """Decoded ``slot0()`` return (first two of the ABI-encoded 7 words)."""
+    """Decoded ``slot0()`` return."""
 
     sqrt_price_x96: int
     tick: int
+    fee_protocol: int  # packed uint8: bits 0-3 = fp0, bits 4-7 = fp1; 0 when off
 
 
 @dataclass(frozen=True, slots=True)
@@ -455,9 +456,10 @@ def decode_slot0_return(return_data: str) -> Slot0:
     uint16 observationCardinality, uint16 observationCardinalityNext, uint8
     feeProtocol, bool unlocked)``.
 
-    The ABI encodes each return value into its OWN 32-byte word (7 words = 224
-    bytes, each right-aligned) — NOT a single bit-packed word. Only the first two
-    (sqrtPriceX96, tick) are needed here; the rest are ignored.
+    The ABI encodes each return value into its OWN 32-byte word (7 words, each
+    right-aligned) — NOT a single bit-packed word. Returns all three fields the
+    fee-growth pipeline needs: sqrtPriceX96, tick, and the packed feeProtocol
+    (bits 0-3 = fp0, bits 4-7 = fp1).
     """
     where = "decode_slot0_return"
     words = _words(return_data, 7, where)
@@ -465,9 +467,12 @@ def decode_slot0_return(return_data: str) -> Slot0:
     if sqrt_price_x96 <= 0:
         raise SchemaViolationError(f"{where}: sqrt_price_x96 must be positive")
     tick = _int24_from_data_word(words[1])
+    # feeProtocol is a uint8 in the low byte of word 5 (the 6th word)
+    fee_protocol = _word_int(words[5]) & 0xFF
     return Slot0(
         sqrt_price_x96=sqrt_price_x96,
         tick=_tick_set_or_raise(tick, f"{where}.tick"),
+        fee_protocol=fee_protocol,
     )
 
 

@@ -206,12 +206,15 @@ class TickState:
 class FeeGrowthState:
     """Serializable tracker state — T14 checkpoints this to resume a long replay.
 
-    The six leading fields are the frozen CONTRACTS.md §6.1 shape. Two trailing
-    defaulted extensions were added by T10 so a resumed replay stays exact:
+    The six leading fields are the frozen CONTRACTS.md §6.1 shape. Three trailing
+    defaulted extensions were added so a resumed replay stays exact:
     ``current_sqrt_price_x96`` (the last swap's post-swap price, which makes the
-    next crossing swap's apportionment exact instead of approximated) and
+    next crossing swap's apportionment exact instead of approximated),
     ``exact`` (the replay provenance flag, so an approximation that happened
-    before a checkpoint is not silently forgotten after it).
+    before a checkpoint is not silently forgotten after it), and
+    ``fee_protocol`` (the packed uint8 from slot0: bits 0-3 = fp0, bits 4-7 =
+    fp1; 0 when protocol fees are off, so T10's original behaviour is the
+    default).
     """
 
     block_number: BlockNumber
@@ -223,6 +226,7 @@ class FeeGrowthState:
     # --- T10 extensions (defaulted, keyword-only; the frozen shape still constructs) ---
     current_sqrt_price_x96: int | None = field(default=None, kw_only=True)
     exact: bool = field(default=True, kw_only=True)
+    fee_protocol: int = field(default=0, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,6 +291,7 @@ class FeeGrowthTracker:
         self.ticks: dict[int, TickState] = dict(initial.ticks)
         self._current_sqrt_price_x96: int | None = initial.current_sqrt_price_x96
         self._exact = initial.exact
+        self._fee_protocol: int = initial.fee_protocol
 
     # -- event application --------------------------------------------------
 
@@ -309,6 +314,12 @@ class FeeGrowthTracker:
             )
         input_token = 0 if amount0 > 0 else 1
         gross_in = amount0 if amount0 > 0 else amount1
+        # Per-token protocol fee denominator from the packed uint8 (contract's
+        # SwapCache: zeroForOne → fp0 = bits 0-3, oneForZero → fp1 = bits 4-7).
+        fp_per_token = (
+            self._fee_protocol & 0x0F if input_token == 0
+            else (self._fee_protocol >> 4) & 0x0F
+        )
         post_tick = _as_int(row["tick"])
         post_price = _as_int(row["sqrt_price_x96"])
 
@@ -375,15 +386,17 @@ class FeeGrowthTracker:
                     allocated += gross_seg
                 fee_seg = gross_seg * fee_pips // 1_000_000
                 if L > 0 and fee_seg > 0:
-                    inc = (fee_seg << 128) // L
-                    if input_token == 0:
-                        self.fee_growth_global_0_x128 = wrapping_add_256(
-                            self.fee_growth_global_0_x128, inc
-                        )
-                    else:
-                        self.fee_growth_global_1_x128 = wrapping_add_256(
-                            self.fee_growth_global_1_x128, inc
-                        )
+                    lp_fee = fee_seg - fee_seg // fp_per_token if fp_per_token > 0 else fee_seg
+                    if lp_fee > 0:
+                        inc = (lp_fee << 128) // L
+                        if input_token == 0:
+                            self.fee_growth_global_0_x128 = wrapping_add_256(
+                                self.fee_growth_global_0_x128, inc
+                            )
+                        else:
+                            self.fee_growth_global_1_x128 = wrapping_add_256(
+                                self.fee_growth_global_1_x128, inc
+                            )
                 if i < len(crossed):
                     # update-then-cross order: the tick's outside sees the global
                     # including this segment's fee, exactly like Pool.swap.
@@ -544,6 +557,7 @@ class FeeGrowthTracker:
             ticks=dict(self.ticks),
             current_sqrt_price_x96=self._current_sqrt_price_x96,
             exact=self._exact,
+            fee_protocol=self._fee_protocol,
         )
 
     def restore(self, state: FeeGrowthState) -> None:
@@ -556,6 +570,7 @@ class FeeGrowthTracker:
         self.ticks = dict(state.ticks)
         self._current_sqrt_price_x96 = state.current_sqrt_price_x96
         self._exact = state.exact
+        self._fee_protocol = state.fee_protocol
 
     # -- reconciliation -----------------------------------------------------
 
@@ -588,6 +603,7 @@ class FeeGrowthTracker:
         gross_col = observed.column("liquidity_gross").to_pylist()
         net_col = observed.column("liquidity_net").to_pylist()
         init_col = observed.column("initialized").to_pylist()
+        fp_col = observed.column("fee_protocol").to_pylist()
 
         mismatches: list[Mismatch] = []
         n_compared = 0
@@ -623,7 +639,7 @@ class FeeGrowthTracker:
                 max_abs_g1 = max(max_abs_g1, abs_delta)
             max_rel = max(max_rel, rel_delta)
 
-        for block, tick, g0, g1, cur_tick, cur_liq, out0, out1, gross, net, init in zip(
+        for block, tick, g0, g1, cur_tick, cur_liq, out0, out1, gross, net, init, fp in zip(
             blocks,
             ticks_col,
             g0_col,
@@ -635,9 +651,13 @@ class FeeGrowthTracker:
             gross_col,
             net_col,
             init_col,
+            fp_col,
             strict=True,
         ):
             if tick == GLOBAL_TICK_SENTINEL:
+                compare(
+                    block, None, "fee_protocol", self._fee_protocol, int(fp)
+                )
                 compare(
                     block, None, "fee_growth_global_0_x128", self.fee_growth_global_0_x128, int(g0)
                 )

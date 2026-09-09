@@ -143,6 +143,7 @@ _FEE_GROWTH_UNITS: dict[str, str] = {
     "current_liquidity": "pool liquidity() at that block, uint128",
     "source": "'rpc_call' (exact) or 'interpolated' (flagged, never silently)",
     "pool_address": "lowercase 0x-prefixed pool address",
+    "fee_protocol": "packed uint8 from slot0: bits 0-3 = fp0, bits 4-7 = fp1; 0 when off",
 }
 
 _GAS_UNITS: dict[str, str] = {
@@ -299,6 +300,7 @@ FEE_GROWTH_SCHEMA: Final[pa.Schema] = _build_schema(
         pa.field("current_liquidity", pa.string(), nullable=False),
         pa.field("source", pa.string(), nullable=False),
         pa.field("pool_address", pa.string(), nullable=False),
+        pa.field("fee_protocol", pa.int32(), nullable=False),
     ],
     _FEE_GROWTH_UNITS,
 )

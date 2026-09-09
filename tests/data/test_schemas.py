@@ -294,6 +294,7 @@ def test_fee_growth_schema_columns() -> None:
         "current_liquidity",
         "source",
         "pool_address",
+        "fee_protocol",
     ]
     for col in (
         "fee_growth_outside_0_x128",
