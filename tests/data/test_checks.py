@@ -106,6 +106,7 @@ def _fg_global(block: int, liq: str, current_tick: int) -> dict[str, object]:
         "current_liquidity": liq,
         "source": "rpc_call",
         "pool_address": POOL.address,
+        "fee_protocol": 0,
     }
 
 

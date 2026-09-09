@@ -71,6 +71,7 @@ def _fg_global(block: int, liq: str, current_tick: int) -> dict[str, object]:
         "current_liquidity": liq,
         "source": "rpc_call",
         "pool_address": POOL.address,
+        "fee_protocol": 0,
     }
 
 
@@ -454,6 +455,7 @@ def test_reconcile_all_lifecycles_from_committed_captures() -> None:
                     "current_liquidity": str(obs0["liquidity"]),
                     "source": "rpc_call",
                     "pool_address": POOL.address,
+                    "fee_protocol": 0,
                 }
             ],
         )

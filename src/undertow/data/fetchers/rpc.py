@@ -957,6 +957,7 @@ class RpcFetcher(BaseHttpFetcher):
                 "current_liquidity": encode_uint(current_liquidity),
                 "source": "rpc_call",
                 "pool_address": address,
+                "fee_protocol": slot0.fee_protocol,
             }
         ]
         for t, result in zip(ticks, tick_results, strict=True):
@@ -976,6 +977,7 @@ class RpcFetcher(BaseHttpFetcher):
                     "current_liquidity": encode_uint(current_liquidity),
                     "source": "rpc_call",
                     "pool_address": address,
+                    "fee_protocol": slot0.fee_protocol,
                 }
             )
         return rows

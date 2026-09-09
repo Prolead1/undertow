@@ -102,6 +102,7 @@ def _tracker(
     price: int | None = Q96,
     block: int = 1000,
     exact: bool = True,
+    fee_protocol: int = 0,
 ) -> FeeGrowthTracker:
     return FeeGrowthTracker(
         POOL,
@@ -114,6 +115,7 @@ def _tracker(
             ticks=ticks or {},
             current_sqrt_price_x96=price,
             exact=exact,
+            fee_protocol=fee_protocol,
         ),
     )
 
@@ -718,8 +720,8 @@ def test_reconcile_exact_against_fixture_observed() -> None:
     observed = _observed_table(_final_observed_rows())
     report = t.reconcile(observed)
     assert isinstance(report, ReconciliationReport)
-    assert report.n_compared == 24
-    assert report.n_exact == 24
+    assert report.n_compared == 25  # 4 globals + fee_protocol + 4 ticks × 5 fields
+    assert report.n_exact == 25
     assert report.max_abs_delta_g0 == 0
     assert report.max_abs_delta_g1 == 0
     assert report.max_rel_delta == 0.0
@@ -736,8 +738,8 @@ def test_reconcile_reports_mismatches() -> None:
         if r["tick"] == 120:
             r["fee_growth_outside_0_x128"] = str(FINAL_TICK_120_OUT0 + 1)
     report = t.reconcile(_observed_table(rows))
-    assert report.n_compared == 24
-    assert report.n_exact == 23
+    assert report.n_compared == 25
+    assert report.n_exact == 24
     assert report.max_abs_delta_g0 == 1
     assert report.max_abs_delta_g1 == 0
     assert report.max_rel_delta == pytest.approx(1 / FINAL_TICK_120_OUT0)
@@ -773,7 +775,8 @@ def test_reconcile_reports_global_mismatch() -> None:
         if r["tick"] == GLOBAL_TICK_SENTINEL:
             r["fee_growth_global_0_x128"] = str(FINAL_G0 + 7)
     report = t.reconcile(_observed_table(rows))
-    assert report.n_exact == 23
+    assert report.n_compared == 25
+    assert report.n_exact == 24
     assert report.max_abs_delta_g0 == 7
     assert report.mismatches[0].tick is None
     assert report.mismatches[0].field_name == "fee_growth_global_0_x128"
@@ -834,6 +837,135 @@ def test_no_float_guard_ast() -> None:
                 float_calls.append(node)
     assert not float_literal, f"float literals present: {len(float_literal)}"
     assert not float_calls, f"float(...) calls present: {len(float_calls)}"
+
+
+# ---------------------------------------------------------------------------
+# 13. Protocol fee deduction (feeProtocol > 0).
+# ---------------------------------------------------------------------------
+
+
+def test_protocol_fee_deduction_reduces_fee_growth_exactly_by_denominator() -> None:
+    """With fee_protocol=6 (1/6 to protocol), a single-segment swap accrues
+    5/6 of the gross fee to feeGrowthGlobal — the LP share."""
+    fp = 6
+    t = _tracker(
+        current_liquidity=10**18, fee_protocol=fp,
+    )
+    net = get_amount0_delta(Q96, R[-60] + 1, 10**18, True)
+    gross = _gross_for(net)
+    t.apply_swap(
+        _swap_row(
+            block=1001, input_token=0, gross=gross, out=0,
+            post_tick=-60, post_price=R[-60] + 1,
+        )
+    )
+    gross_fee = gross * FEE_PIPS // 1_000_000
+    lp_fee = gross_fee - gross_fee // fp  # 5/6
+    expected_inc = (lp_fee << 128) // (10**18)
+    assert t.fee_growth_global_0_x128 == expected_inc
+    assert t.fee_growth_global_1_x128 == 0
+
+
+def test_protocol_fee_zero_is_identity() -> None:
+    """fee_protocol=0 (the default) gives the same result as before the fix."""
+    t = _tracker(current_liquidity=10**18)
+    net = get_amount0_delta(Q96, R[-60] + 1, 10**18, True)
+    gross = _gross_for(net)
+    t.apply_swap(
+        _swap_row(
+            block=1001, input_token=0, gross=gross, out=0,
+            post_tick=-60, post_price=R[-60] + 1,
+        )
+    )
+    inc = ((gross * FEE_PIPS // 1_000_000) << 128) // (10**18)
+    assert t.fee_growth_global_0_x128 == inc
+
+
+def test_protocol_fee_deduction_per_token_uses_correct_field() -> None:
+    """Packed fee_protocol: bits 0-3 for token0, bits 4-7 for token1."""
+    # fp0=6, fp1=4 → packed = 6 | (4 << 4) = 6 + 64 = 70
+    packed = 6 | (4 << 4)  # 70
+    t = _tracker(
+        current_liquidity=10**18, fee_protocol=packed,
+    )
+    # token0-in swap: uses fp0=6
+    net0 = get_amount0_delta(Q96, R[-60] + 1, 10**18, True)
+    gross0 = _gross_for(net0)
+    t.apply_swap(
+        _swap_row(
+            block=1001, input_token=0, gross=gross0, out=0,
+            post_tick=-60, post_price=R[-60] + 1,
+        )
+    )
+    gross_fee0 = gross0 * FEE_PIPS // 1_000_000
+    lp_fee0 = gross_fee0 - gross_fee0 // 6  # fp0=6
+    assert t.fee_growth_global_0_x128 == (lp_fee0 << 128) // (10**18)
+    assert t.fee_growth_global_1_x128 == 0
+
+    # token1-in swap: uses fp1=4
+    net1 = get_amount1_delta(Q96, R[60], 10**18, True)
+    gross1 = _gross_for(net1)
+    t.apply_swap(
+        _swap_row(
+            block=1002, input_token=1, gross=gross1, out=0,
+            post_tick=60, post_price=R[60] + 1,
+        )
+    )
+    gross_fee1 = gross1 * FEE_PIPS // 1_000_000
+    lp_fee1 = gross_fee1 - gross_fee1 // 4  # fp1=4
+    expected_inc1 = (lp_fee1 << 128) // (10**18)
+    assert t.fee_growth_global_1_x128 == expected_inc1
+
+
+def test_protocol_fee_floor_matches_contract_integer_division() -> None:
+    """Solidity uses floor division: feeAmount / feeProtocol. Our engine
+    must mirror this exactly — the 1-unit discrepancy from earlier diagnostics
+    is because computeSwapStep's feeAmount differs from our gross*fee/1e6, not
+    because the protocol-deduction formula differs."""
+    fp = 6
+    t = _tracker(
+        current_liquidity=10**18, fee_protocol=fp,
+    )
+    # Use a gross amount where fee % fp != 0 to exercise the floor
+    # gross = 1000 → fee = 1000 * 3000 // 1_000_000 = 3
+    # lp_fee = 3 - 3//6 = 3 - 0 = 3 (all to LP, floor drops protocol share)
+    gross = 1_000
+    t.apply_swap(
+        _swap_row(
+            block=1001, input_token=0, gross=gross, out=0,
+            post_tick=0, post_price=Q96 + 1,
+        )
+    )
+    gross_fee = gross * FEE_PIPS // 1_000_000
+    assert gross_fee == 3  # 1000 * 3000 // 1e6
+    lp_fee = gross_fee - gross_fee // fp  # 3 - 0 = 3
+    assert lp_fee == 3
+    if lp_fee > 0:
+        assert t.fee_growth_global_0_x128 == (lp_fee << 128) // (10**18)
+
+
+def test_snapshot_restore_preserves_fee_protocol() -> None:
+    """A checkpoint carries fee_protocol, and restore reads it back."""
+    t = _tracker(fee_protocol=6)
+    s = t.snapshot()
+    assert s.fee_protocol == 6
+    t.restore(s)
+    assert t._fee_protocol == 6
+
+
+def test_default_fee_protocol_is_zero() -> None:
+    """FeeGrowthState defaults to fee_protocol=0 for backward compat."""
+    state = FeeGrowthState(
+        block_number=1000,
+        fee_growth_global_0_x128=0,
+        fee_growth_global_1_x128=0,
+        current_tick=0,
+        current_liquidity=0,
+        ticks={},
+        current_sqrt_price_x96=Q96,
+        exact=True,
+    )
+    assert state.fee_protocol == 0
 
 
 # ---------------------------------------------------------------------------
@@ -906,5 +1038,6 @@ def _observed_table(rows: list[dict[str, object]]) -> pa.Table:
         "current_liquidity": pa.array([str(r["current_liquidity"]) for r in rows], pa.string()),
         "source": pa.array([str(r["source"]) for r in rows], pa.string()),
         "pool_address": pa.array([str(r["pool_address"]) for r in rows], pa.string()),
+        "fee_protocol": pa.array([int(r.get("fee_protocol", 0)) for r in rows], pa.int32()),
     }
     return pa.table(cols)

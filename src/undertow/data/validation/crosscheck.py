@@ -318,12 +318,13 @@ def _did_exit_range(tape: pa.Table, key: PositionKey, collect_block: int) -> boo
 
 def _snapshot_state(fee_growth: pa.Table, block: int) -> FeeGrowthState | None:
     """The tracker seed at a snapshot block: the global row (accumulators, current
-    tick, current liquidity) plus the per-tick rows. ``None`` when the block has
-    no global row (not a usable snapshot)."""
+    tick, current liquidity, fee_protocol) plus the per-tick rows. ``None`` when the
+    block has no global row (not a usable snapshot)."""
     global_g0: int | None = None
     global_g1: int | None = None
     current_tick: int | None = None
     current_liquidity: int | None = None
+    fee_protocol: int = 0
     ticks: dict[int, TickState] = {}
     for i in range(fee_growth.num_rows):
         if int(_py(fee_growth, i, "block_number")) != block:
@@ -334,6 +335,8 @@ def _snapshot_state(fee_growth: pa.Table, block: int) -> FeeGrowthState | None:
             global_g1 = _as_int(_py(fee_growth, i, "fee_growth_global_1_x128"))
             current_tick = int(_py(fee_growth, i, "current_tick"))
             current_liquidity = _as_int(_py(fee_growth, i, "current_liquidity"))
+            fp_val = _py(fee_growth, i, "fee_protocol")
+            fee_protocol = int(fp_val) if fp_val is not None else 0
         else:
             initialized = bool(_py(fee_growth, i, "initialized"))
             if not initialized:
@@ -363,6 +366,7 @@ def _snapshot_state(fee_growth: pa.Table, block: int) -> FeeGrowthState | None:
         # Seed None: the engine flags the first crossing swap exact=False itself.
         current_sqrt_price_x96=None,
         exact=True,
+        fee_protocol=fee_protocol,
     )
 
 

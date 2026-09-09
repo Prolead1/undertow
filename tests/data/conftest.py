@@ -510,6 +510,7 @@ def build_tiny_dataset() -> TinyDataset:
                 "current_liquidity": _s(1_000_000_000_000),
                 "source": "rpc_call",
                 "pool_address": POOL.address,
+                "fee_protocol": 0,
             }
         )
     fee_growth = _table(FEE_GROWTH_SCHEMA, fg_rows)
