@@ -21,7 +21,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | T10 feegrowth | merged | feature-data-feegrowth | #10 | 237 passed, 1 skipped | APPROVE | **exact** multi-tick apportionment; ADR-002 never exists (see below) |
 | T11 align | pr-open | feature-data-event-tape | #22 | 21 align; 438 total tests/data | APPROVE | tiny_dataset() in conftest.py; backward-only polars join_asof; post-assembly key-uniqueness re-check catches dup gas block; mypy blocked by pre-existing numpy/py3.14 drift (T12 identical) |
 | T12 regimes | in-progress | feature-data-regimes | — | — | — | wave 3, launched in parallel |
-| T13 validation | todo | — | — | — | — | |
+| T13 validation | in-review | feature-data-validation | — | 474 passed, 5 skipped | APPROVE | checks.py + crosscheck.py + run_all_checks/render_report; conftest P3 grid fix; reconcile EXACT on hand-built lifecycles; committed captures are synthetic placeholders (replay_failed — see PR) |
 | T14 cli | todo | — | — | — | — | |
 | T15 dune | in-progress | feature-data-dune-queries | — | — | — | wave 3, launched in parallel |
 | T16 public api | todo | — | — | — | — | |
