@@ -1,0 +1,91 @@
+{
+  "_comment": [
+    "T13-owned descriptor for the THREE committed lifecycle captures in this",
+    "directory (T06 owns lifecycle_*.json; T13 owns ONLY this file).",
+    "",
+    "STATUS: all three captures are SYNTHETIC PLACEHOLDERS \u2014 the sandbox has no",
+    "archive eth_call access (no personal RPC token, no GRAPH_API_KEY, no Dune),",
+    "so a real on-chain capture was impossible at authoring time. Each capture's",
+    "own _comment says its fee_growth_* magnitudes are illustrative, NOT derived",
+    "from the roadmap equations (3)-(6).",
+    "",
+    "CONSEQUENCE (a T13 finding, recorded honestly): running T10's replay engine",
+    "over these captures does NOT close the fee reconciliation \u2014 the illustrative",
+    "collect amounts and fee-growth magnitudes are not protocol-consistent with",
+    "each other. reconcile_fees_against_collect therefore reports each lifecycle",
+    "as OUTSIDE_TOLERANCE. The thesis's headline claim (\u00a710.2.4) requires a real",
+    "capture; these placeholders are the honest report on what exists.",
+    "",
+    "The exactness PROOF live in tests/data/test_crosscheck.py with hand-built,",
+    "engine-consistent synthetic lifecycles (delta 0).",
+    "The block ranges below are the 'block ranges recorded' the brief demands."
+  ],
+  "pool": {
+    "address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+    "token0_symbol": "USDC",
+    "token1_symbol": "WETH",
+    "token0_decimals": 6,
+    "token1_decimals": 18,
+    "fee_tier_bps": 3000,
+    "tick_spacing": 60
+  },
+  "lifecycles": [
+    {
+      "id": "lifecycle_1_in_range",
+      "file": "lifecycle_1_in_range.json",
+      "key": {
+        "owner": "0x1111111111111111111111111111111111111111",
+        "tick_lower": 195000,
+        "tick_upper": 201000
+      },
+      "mint_block": 13386500,
+      "collect_block": 13386900,
+      "paired_in_tx": false,
+      "chain_fee_component": {
+        "amount0": 35000000,
+        "amount1": 2400000000000000
+      },
+      "source": "synthetic-placeholder",
+      "expected_reconcile_status": "replay_failed",
+      "note": "placeholder captures are not replayable under the T10 engine: their swap input-token signs contradict the claimed tick direction (e.g. lifecycle_1 swap1 has amount0>0 = token0-in while the tick rises \u2014 the pool orientation demands the tick fall). Honest status: replay_failed. A real capture is required for a reconciliation result."
+    },
+    {
+      "id": "lifecycle_2_exits_above",
+      "file": "lifecycle_2_exits_above.json",
+      "key": {
+        "owner": "0x2222222222222222222222222222222222222222",
+        "tick_lower": 196200,
+        "tick_upper": 202200
+      },
+      "mint_block": 13387500,
+      "collect_block": 13387800,
+      "paired_in_tx": false,
+      "chain_fee_component": {
+        "amount0": 30000000,
+        "amount1": 2100000000000000
+      },
+      "source": "synthetic-placeholder",
+      "expected_reconcile_status": "replay_failed",
+      "note": "placeholder captures are not replayable under the T10 engine: their swap input-token signs contradict the claimed tick direction (e.g. lifecycle_1 swap1 has amount0>0 = token0-in while the tick rises \u2014 the pool orientation demands the tick fall). Honest status: replay_failed. A real capture is required for a reconciliation result."
+    },
+    {
+      "id": "lifecycle_3_exits_below",
+      "file": "lifecycle_3_exits_below.json",
+      "key": {
+        "owner": "0x3333333333333333333333333333333333333333",
+        "tick_lower": 192000,
+        "tick_upper": 199980
+      },
+      "mint_block": 13388500,
+      "collect_block": 13388780,
+      "paired_in_tx": false,
+      "chain_fee_component": {
+        "amount0": 30000000,
+        "amount1": 2100000000000000
+      },
+      "source": "synthetic-placeholder",
+      "expected_reconcile_status": "replay_failed",
+      "note": "placeholder captures are not replayable under the T10 engine: their swap input-token signs contradict the claimed tick direction (e.g. lifecycle_1 swap1 has amount0>0 = token0-in while the tick rises \u2014 the pool orientation demands the tick fall). Honest status: replay_failed. A real capture is required for a reconciliation result."
+    }
+  ]
+}

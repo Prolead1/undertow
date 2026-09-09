@@ -16,9 +16,12 @@ What it covers (the awkward cases — keep this list in sync with the data):
   (``amount0 < 0``, pool tick rises) (test 13).
 - **A tick crossing** — the pool tick moves up *and* down across the 60-tick spacing
   grid (196140 → … → 196440 → 196140), so grid boundaries are crossed both ways.
-- **An out-of-range position** — position P3 is minted at ``[196300, 196360]`` but the
-  pool tick later rises to 196380/196440 (``>= tick_upper``), i.e. price moved below
-  the range; T13's per-position logic must handle the "no interior growth" consequence.
+- **An out-of-range position** — position P3 is minted at ``[196380, 196440]`` but the
+  pool tick later rises to 196440 (``== tick_upper``; the range is half-open
+  ``[lower, upper)``, so the position exits), i.e. the price leaves the range; T13's
+  per-position logic must handle the "no interior growth" consequence. (T13 fix: the
+  original ``[196300, 196360]`` bounds were not multiples of the 60-tick spacing grid
+  — an off-grid position is impossible on-chain, so the bounds were aligned.)
 - **A mint and its matching burn+collect** — P1 (owner A) and P4 (owner D) are minted
   then burned and cleaned up in the same block, so reconciliation has a real Burn to
   separate principal from fee.
@@ -258,8 +261,8 @@ _SWAP_PATH: list[tuple[int, int]] = [
     (29, 196200),
     (30, 196260),
     (33, 196320),
-    (35, 196380),  # crosses P3's upper bound (196360): P3 out of range
-    (38, 196440),  # deepest upward leg
+    (35, 196380),  # reaches P3's lower bound 196380: P3 in range again
+    (38, 196440),  # P3's upper bound (= 196440, half-open): P3 out of range — deepest upward leg
     (42, 196200),  # buy pressure, tick falls
     (46, 196320),
     (50, 196260),
@@ -330,13 +333,14 @@ def build_tiny_dataset() -> TinyDataset:
             1_800_000_000_000,
             420_000_000_000_000_000,
             900_000_000_000),
-        # P3 owner C [196300, 196360] — THE out-of-range position (tick later tops 196360).
+        # P3 owner C [196380, 196440] — THE out-of-range position (minted below its
+        # range at tick 196260; the tick later reaches its upper bound 196440).
         _mint_row(
             20,
             0,
             _C,
-            196300,
-            196360,
+            196380,
+            196440,
             2_200_000_000_000,
             520_000_000_000_000_000,
             1_100_000_000_000),
