@@ -54,7 +54,10 @@ def _imports_across_boundary(package_path: Path, other_pkg: str) -> list[str]:
 def test_data_package_importable() -> None:
     import undertow.data  # noqa: F401
 
-    assert undertow.data.__all__ == []
+    assert isinstance(undertow.data.__all__, list)
+    # Public API must include at minimum load_dataset + Dataset.
+    assert "load_dataset" in undertow.data.__all__
+    assert "Dataset" in undertow.data.__all__
 
 
 def test_data_does_not_import_sim() -> None:

@@ -22,8 +22,7 @@ LOGGER = logging.getLogger("undertow.data.fixedpoint")
 
 # ---------------------------------------------------------------------------
 # Pinned constants (see CONTRACTS.md §2; these mirrors live here because T02
-# depends only on T00, not on T01's config.py).
-# TODO(T01): when config.py lands, import these from there and drop the mirrors.
+# depends only on T00, not on T01's config.py — intentional loose coupling).
 # ---------------------------------------------------------------------------
 Q96 = 2**96                       # sol FixedPoint96.Q96
 Q128 = 2**128                     # price / accumulator raw scale

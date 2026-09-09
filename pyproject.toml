@@ -24,6 +24,9 @@ dev = [
     "mypy>=1.11",
 ]
 
+[project.scripts]
+undertow-data = "undertow.data.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

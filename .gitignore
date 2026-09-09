@@ -10,9 +10,10 @@ build/
 .ruff_cache/
 
 # Data & artifacts
-data/raw/
-data/processed/
-data/cache/
+/data/
+/data/raw/
+/data/processed/
+/data/cache/
 *.parquet
 *.parquet.gzip
 *.arrow
