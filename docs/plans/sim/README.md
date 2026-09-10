@@ -1,31 +1,44 @@
-# Plan: `undertow.sim` — AMM simulator, RL environment, and training harness
+# Plan: `undertow.sim` — simulator, backtester & RL environment
 
-> **Source of truth.** This directory — `docs/plans/sim/` — is the canonical plan. ADRs mentioned
-> below live in [`docs/decisions/`](../decisions/).
+> **Source of truth.** This directory — `docs/plans/sim/` — is the canonical plan. ADRs live in
+> [`docs/decisions/`](../decisions/) (numbering shared with the data plan).
 
-Implementation plan for the thesis's core research deliverable — a PPO agent that learns
-concentrated-liquidity provision in Uniswap V3.
+Multi-agent execution plan for the thesis's Week-2-to-6 deliverables: the correct backtester, the fast
+training simulator, the friction-realistic RL environment, the baseline ladder, and the evaluation
+harness that produces the RQ1–RQ3 artifacts.
 
 ## Read in this order
 
 | File | What it is | Who reads it |
 |---|---|---|
-| **`PLAN.md`** | scope, architecture, task graph, dependencies, conventions, DoD | everyone, first |
-| **`CONTRACTS.md`** | frozen cross-task interfaces — module signatures, defaults, units | everyone, second |
-| `STATUS.md` | live handoff board — task states, branches, PRs | everyone, on start & finish |
-| `tasks/S*.md` | self-contained task briefs | the agent assigned that task |
+| **`PLAN.md`** | scope, architecture, task graph, dependencies, conventions, DoD, pinned decisions, launch order | everyone, first |
+| **`CONTRACTS.md`** | **frozen** cross-task interfaces: dataclasses, protocols, signatures, units, sign conventions | everyone, second |
+| `STATUS.md` | live handoff board — task states, branches, PRs, blockers | everyone, on start & finish |
+| `tasks/S*.md` | 17 self-contained task briefs | the agent assigned that task |
+
+## The requirement this implements
+
+`~/Documents/fyp/lesson_plan/10_data_evaluation_roadmap.md` — §10.2 (the two artifacts + four
+components), §10.2.3 (backtest loop), §10.3 (evaluation methodology), §10.4 (metrics), §10.5
+(baseline ladder), §10.6 Weeks 2–6. Gap/RQ context: `09_research_gap_problem_statement.md` §9.2–§9.3.
+Mechanics: `05_concentrated_liquidity_lp_problem.md` §5.3–§5.8. Env design:
+`07_reinforcement_learning.md` §7.8–§7.9. Anchor setup + baselines: `08_rl_market_making_sota.md`
+§8.4–§8.6, §8.10.
 
 ## Task index
 
 | Wave | Tasks | Theme |
 |---|---|---|
-| 0 | S00 | scaffold — math, config, pool, price, env, metrics |
-| 1 | S01 | PPO training harness (stable-baselines3) |
-| 2 | S02 | backtester + episode runner |
-| 3 | S03 | baseline LP strategies |
-| 4 | S04 | analysis + visualisation |
+| 0 | S00 | scaffold + RL-library ADR |
+| 1 | S01, S02 | types/config · data public-API extension |
+| 2 | S03, S04, S05, S06 | market view/split · position math · metrics · price processes |
+| 3 | S07, S08, S09, S10 | pool engine · frictions · reward · baselines |
+| 4 | S11, S12 | backtester · Gymnasium env |
+| 5 | S13, S14 | training harness · parity/look-ahead validation |
+| 6 | S15 | evaluation runner (RQ1 ablation · RQ2 regime matrix · RQ3 gap) |
+| 7 | S16 | CLI + public API + docs |
 
-Full dependency table: `PLAN.md` §3.1.
+Full dependency table: `PLAN.md` §3.1. Launch commands: `PLAN.md` §9.
 
 ## Non-negotiables (from `undertow/AGENTS.md`)
 
@@ -34,10 +47,11 @@ never self-merged · `undertow.data` and `undertow.sim` stay separate · `.pi/` 
 
 ## The three things most likely to go wrong
 
-1. **Tick ordering.** Higher USDC-per-WETH price → *lower* tick. Every place that turns a price
-   range into tick bounds must swap `price_low` and `price_high`. S00's tests gate this.
-2. **Fee-growth wrapping.** Uniswap V3 uses unchecked subtraction; fee-growth accumulators wrap.
-   All delta subtractions go through `wrapping_sub_256`. The reviewer checks every one.
-3. **Silent position loss.** When a rebalance's tick alignment collapses the range (`tick_lower >=
-   tick_upper`), the agent can end up with no position. S00 has a fallback to minimum-width range;
-   later tasks must preserve this invariant.
+1. **Simulator/backtester conflation.** They share the position math and frictions but never a loop:
+   the simulator is fast float64 with injectable models; the backtester is exact and replay-only. A
+   simulator bug must not be able to "improve" a backtest — S14's parity check is the tripwire.
+2. **Look-ahead bias.** `MarketView` (S03) is the only door to historical data and enforces the
+   train/eval wall; every rolling feature is backward-looking; S14 attacks the composed system.
+3. **Silent friction zeroing.** The whole thesis is eq (1) of §9.2 with *no term silently zero*.
+   Ablations flip flags explicitly through config; a default that disables a cost term is a Critical
+   review finding everywhere except the pinned ablation configs.

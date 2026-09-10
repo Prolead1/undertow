@@ -1,115 +1,149 @@
-# S00 — sim scaffold
+# S00 — Sim scaffold: deps, test markers, config skeleton, RL-library ADR
 
-**Wave 0 · size L · depends on: nothing · blocks: S01–S04**
+**Wave 0 · size S · depends on: nothing · blocks: all tasks**
 **Branch:** `feature-sim-scaffold`
 
 ## Why this task exists
 
-The sim scaffold is the foundation for all subsequent sim tasks. Every later task — PPO runner,
-backtester, baselines, analysis — needs the pool, price processes, env, and metrics to exist first.
-This task delivers all six contracted modules in one pass, keeping them internally consistent.
+The sim package currently has a stub `__init__.py`. Before any task can write code, we need the
+project scaffolding: dev dependencies, test infrastructure, a config-file skeleton, and — critically
+— a decision on which RL library we use. The latter gates S13's design; getting it wrong or late
+wastes multiple tasks' time.
 
 ## Files you own
 
 ```
-src/undertow/sim/
-├── __init__.py          public API surface with __all__
-├── math.py              self-contained tick/liquidity/fixed-point math
-├── config.py            frozen SimConfig dataclass tree + load_sim_config
-├── pool.py              ConcentratedLiquidityPool state machine
-├── price.py             GBMPrice, RegimeSwitchingPrice, ReplayPrice
-├── env.py               UndertowEnv (gymnasium.Env)
-└── metrics.py           Sharpe, Sortino, MDD, VaR/CVaR, annualized return/vol
-
-tests/sim/
-├── conftest.py           shared fixtures (rng)
-├── test_math.py          tick round-trips, boundaries, alignment, liquidity math
-├── test_config.py        defaults, validation, TOML load round-trip
-├── test_pool.py          mint, swap, burn, collect, fee growth invariants
-├── test_price.py         GBM, regime changes, jumps, replay end-of-series
-├── test_env.py           reset, step, hold, termination, reproducibility, check_env
-└── test_metrics.py       Sharpe, Sortino, MDD, VaR/CVaR
-
-configs/
-└── sim_default.toml      filled-in default SimConfig
-
-docs/plans/sim/
-├── README.md             plan overview
-├── PLAN.md               this file
-├── CONTRACTS.md          frozen cross-task interfaces (update to match as-built)
-├── STATUS.md             mark S00 as done
-└── tasks/S00_scaffold.md this file
-
-pyproject.toml             [project.optional-dependencies].sim section
-uv.lock                    regenerated
+pyproject.toml                             (adds sim deps ONLY)
+configs/sim_default.toml                   (empty section skeleton — S01 fills the real fields)
+tests/sim/__init__.py                      (empty)
+tests/sim/conftest.py                      (seeded-rng fixtures + marker registration)
+docs/decisions/004-rl-library.md           (the ADR)
 ```
-
-Do **not** import `undertow.data`. The scaffold test `test_sim_does_not_import_data` enforces this.
 
 ## What to build
 
-### 1. `sim/math.py` — Fixed-point & tick math
+### 1. `pyproject.toml` — sim dependencies
 
-Self-contained duplicate of `undertow.data.fixedpoint` functions the sim needs:
-- Price/tick conversions: `sqrt_price_x96_to_price`, `price_to_sqrt_price_x96`, `tick_to_sqrt_price_x96`, `sqrt_price_x96_to_tick`, `tick_to_price`, `price_to_tick`
-- Wrapping arithmetic: `wrapping_sub_256`, `wrapping_add_256`
-- Q128 decimal: `q128_to_decimal`
-- Liquidity ↔ amounts: `get_amount0_delta`, `get_amount1_delta`, `liquidity_for_amounts`, `amounts_for_liquidity`
-- Tick alignment: `align_tick_down`, `align_tick_up`
-- Constants: `Q96`, `Q128`, `MIN_TICK`, `MAX_TICK`, `MIN_SQRT_RATIO`, `MAX_SQRT_RATIO`
+Add to `[project.optional-dependencies]` a group called `sim`:
 
-### 2. `sim/config.py` — SimConfig tree
+```toml
+[project.optional-dependencies]
+sim = [
+    "gymnasium>=1.0",
+    "numpy>=2.0",
+    "polars>=1.0",
+    "pyarrow>=19",
+]
+```
 
-Frozen dataclass hierarchy: `SimConfig` → `EpisodeConfig`, `ActionGrid`, `GasConfig`, `SlippageConfig`, `RewardConfig`, `TrainingConfig`, `PriceConfig`. Plus `load_sim_config(path: str) -> SimConfig` for TOML loading with list→tuple auto-conversion.
+If `stable-baselines3` installs cleanly on Python 3.14 (test it: `uv add stable-baselines3` in the
+project venv), add it here. If not, note this in the ADR — we vendored PPO instead.
 
-### 3. `sim/pool.py` — ConcentratedLiquidityPool
+Do NOT touch existing `[project].dependencies` or `[dependency-groups].dev`. The sim deps live
+in a separate optional group so the data pipeline stays lightweight.
 
-Exact-integer pool state machine: `swap`, `mint`, `burn`, `collect` with per-position fee-growth tracking via the Uniswap V3 fee-growth-inside/last mechanism. Positions are frozen dataclasses; fee uncollected tracking uses `object.__setattr__` (acceptable for scaffold; later tasks may extract mutable tracking).
+### 2. `tests/sim/conftest.py` — test infrastructure
 
-### 4. `sim/price.py` — Price processes
+```python
+import pytest
+import numpy as np
 
-Three pluggable processes via `PriceProcess` Protocol:
-- `GBMPrice` — geometric Brownian motion
-- `RegimeSwitchingPrice` — Markov-regime-switching jump-diffusion
-- `ReplayPrice` — replay from a real price series
+def pytest_configure(config):
+    config.addinivalue_line("markers", "slow: > 5s (default-on, budgeted)")
+    # The `network` marker is already registered in tests/conftest.py (data plan S00).
+    # Re-use it; do not re-register.
 
-### 5. `sim/env.py` — UndertowEnv
+@pytest.fixture
+def rng():
+    """Seeded Generator for deterministic tests."""
+    return np.random.default_rng(42)
+```
 
-Gymnasium `Env` wrapping pool + price process + friction. Discrete action space (action grid). Observation vector: `[log_price, portfolio_value_pct, in_range_flag, fee_rate, gas_price, step_frac]`. Reward: `fees − gas − IL − risk_penalty` with per-component ablation flags.
+### 3. `configs/sim_default.toml` — skeleton
 
-### 6. `sim/metrics.py` — Performance metrics
+Create sections with a comment each, referencing the `SimConfig` sections from `CONTRACTS.md` §2.
+S01 fills the actual field set. Example:
 
-Pure numpy: `sharpe_ratio`, `sortino_ratio`, `max_drawdown`, `var_cvar`, `decomposition`, `annualized_return`, `annualized_volatility`.
+```toml
+# Default config for undertow.sim — filled by S01.
+[episode]
+# duration_days, step_minutes, agent_capital_usdc, ...
 
-## Critical design decisions
+[action_grid]
+# center_offsets, widths, include_hold
 
-- **Tick ordering:** Higher price → lower tick (Uniswap V3 convention). `reset()` and `_rebalance()` must swap `price_low`/`price_high` when computing ticks.
-- **Marginal agent:** Default is `True` — the agent's liquidity does not move the pool price. The pool sqrt price is set directly from the external price process.
-- **Single-tick-range swap:** The pool's `swap()` does not cross tick boundaries. Acceptable for the marginal-agent scaffold because swap sizes are small.
-- **Fallback range:** When tick alignment collapses a range (e.g. `tick_lower >= tick_upper`), `_rebalance` falls back to a minimum-width range around the current pool tick.
+[gas]
+# mint_units, burn_units, collect_units, rebalance_swap_units
+
+[slippage]
+# fixed_impact_bps
+
+[reward]
+# risk_penalty_lambda, normalize_by_capital, ablation flags
+
+[split]
+# train_start_utc, train_end_utc, eval_start_utc, eval_end_utc
+
+[training]
+# algorithm, seeds, discount_gamma, gae_lambda, ...
+
+[backtest]
+# compute_decomposition, log_decision_every_step
+
+[price]
+# mode: "replay" | "calibrated"
+```
+
+### 4. `docs/decisions/004-rl-library.md` — the ADR
+
+```markdown
+# ADR-004: RL library for sim training
+
+**Status:** accepted
+**Date:** [today]
+**Task:** S00
+
+## Context
+
+The training harness (S13) needs PPO. We have two options: (a) `stable-baselines3` (the community
+standard, SB3-compatible with Gymnasium, used by the anchor paper's community), or (b) a vendored
+single-file PPO in `train/ppo_runner.py`.
+
+## Decision
+
+[IF SB3 installs on Python 3.14]: Use `stable-baselines3` as a dependency. It installs cleanly,
+provides battle-tested PPO with GAE, and its MultiVectorEnv interface means we don't need to
+write our own parallel rollout loop.
+
+[IF SB3 does NOT install]: Vendored PPO in `train/ppo_runner.py`. We implement PPO-clip with GAE
+directly against Gymnasium's `step()`/`reset()` API, using numpy + a small MLP in pure numpy or
+torch (whichever is already in the venv or adds the smallest dep). ~200 lines, single file,
+tested against the CartPole-v1 equivalent. The plan's pinned hyperparameters (§7 of PLAN.md)
+become the vendored module's defaults.
+
+## Consequences
+
+- [SB3 path]: S13 imports `stable_baselines3.PPO`; config maps directly; tensorboard logging is
+  free.
+- [Vendored path]: S13 imports `undertow.sim.train.ppo_runner`; we own the training loop and
+  must test it ourselves; no tensorboard (CSV logs instead).
+- Either way, the `Policy` protocol (§10 of CONTRACTS.md) is unchanged — the backtester and eval
+  runner do not care about the RL library.
+```
+
+Verify the installability claim by actually running `uv add stable-baselines3` in the project
+venv. Record the exact result (success + version, or failure + error) in the ADR.
 
 ## Tests you must write
 
-1. **Math:** tick round-trips, MIN/MAX boundaries, tick alignment (including negatives), wrapping arithmetic, liquidity ↔ amounts round-trips
-2. **Config:** `EpisodeConfig` defaults and validation, `ActionGrid.decode`, `SimConfig` construction, `load_sim_config` from TOML (minimal, override, full round-trip)
-3. **Pool:** mint with tick alignment, mint invalid ranges, swap zero-for-one and one-for-zero, fee growth accumulation after swap, collect fees, collect reset, burn returns principal, fee growth inside full-range position
-4. **Price:** GBM basic/reset, regime switching (basic + regime changes + jumps), ReplayPrice (basic + end-of-series + invalid shape)
-5. **Env:** reset, step, multiple steps, hold action, termination, observation space, reproducibility (same seed = same trajectory), `gymnasium.utils.env_checker.check_env`
-6. **Metrics:** Sharpe (positive trend + flat + short series), Sortino, max drawdown (basic + no drawdown + empty), VaR/CVaR, annualized return (zero + positive), annualized volatility
+1. `tests/sim/conftest.py` has the `rng` fixture and it returns a `numpy.random.Generator`.
+2. `configs/sim_default.toml` parses as valid TOML: `tomllib.load` it.
+3. The added `sim` optional-dependency group installs without conflicts: `uv sync --group sim`.
 
-## Acceptance criteria
+## Definition of done
 
-- `uv sync` succeeds with `[project.optional-dependencies].sim` installed.
-- `uv run pytest tests/sim/` green, all tests have meaningful assertions.
-- `uv run pytest tests/test_scaffold.py::test_sim_does_not_import_data` green.
-- `uv run ruff check src/undertow/sim/ tests/sim/` clean.
-- `CONTRACTS.md` signatures match the as-built implementation.
-- `configs/sim_default.toml` filled (not skeleton).
-- PR open against `main`; `STATUS.md` updated.
-- All reviewer findings addressed.
-
-## Process (mandatory)
-
-`git checkout -b feature-sim-scaffold` off `main` → implement → `uv run pytest` → launch
-`code-reviewer` subagent → fix findings → commit → push → open PR against `main` → update `STATUS.md`.
-Do not merge.
+- `uv sync --group sim` succeeds
+- `uv run pytest tests/sim/ -q` passes (even if only the conftest fixtures exist)
+- `code-reviewer` APPROVE
+- PR open against `main` from `feature-sim-scaffold`
+- `STATUS.md` updated
