@@ -392,17 +392,20 @@ One row per `(block_number, tick)` observation, plus global rows.
 | `block_number` | `int64` | one row **per block** in the window — no gaps allowed; the sort key |
 | `block_timestamp` | `timestamp[us,UTC]` | |
 | `base_fee_per_gas` | `string`→`int` | wei, EIP-1559 |
-| `gas_used` | `int64` | block gas used |
-| `gas_limit` | `int64` | |
-| `priority_fee_p50_wei` | `string`→`int` | median effective priority fee of txs in the block |
-| `priority_fee_p90_wei` | `string`→`int` | 90th percentile — the "get included during a spike" cost |
+| `gas_used` | `int64` | always `0` — not consumed by any module (ADR-005) |
+| `gas_limit` | `int64` | always `0` — not consumed by any module | |
+| `priority_fee_p50_wei` | `string`→`int` | always `"0"` — flat `tip_surcharge_pct` replaces per-block resolution (ADR-005) |
+| `priority_fee_p90_wei` | `string`→`int` | always `"0"` — not consumed by any module; kept for schema compat only |
 | `eth_usd_price` | `float64` | **nullable, always null as written by T07.** Populated by T11 (§6.2) via a backward as-of join from `reference.close`, so that a gas cost can be expressed in USD at the block's prevailing price. T07 does not fetch prices. |
 
 No `log_index`, `tx_hash`, `pool_address` or `event_type`: `gas` is a **non-log, chain-wide** stream
 (§4.0). It is not partitioned per pool — both pinned pools share one gas table.
 
-Gas cost of an action at block `n`: `(base_fee_per_gas[n] + priority_fee_p50_wei[n]) * gas_units`.
-Gas-unit constants for mint/burn/collect live in `config.py`, not hardcoded in transforms.
+Gas cost of an action at block `n`: `base_fee_per_gas[n] * (100 + tip_surcharge_pct) / 100 * gas_units`
+(ADR-005 — flat tip surcharge replaces per-block priority-fee resolution; see
+`docs/decisions/005-gas-flat-tip-surcharge.md`). ``tip_surcharge_pct`` defaults to 3 (% uplift on
+base fee) and lives in `config.py`. Gas-unit constants for mint/burn/collect live in `config.py`,
+not hardcoded in transforms.
 
 ### 4.6 `reference` (T08) — complete column list
 

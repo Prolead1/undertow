@@ -16,7 +16,7 @@ import pytest
 from undertow.data.config import DataConfig
 from undertow.data.fetchers.base import FetchRequest, FetchResult
 from undertow.data.pipeline import (
-    _ALL_STREAMS,
+    _DEFAULT_STREAMS,
     build,
     info,
     pull,
@@ -144,12 +144,12 @@ def test_pull_writes_parquet_layout(tmp_path: Path, tiny_dataset) -> None:
     # Already written — pull should skip everything.
     report = pull(config)
 
-    assert len(report.streams) == len(_ALL_STREAMS)
+    assert len(report.streams) == len(_DEFAULT_STREAMS)
     assert report.n_total_requests == 0
     assert report.all_from_cache
 
     # Check that parquet files exist for each stream.
-    for stream in _ALL_STREAMS:
+    for stream in _DEFAULT_STREAMS:
         assert stream in report.streams
         spr = report.streams[stream]
         assert spr.row_count >= 0
@@ -167,7 +167,7 @@ def test_pull_idempotent(tmp_path: Path, tiny_dataset) -> None:
 
     assert report2.n_total_requests == 0
     assert report2.all_from_cache
-    for name in _ALL_STREAMS:
+    for name in _DEFAULT_STREAMS:
         h1 = report1.streams[name].content_hash
         h2 = report2.streams[name].content_hash
         assert h1 == h2, f"content_hash mismatch for {name}: {h1} vs {h2}"
@@ -256,7 +256,7 @@ def test_build_assembles_dataset(tmp_path: Path, tiny_dataset) -> None:
                 n_requests=1,
                 warnings=(),
             )
-            for name in _ALL_STREAMS
+            for name in _DEFAULT_STREAMS
         },
         created_at_utc=datetime.now(UTC),
         git_commit=git_commit(),
@@ -342,7 +342,7 @@ def test_verify_returns_check_results(tmp_path: Path, tiny_dataset) -> None:
                 n_requests=1,
                 warnings=(),
             )
-            for name in _ALL_STREAMS
+            for name in _DEFAULT_STREAMS
         },
         created_at_utc=datetime.now(UTC),
         git_commit=git_commit(),

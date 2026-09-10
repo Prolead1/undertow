@@ -71,6 +71,9 @@ reference_base_url = "https://api.binance.com"
 cache_dir = "data/cache/test"
 output_dir = "data/datasets/test"
 
+[gas]
+tip_surcharge_pct = 3
+
 [gas.units]
 mint = 400000
 burn = 250000
@@ -398,6 +401,7 @@ def test_data_config_constructs_with_only_contract_fields() -> None:
         output_dir=Path("data/datasets/x"),
     )
     assert cfg.gas_units is GAS_UNITS
+    assert cfg.tip_surcharge_pct == 3
 
 
 def test_pool_config_is_frozen() -> None:
@@ -479,6 +483,8 @@ def test_load_config_round_trip_real_configs(
     assert cfg.output_dir == Path(output_dir)
     # The [gas.units] section re-declares the pinned defaults; DataConfig picks them up.
     assert dict(cfg.gas_units) == dict(GAS_UNITS)
+    # ADR-005: flat tip surcharge default of 3%.
+    assert cfg.tip_surcharge_pct == 3
 
 
 def test_real_configs_use_pinned_env_placeholders() -> None:
@@ -580,7 +586,11 @@ def test_load_config_gas_units_override(tmp_path: Path, monkeypatch: pytest.Monk
 def test_load_config_gas_must_be_table(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A non-table [gas] (e.g. `gas = \"foo\"`) is rejected, matching every other section."""
     _set_env(monkeypatch)
-    gas_block = "[gas.units]\nmint = 400000\nburn = 250000\ncollect = 150000\nswap = 180000\n"
+    gas_block = (
+        "[gas]\ntip_surcharge_pct = 3\n\n"
+        "[gas.units]\nmint = 400000\nburn = 250000\n"
+        "collect = 150000\nswap = 180000\n"
+    )
     body = 'gas = "not-a-table"\n' + GOOD_TOML.replace(gas_block, "")
     p = _write(tmp_path, body)
     with pytest.raises(ConfigError, match=r"\[gas\].*table"):
@@ -608,4 +618,52 @@ def test_load_config_gas_units_must_be_complete(
     _set_env(monkeypatch)
     p = _write(tmp_path, GOOD_TOML.replace("\ncollect = 150000", ""))
     with pytest.raises(ConfigError, match="must define exactly"):
+        load_config(p)
+
+
+def test_load_config_tip_surcharge_pct_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When [gas] has no tip_surcharge_pct, the default (3) is used."""
+    _set_env(monkeypatch)
+    body = GOOD_TOML.replace("tip_surcharge_pct = 3\n", "")
+    p = _write(tmp_path, body)
+    cfg = load_config(p)
+    assert cfg.tip_surcharge_pct == 3
+
+
+def test_load_config_tip_surcharge_pct_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """tip_surcharge_pct can be set to any non-negative integer."""
+    _set_env(monkeypatch)
+    p = _write(tmp_path, GOOD_TOML.replace("tip_surcharge_pct = 3", "tip_surcharge_pct = 10"))
+    cfg = load_config(p)
+    assert cfg.tip_surcharge_pct == 10
+
+
+def test_load_config_tip_surcharge_pct_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_env(monkeypatch)
+    p = _write(tmp_path, GOOD_TOML.replace("tip_surcharge_pct = 3", "tip_surcharge_pct = 0"))
+    cfg = load_config(p)
+    assert cfg.tip_surcharge_pct == 0
+
+
+def test_load_config_tip_surcharge_pct_must_be_int(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_env(monkeypatch)
+    p = _write(tmp_path, GOOD_TOML.replace("tip_surcharge_pct = 3", "tip_surcharge_pct = 3.5"))
+    with pytest.raises(ConfigError, match="tip_surcharge_pct must be an integer"):
+        load_config(p)
+
+
+def test_load_config_tip_surcharge_pct_must_be_non_negative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_env(monkeypatch)
+    p = _write(tmp_path, GOOD_TOML.replace("tip_surcharge_pct = 3", "tip_surcharge_pct = -1"))
+    with pytest.raises(ConfigError, match="tip_surcharge_pct must be >= 0"):
         load_config(p)

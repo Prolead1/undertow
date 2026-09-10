@@ -347,7 +347,7 @@ matches `CONTRACTS.md` exactly; (6) PR open against `main` from a `feature-sim-*
 | Risk penalty | `λ = 0` default; `σ_PnL` = rolling std of per-step PnL over the trailing day when enabled | eq (1) §9.2 marks it optional; ablatable dial (§7.10) |
 | Reward scale | raw USDC per step, normalized by initial capital at the env boundary (`reward = ΔPnL_net / W_0`) | keeps PPO value targets O(1) without hiding costs |
 | Gas units per action | mint 460k · burn 215k · collect 130k · rebalance swap 150k (constants in `config.py`, each with a source comment; sweepable) | representative NFT-position-manager costs; exact per-tx receipts are future refinement |
-| Gas → USD | `(base_fee_per_gas + priority_fee_p50_wei) × gas_units`, converted at that block's reference ETH price | uses the tape's joined gas columns; §10.2.3 "that block's gas price" |
+| Gas → USD | `base_fee_per_gas × (1 + tip_surcharge_pct/100) × gas_units`, converted at that block's reference ETH price | ADR-005 flat tip surcharge; `tip_surcharge_pct` defaults to 3 (sweepable via S15 ablation). Uses the tape's joined gas columns; §10.2.3 "that block's gas price" |
 | Slippage | proportional model: `S = notional × (pool_fee_tier + fixed_impact_bps)`, `fixed_impact_bps = 5` default | rebalance trades pay the pool fee plus impact; honest floor, sweepable |
 | Walk-forward split | train `2022-01-01 → 2023-12-31`, eval `2024-01-01 → 2024-12-31` UTC, recorded via `WindowConfig.train_end_utc`/`eval_start_utc` | uses the hook the data plan reserved; eval spans distinct regimes |
 | Price replay source | reference feed 1-minute closes (`REFERENCE_SCHEMA`) | §10.2.2 mode (a); the pool price is an echo (§10.1.7) |

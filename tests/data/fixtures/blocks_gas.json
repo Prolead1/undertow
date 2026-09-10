@@ -1,5 +1,5 @@
 {
- "_synthetic_note": "SYNTHETIC - live capture unavailable in this sandbox: no archive-node RPC token, so no real eth_feeHistory / eth_getBlockByNumber captures exist. Field VALUES are fabricated but protocol-faithful to the archive-node wire format: EIP-1559-era block numbers (16200000..16200009, well past the London fork at 12,965,000), base fees ~9e9-1.3e10 wei with one 20x spike block (240e9 wei), reward=[p50,p90] effective priority-fee percentiles, one reward=null block (no transactions), UTC timestamps at realistic ~12s spacing, hex-encoded JSON-RPC quantities. The ENVELOPES are the real wire shapes: eth_feeHistory returns oldestBlock/baseFeePerGas/gasUsedRatio/reward; per-block headers (number/timestamp/baseFeePerGas/gasUsed/gasLimit) come from eth_getBlockByNumber.",
+ "_synthetic_note": "SYNTHETIC — fee-history-only fixture per ADR-005. No live archive-node RPC token in this sandbox, so field VALUES are fabricated but protocol-faithful to the archive-node wire format: EIP-1559-era block numbers (16200000..16200009, well past the London fork at 12,965,000), base fees ~9e9-1.3e10 wei with one 20x spike block (240e9 wei), hex-encoded JSON-RPC quantities. eth_feeHistory with empty percentiles returns oldestBlock/baseFeePerGas/gasUsedRatio only — no reward array (archive nodes reject percentiles; ADR-005 §Problem.1). Timestamps are always fetched from chain via batched eth_getBlockByNumber — they are NOT in this fixture.",
  "_blocks": [
   "0xf73140",
   "0xf73141",
@@ -12,90 +12,6 @@
   "0xf73148",
   "0xf73149"
  ],
- "block_headers": {
-  "0xf73140": {
-   "number": "0xf73140",
-   "timestamp": "0x6232dae0",
-   "baseFeePerGas": "0x2cb417800",
-   "gasUsed": "0x7a1200",
-   "gasLimit": "0x1c9c380"
-  },
-  "0xf73141": {
-   "number": "0xf73141",
-   "timestamp": "0x6232daec",
-   "baseFeePerGas": "0x218711a00",
-   "gasUsed": "0xbebc20",
-   "gasLimit": "0x1c9c380"
-  },
-  "0xf73142": {
-   "number": "0xf73142",
-   "timestamp": "0x6232daf9",
-   "baseFeePerGas": "0x271d94900",
-   "gasUsed": "0x8adae0",
-   "gasLimit": "0x1c9c380"
-  },
-  "0xf73143": {
-   "number": "0xf73143",
-   "timestamp": "0x6232db04",
-   "baseFeePerGas": "0x2cb417800",
-   "gasUsed": "0xa7d8c0",
-   "gasLimit": "0x1c9c380"
-  },
-  "0xf73144": {
-   "number": "0xf73144",
-   "timestamp": "0x6232db10",
-   "baseFeePerGas": "0x37e11d6000",
-   "gasUsed": "0xd29240",
-   "gasLimit": "0x1c9c380"
-  },
-  "0xf73145": {
-   "number": "0xf73145",
-   "timestamp": "0x6232db1c",
-   "baseFeePerGas": "0x1dcd65000",
-   "gasUsed": "0x6ddd00",
-   "gasLimit": "0x1c9c380"
-  },
-  "0xf73146": {
-   "number": "0xf73146",
-   "timestamp": "0x6232db29",
-   "baseFeePerGas": "0x2540be400",
-   "gasUsed": "0x9eb100",
-   "gasLimit": "0x1c9c380"
-  },
-  "0xf73147": {
-   "number": "0xf73147",
-   "timestamp": "0x6232db34",
-   "baseFeePerGas": "0x306dc4200",
-   "gasUsed": "0xc4d6a0",
-   "gasLimit": "0x1c9c380"
-  },
-  "0xf73148": {
-   "number": "0xf73148",
-   "timestamp": "0x6232db40",
-   "baseFeePerGas": "0x2540be400",
-   "gasUsed": "0x970fe0",
-   "gasLimit": "0x1c9c380"
-  },
-  "0xf73149": {
-   "number": "0xf73149",
-   "timestamp": "0x6232db4d",
-   "baseFeePerGas": "0x37e11d600",
-   "gasUsed": "0xd72620",
-   "gasLimit": "0x1c9c380"
-  }
- },
- "block_timestamps": {
-  "0xf73140": "0x6232dae0",
-  "0xf73141": "0x6232daec",
-  "0xf73142": "0x6232daf9",
-  "0xf73143": "0x6232db04",
-  "0xf73144": "0x6232db10",
-  "0xf73145": "0x6232db1c",
-  "0xf73146": "0x6232db29",
-  "0xf73147": "0x6232db34",
-  "0xf73148": "0x6232db40",
-  "0xf73149": "0x6232db4d"
- },
  "fee_history": {
   "oldestBlock": "0xf73140",
   "baseFeePerGas": [
@@ -122,44 +38,6 @@
    0.33,
    0.47
   ],
-  "reward": [
-   [
-    "0x9502f900",
-    "0x4a817c800"
-   ],
-   [
-    "0x6b49d200",
-    "0x37e11d600"
-   ],
-   null,
-   [
-    "0xb2d05e00",
-    "0xa7a358200"
-   ],
-   [
-    "0x4a817c800",
-    "0x1bf08eb000"
-   ],
-   [
-    "0x77359400",
-    "0x430e23400"
-   ],
-   [
-    "0x83215600",
-    "0x46c7cfe00"
-   ],
-   [
-    "0xd09dc300",
-    "0x5d21dba00"
-   ],
-   [
-    "0xa6e49c00",
-    "0x51f4d5c00"
-   ],
-   [
-    "0xee6b2800",
-    "0x6fc23ac00"
-   ]
-  ]
+  "reward": []
  }
 }

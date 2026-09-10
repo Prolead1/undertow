@@ -51,6 +51,7 @@ import requests
 from requests.adapters import HTTPAdapter
 
 from undertow.data.config import EndpointConfig, PoolConfig
+from undertow.data.progress import ProgressReporter
 from undertow.data.types import (
     BlockNumber,
     PermanentFetchError,
@@ -60,6 +61,11 @@ from undertow.data.types import (
 )
 
 logger = logging.getLogger("undertow.data.fetchers.base")
+
+
+def _progress_enabled() -> bool:
+    """True when the progress logger level allows INFO — respects ``--quiet``."""
+    return logger.isEnabledFor(logging.INFO)
 
 # ---------------------------------------------------------------------------
 # Retry / backoff policy (CONTRACTS.md §5.1). Full-jitter exponential backoff:
@@ -230,6 +236,8 @@ class BaseHttpFetcher:
         self._initial_chunk_size: int = DEFAULT_CHUNK_SIZE
         self._sleep: _SleepFn = sleep if sleep is not None else time.sleep
         self._rng: random.Random = rng if rng is not None else random.Random()
+        self._min_interval: float = endpoints.min_request_interval_s
+        self._last_request: float = 0.0  # monotonic tick of last _request
 
         self._session = requests.Session()
         adapter = HTTPAdapter(
@@ -404,6 +412,10 @@ class BaseHttpFetcher:
         if attempt >= self._max_retries:
             raise exc
         delay = retry_after if retry_after is not None else self._backoff(attempt)
+        logger.warning(
+            "%s — transient error (attempt %d/%d), retrying in %.1fs: %s",
+            type(exc).__name__, attempt + 1, self._max_retries, delay, exc,
+        )
         self._sleep(delay)
 
     def _request(
@@ -448,6 +460,10 @@ class BaseHttpFetcher:
 
             if 200 <= response.status_code < 300:
                 return response
+            # Close the response to release the connection back to the pool —
+            # the next retry needs a fresh connection, not the one that just
+            # returned 5xx/429 (a bad keep-alive connection poisons retries).
+            response.close()
             retry_after = self._parse_retry_after(response)
             if response.status_code == 429:
                 error: RateLimitError | TransientNetworkError = RateLimitError(
@@ -496,6 +512,23 @@ class BaseHttpFetcher:
     # fetch_rows: chunking + cache + retry + adaptive shrink + concurrency
     # ------------------------------------------------------------------
 
+    def _pace(self) -> None:
+        """Sleep to respect ``min_request_interval_s`` between HTTP requests.
+
+        Idempotent in tests — a mock ``_sleep`` that immediately returns is the
+        canonical way to skip pacing. Thread-safe enough for the current
+        ThreadPoolExecutor usage: two threads racing on ``_last_request`` may both
+        see a stale value, but the point is to reduce burstiness, not enforce a
+        strict contract. Tests set ``min_request_interval_s=0``.
+        """
+        if self._min_interval <= 0:
+            return
+        now = time.monotonic()
+        elapsed = now - self._last_request
+        if elapsed < self._min_interval:
+            self._sleep(self._min_interval - elapsed)
+        self._last_request = time.monotonic()
+
     def _is_too_many(self, error: PermanentFetchError) -> bool:
         needle = str(error).lower()
         return any(pattern in needle for pattern in TOO_MANY_RESULTS_PATTERNS)
@@ -535,6 +568,7 @@ class BaseHttpFetcher:
         cached = self._cache_read(request, start, end)
         if cached is not None:
             return cached, True
+        self._pace()
         rows = self._fetch_chunk_adaptive(request, start, end)
         self._cache_write(request, start, end, rows)
         return rows, False
@@ -560,6 +594,10 @@ class BaseHttpFetcher:
             return [], 0, False, [f"fetch_rows: empty block range {start}..{end}; nothing to fetch"]
 
         chunk_edges = list(self.chunks(start, end, self._initial_chunk_size))
+        total = len(chunk_edges)
+        reporter: ProgressReporter | None = None
+        if total > 1 and _progress_enabled():
+            reporter = ProgressReporter(label=request.stream, total=total)
         ordered_rows: list[list[dict]] = [[] for _ in chunk_edges]
         all_cached = True
         n_requests = 0
@@ -574,10 +612,14 @@ class BaseHttpFetcher:
                 all_cached = all_cached and used_cache
                 if not used_cache:
                     n_requests += 1
+                if reporter is not None:
+                    reporter.chunk_done(completed=index + 1, cached=used_cache)
 
         flat: list[dict] = []
         for rows in ordered_rows:
             flat.extend(rows)
+        if reporter is not None:
+            reporter.finish()
         return flat, n_requests, all_cached, warnings
 
     # ------------------------------------------------------------------
