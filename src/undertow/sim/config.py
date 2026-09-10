@@ -7,6 +7,7 @@ exactly. No logic here — just types, defaults, validation, and the TOML loader
 from __future__ import annotations
 
 import tomllib
+import typing
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -146,8 +147,6 @@ def load_sim_config(path: str | Path) -> SimConfig:
 
     Raises ``SimConfigError`` if the file contains unknown top-level sections.
     """
-    import typing
-
     with open(path, "rb") as fh:
         raw = tomllib.load(fh)
 
