@@ -17,6 +17,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 import pyarrow as pa  # type: ignore[import-untyped]
 
 from tests.data.conftest import POOL, build_tiny_dataset
@@ -29,6 +30,7 @@ from undertow.data.schemas import (
 )
 from undertow.data.storage.manifest import DatasetManifest
 from undertow.data.transforms.align import Dataset, build_event_tape
+from undertow.data.transforms.feegrowth import FeeGrowthApproximation
 from undertow.data.types import BlockNumber
 from undertow.data.validation import render_report, run_all_checks
 from undertow.data.validation.crosscheck import (
@@ -369,7 +371,8 @@ def test_reconcile_exited_range_accrues_nothing_while_out() -> None:
         _swap(1303, "5000000000000000", "-5000000000000000000", 170, log=0),  # out of range
         _collect(1305, O1, -60, 60, "0", "9000000000000"),
     ]
-    passed, lc = _reconcile(events)
+    with pytest.warns(FeeGrowthApproximation, match="unknown pre-swap price"):
+        passed, lc = _reconcile(events)
     assert passed, lc
     # reconstruction == chain: (0, 9e12) — the out-of-range swap added nothing
     assert lc["reconstructed0"] == 0
@@ -393,7 +396,8 @@ def test_reconcile_wrong_tracker_state_fails_with_sensible_delta() -> None:
         _collect(1005, O1, -60, 60, "27000000000000", "0"),
     ]
     fee_growth = _table(FEE_GROWTH_SCHEMA, [_fg_global(1000, str(L), 120)])
-    result = reconcile_fees_against_collect(_tape(events), fee_growth, POOL)
+    with pytest.warns(FeeGrowthApproximation, match="unknown pre-swap price"):
+        result = reconcile_fees_against_collect(_tape(events), fee_growth, POOL)
     assert not result.passed
     assert float(result.metrics["max_rel_delta"]) > 0.5
     assert "OUTSIDE_TOLERANCE" in result.detail
