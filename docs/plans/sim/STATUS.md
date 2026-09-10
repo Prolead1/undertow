@@ -9,7 +9,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | Task | State | Branch | PR | pytest | Reviewer | Notes |
 |---|---|---|---|---|---|---|
 | S00 scaffold + RL-library ADR | pr-open | `feature-sim-scaffold` | [#26](https://github.com/Prolead1/undertow/pull/26) | 574 passed | approved | Went beyond brief — all modules built as one scaffold |
-| S01 types/config | todo | | | | | |
+| S01 types/config | in-progress | | | | | |
 | S02 data API extension | todo | | | | | |
 | S03 marketview + split | todo | | | | | |
 | S04 position math | todo | | | | | |
