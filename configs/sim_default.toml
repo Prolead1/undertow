@@ -1,61 +1,32 @@
-# Default config for undertow.sim.
-# All sections are optional — missing keys fall back to dataclass defaults.
-# See contracts at docs/plans/sim/CONTRACTS.md §2.
+# Default config for undertow.sim — skeleton. Filled by S01.
+# See CONTRACTS.md §2 for the full SimConfig tree.
 
 [episode]
-duration_days = 30
-step_minutes = 60
-agent_capital_usdc = 100000.0
-marginal_agent = true
-fee_tier_bps = 30
-tick_spacing = 60
+# duration_days, step_minutes, agent_capital_usdc, marginal_agent, fee_tier_bps, tick_spacing
 
 [action_grid]
-center_offsets = [-0.20, -0.10, -0.05, -0.02, 0.0, 0.02, 0.05, 0.10, 0.20]
-widths = [0.02, 0.05, 0.10, 0.20]
-include_hold = true
+# center_offsets, widths, include_hold
 
 [gas]
-mint_units = 200000
-burn_units = 150000
-collect_units = 100000
-rebalance_swap_units = 150000
-base_fee_per_gas_gwei = 20.0
-priority_fee_p50_gwei = 1.0
+# mint_units, burn_units, collect_units, rebalance_swap_units
 
 [slippage]
-fixed_impact_bps = 5.0
+# fixed_impact_bps
 
 [reward]
-risk_penalty_lambda = 0.0
-risk_rolling_window_steps = 24
-normalize_by_capital = true
-fees_enabled = true
-gas_enabled = true
-slippage_enabled = true
-il_enabled = true
-risk_penalty_enabled = false
+# risk_penalty_lambda, risk_rolling_window_steps, normalize_by_capital,
+# ablation flags: fees_enabled, gas_enabled, slippage_enabled, il_enabled, risk_penalty_enabled
+
+[split]
+# train_start_utc, train_end_utc, eval_start_utc, eval_end_utc
 
 [training]
-algorithm = "ppo"
-seeds = [0, 1, 2, 3, 4]
-discount_gamma = 0.99
-gae_lambda = 0.95
-clip_epsilon = 0.2
-hidden_size = 128
-n_hidden = 2
-parallel_envs = 4
-total_timesteps = 1000000
-checkpoint_freq_steps = 50000
-log_freq_steps = 10000
+# algorithm, seeds, discount_gamma, gae_lambda, clip_epsilon,
+# hidden_size, n_hidden, parallel_envs, total_timesteps,
+# checkpoint_freq_steps, log_freq_steps
+
+[backtest]
+# compute_decomposition, log_decision_every_step
 
 [price]
-mode = "calibrated"
-mu = 0.0
-sigma = 0.80
-jump_intensity = 0.0
-jump_mean = 0.0
-jump_std = 0.05
-regime_transition_scale = 30.0
-high_vol_sigma = 1.20
-sideways_sigma = 0.40
+# mode: "replay" | "calibrated"
