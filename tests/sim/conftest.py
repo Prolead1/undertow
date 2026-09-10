@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
 import numpy as np
+import pytest
 
 
 def pytest_configure(config: pytest.Config) -> None:
