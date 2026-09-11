@@ -3,15 +3,19 @@
 Everything runs offline against a ``responses``-mocked archive node and the committed
 ``tests/data/fixtures/blocks_gas.json`` fixture (SYNTHETIC — see its header note; no live RPC
 token exists in this sandbox, so the payloads are fabricated but wire-faithful). The mock
-dispatches on JSON-RPC method, so the same callback serves ``eth_feeHistory``, batched and
-single ``eth_getBlockByNumber``, and ``eth_blockNumber``.
+dispatches on JSON-RPC method: ``eth_feeHistory`` (empty percentiles, ADR-005) + batched
+``eth_getBlockByNumber`` for real timestamps per block + ``eth_blockNumber`` for the block
+index.
+
+Timestamps are always fetched from chain — post-merge skipped slots make a linear
+slot-spacing model inaccurate (cumulative drift of many hours over a multi-year window).
 """
 
 from __future__ import annotations
 
 import json
 import random
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -33,7 +37,22 @@ FIXTURE = json.loads(
 )
 BLOCKS = [int(hex_b, 16) for hex_b in FIXTURE["_blocks"]]
 START, END = BLOCKS[0], BLOCKS[-1]
-FIXTURE_TS = {int(k, 16): int(v, 16) for k, v in FIXTURE["block_timestamps"].items()}
+
+# Deterministic mock timestamps — a simple 12 s/slot model is fine for synthetic
+# test data; the code always fetches real timestamps, never computes them.
+_MOCK_MERGE_BLOCK = 15_537_394
+_MOCK_MERGE_TS = datetime(2022, 9, 15, 6, 42, 59, tzinfo=UTC)
+
+
+def _mock_timestamp(block_number: int) -> int:
+    """Deterministic timestamp for a block number (synthetic test data only)."""
+    if block_number == 0:
+        return 1_438_269_988  # Genesis
+    if block_number >= _MOCK_MERGE_BLOCK:
+        offset = (block_number - _MOCK_MERGE_BLOCK) * 12
+        return int((_MOCK_MERGE_TS + timedelta(seconds=offset)).timestamp())
+    offset = (_MOCK_MERGE_BLOCK - block_number) * 14
+    return int((_MOCK_MERGE_TS - timedelta(seconds=offset)).timestamp())
 
 
 # ---------------------------------------------------------------------------
@@ -59,34 +78,48 @@ def _make_fetcher(tmp_path: Path, *, rpc_url: str = RPC_URL, retries: int = 2) -
     return GasFetcher(endpoints, tmp_path, sleep=lambda _: None, rng=random.Random(1))
 
 
-def _mock_fetch(rsp, url: str = RPC_URL, *, drop: int | None = None, dup: int | None = None):
-    """Register the fetch-path mock: batched eth_getBlockByNumber (authoritative header
-    fields; optionally a missing/duplicated block) + one eth_feeHistory (percentiles)."""
-    headers = {k: dict(v) for k, v in FIXTURE["block_headers"].items()}
+def _mock_fetch(rsp, url: str = RPC_URL, *, drop: int | None = None):
+    """Register the fetch-path mock: one eth_feeHistory (empty percentiles, ADR-005) +
+    one batched eth_getBlockByNumber for real timestamps per block."""
+    fee_history = dict(FIXTURE["fee_history"])
     if drop is not None:
-        headers.pop(hex(drop), None)
-    dup_hex = hex(dup) if dup is not None else None
+        # Remove the base fee for the dropped block to simulate a gap.
+        fee_history["baseFeePerGas"] = [
+            fee_history["baseFeePerGas"][i] for i in range(len(BLOCKS)) if BLOCKS[i] != drop
+        ]
+
+    def _batch_block_by_number_response(body: dict) -> tuple[int, dict, str]:
+        """Simulate a batch eth_getBlockByNumber response for all blocks in the range."""
+        blocks = BLOCKS[:]
+        if drop is not None:
+            blocks = [b for b in blocks if b != drop]
+        items = [
+            {
+                "jsonrpc": "2.0",
+                "id": i,
+                "result": {
+                    "number": hex(bn),
+                    "timestamp": hex(_mock_timestamp(bn)),
+                    "baseFeePerGas": "0x1",  # not consumed — base fees come from fee_history
+                },
+            }
+            for i, bn in enumerate(blocks)
+        ]
+        return 200, {}, json.dumps(items)
 
     def cb(request):
         body = json.loads(request.body or "{}")
-        if isinstance(body, list):  # batched eth_getBlockByNumber
-            results = []
-            for call in body:
-                hdr = headers.get(call["params"][0])
-                if hdr is None:
-                    continue  # dropped block -> no header -> a gap the fetcher must catch
-                results.append({"jsonrpc": "2.0", "id": call["id"], "result": hdr})
-                if dup_hex == call["params"][0]:
-                    results.append({"jsonrpc": "2.0", "id": -1, "result": hdr})
-            return 200, {}, json.dumps(results)
+        if isinstance(body, list):
+            # Batch call: eth_getBlockByNumber for timestamps
+            return _batch_block_by_number_response(body)
         method = body.get("method")
         if method == "eth_feeHistory":
             return (
                 200,
                 {},
-                json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": FIXTURE["fee_history"]}),
+                json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": fee_history}),
             )
-        raise AssertionError(f"unexpected single RPC method {method!r} in fetch mock")
+        raise AssertionError(f"unexpected method {method!r} in fetch mock")
 
     rsp.add_callback(responses.POST, url, callback=cb)
 
@@ -96,7 +129,20 @@ def _mock_index(rsp, *, ts_fn, latest: int, url: str = RPC_URL):
 
     def cb(request):
         body = json.loads(request.body or "{}")
-        assert isinstance(body, dict), "index mock sees only single (non-batch) calls"
+        if isinstance(body, list):
+            # Index code never sends batch calls — but be tolerant just in case.
+            items = [
+                {
+                    "jsonrpc": "2.0",
+                    "id": item.get("id", i),
+                    "result": {
+                        "number": item["params"][0],
+                        "timestamp": hex(ts_fn(int(item["params"][0], 16))),
+                    },
+                }
+                for i, item in enumerate(body)
+            ]
+            return 200, {}, json.dumps(items)
         method = body.get("method")
         if method == "eth_blockNumber":
             return 200, {}, json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": hex(latest)})
@@ -145,7 +191,8 @@ def test_gas_schema_conformance_no_forbidden_columns(mocked_http, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 2. Field decode: real big-int base fee, gas used/limit, UTC timestamp
+# 2. Field decode: real big-int base fee, zeroed gas_used/gas_limit, fetched timestamp
+#    (ADR-005).
 # ---------------------------------------------------------------------------
 
 
@@ -158,8 +205,9 @@ def test_field_decode_exact_integers(mocked_http, tmp_path):
     assert base0 == 12_000_000_000
     assert 1e9 < base0 < 1e11  # ~1e10 wei, realistic EIP-1559 base fee
 
-    assert int(table["gas_used"][1].as_py()) == 12_500_000
-    assert int(table["gas_limit"][0].as_py()) == 30_000_000
+    # gas_used and gas_limit are 0 (ADR-005 §Decision.5)
+    assert int(table["gas_used"][0].as_py()) == 0
+    assert int(table["gas_limit"][0].as_py()) == 0
     assert table["gas_used"].type == table["gas_limit"].type
 
     ts = table["block_timestamp"][0].as_py()
@@ -171,63 +219,68 @@ def test_field_decode_exact_integers(mocked_http, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 3. Percentiles from eth_feeHistory reward; reward=null -> 0 + warning
+# 3. Priority fee columns are zero (ADR-005 — flat tip surcharge replaces them)
 # ---------------------------------------------------------------------------
 
 
-def test_percentiles_and_null_reward(mocked_http, tmp_path):
+def test_priority_fees_are_zero_adr005(mocked_http, tmp_path):
     _mock_fetch(mocked_http)
     f = _make_fetcher(tmp_path)
-    result = f.fetch(_gas_request())
-    table = result.table
-    numbers = table["block_number"].to_pylist()
+    table = f.fetch(_gas_request()).table
 
-    # block 16200000 p50 / p90 from the fixture reward array
-    assert decode_uint(table["priority_fee_p50_wei"][0].as_py()) == 2_500_000_000
-    assert decode_uint(table["priority_fee_p90_wei"][0].as_py()) == 20_000_000_000
-    # spike block 16200004: p90 is the "get included during a spike" cost
-    assert decode_uint(table["priority_fee_p90_wei"][4].as_py()) == 120_000_000_000
-
-    # block 16200002 has reward=null (no transactions) -> both percentiles 0, flagged
-    idx = numbers.index(16200002)
-    assert decode_uint(table["priority_fee_p50_wei"][idx].as_py()) == 0
-    assert decode_uint(table["priority_fee_p90_wei"][idx].as_py()) == 0
-    assert any("reward=null" in w for w in result.warnings)
+    for col in ("priority_fee_p50_wei", "priority_fee_p90_wei"):
+        values = [decode_uint(v.as_py()) for v in table[col]]
+        assert all(v == 0 for v in values), f"{col}: all values must be 0 per ADR-005"
 
 
 # ---------------------------------------------------------------------------
-# 4. Completeness: a missing interior block raises ValidationError naming it;
-#    a contiguous range does not
+# 4. Completeness: a short baseFeePerGas array → PermanentFetchError
 # ---------------------------------------------------------------------------
 
 
-def test_gap_detection_names_first_missing_block(mocked_http, tmp_path):
+def test_gap_detection_short_fee_history(mocked_http, tmp_path):
+    """A short baseFeePerGas array is rejected (PermanentFetchError)."""
+    # Use drop to produce a short array
     _mock_fetch(mocked_http, drop=16200004)
-    f = _make_fetcher(tmp_path / "a")
-    with pytest.raises(ValidationError) as ei:
+    f = _make_fetcher(tmp_path)
+    # The fixture already only has 9 entries for 10 blocks — the fetcher should flag it.
+    # Actually the drop mechanism above just drops one entry from the array.
+    with pytest.raises(PermanentFetchError, match="baseFeePerGas entries"):
         f.fetch(_gas_request())
-    assert "16200004" in str(ei.value)
 
 
 def test_contiguous_range_ok_no_raise(mocked_http, tmp_path):
     _mock_fetch(mocked_http)
-    f = _make_fetcher(tmp_path / "b")
+    f = _make_fetcher(tmp_path)
     table = f.fetch(_gas_request()).table
     assert table.num_rows == len(BLOCKS)
 
 
 # ---------------------------------------------------------------------------
-# 5. Duplicate block in the response -> ValidationError
+# 5. Duplicate block in the response → ValidationError
 # ---------------------------------------------------------------------------
 
 
 def test_duplicate_block_validation_error(mocked_http, tmp_path):
-    _mock_fetch(mocked_http, dup=16200002)
+    """A duplicate block_number in rows triggers a validation error."""
+    _mock_fetch(mocked_http)
     f = _make_fetcher(tmp_path)
+    # The fetcher produces one row per block in the range — duplicates can only
+    # happen if the underlying data is corrupt. For this test we test the
+    # _check_contiguous guard directly: if the fetcher somehow produced two
+    # rows for the same block (which can't happen with the new approach but
+    # the guard still exists). We can't easily trigger it with the mock, so
+    # test it via the internal method.
+    rows = [
+        {"block_number": 16200000, "block_timestamp": 0, "base_fee_per_gas": 0,
+         "gas_used": 0, "gas_limit": 0, "priority_fee_p50_wei": 0, "priority_fee_p90_wei": 0},
+        {"block_number": 16200000, "block_timestamp": 0, "base_fee_per_gas": 0,
+         "gas_used": 0, "gas_limit": 0, "priority_fee_p50_wei": 0, "priority_fee_p90_wei": 0},
+    ]
     with pytest.raises(ValidationError) as ei:
-        f.fetch(_gas_request())
+        f._check_contiguous(rows, _gas_request())
     assert "duplicate" in str(ei.value).lower()
-    assert "16200002" in str(ei.value)
+    assert "16200000" in str(ei.value)
 
 
 # ---------------------------------------------------------------------------
@@ -281,17 +334,13 @@ def test_block_between_two_blocks_returns_earlier(mocked_http, tmp_path):
 
 
 def test_timestamp_for_block_and_block_roundtrip(mocked_http, tmp_path):
-    anchor, anchor_ts = min(FIXTURE_TS), FIXTURE_TS[min(FIXTURE_TS)]
-
     def ts_fn(b: int) -> int:
-        if b in FIXTURE_TS:
-            return FIXTURE_TS[b]
-        return anchor_ts + (b - anchor) * 12  # monotone fallback for intermediate blocks
+        return _mock_timestamp(b)
 
-    _mock_index(mocked_http, ts_fn=ts_fn, latest=max(FIXTURE_TS))
+    _mock_index(mocked_http, ts_fn=ts_fn, latest=max(BLOCKS))
     f = _make_fetcher(tmp_path)
 
-    for block in FIXTURE_TS:
+    for block in BLOCKS:
         ts = f.timestamp_for_block(BlockNumber(block))
         assert isinstance(ts, datetime) and ts.tzinfo is not None
         assert f.block_for_timestamp(ts) == block
@@ -313,36 +362,45 @@ def test_pre_london_block_request_rejected(mocked_http, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 9. gas_cost_wei: pure integer math, p90 > p50 when the percentiles differ
+# 9. gas_cost_wei: pure integer math with tip_surcharge_pct (ADR-005)
 # ---------------------------------------------------------------------------
 
 
 def test_gas_cost_wei_integer_math():
     row = {
         "base_fee_per_gas": "12000000000",  # 12 Gwei
-        "priority_fee_p50_wei": "2500000000",  # 2.5 Gwei
-        "priority_fee_p90_wei": "20000000000",  # 20 Gwei
     }
     gas_units = 210_000
-    cost = gas_cost_wei(row, gas_units, percentile=50)
+
+    # default 3% surcharge
+    cost = gas_cost_wei(row, gas_units)
     assert isinstance(cost, int) and not isinstance(cost, bool)
-    assert cost == (12_000_000_000 + 2_500_000_000) * 210_000
-    # p90 selection yields a strictly larger cost when percentiles differ
-    cost90 = gas_cost_wei(row, gas_units, percentile=90)
-    assert cost90 > cost
-    assert isinstance(cost90, int)
+    # base * 1.03 * gas_units = 12e9 * 103/100 * 210000
+    expected = 12_000_000_000 * 103 // 100 * 210_000
+    assert cost == expected
+
+    # tip_surcharge_pct=0 yields base only
+    cost0 = gas_cost_wei(row, gas_units, tip_surcharge_pct=0)
+    assert cost0 == 12_000_000_000 * 210_000
+
+    # tip_surcharge_pct=10 yields 10% uplift
+    cost10 = gas_cost_wei(row, gas_units, tip_surcharge_pct=10)
+    assert cost10 == 12_000_000_000 * 110 // 100 * 210_000
+    assert cost10 > cost
+
     # accepts int-typed values too
-    int_row = {k: int(v) for k, v in row.items()}
+    int_row = {"base_fee_per_gas": 12_000_000_000}
     assert gas_cost_wei(int_row, gas_units) == cost
-    # unsupported percentile is rejected
-    with pytest.raises(ValueError):
-        gas_cost_wei(row, gas_units, percentile=75)
+
+    # negative tip_surcharge_pct is rejected
+    with pytest.raises(ValueError, match="non-negative"):
+        gas_cost_wei(row, gas_units, tip_surcharge_pct=-1)
 
 
 def test_gas_cost_wei_uses_gas_units_never_hardcoded():
-    row = {"base_fee_per_gas": "1000000000", "priority_fee_p50_wei": "0"}
-    assert gas_cost_wei(row, 400_000) == 1_000_000_000 * 400_000
-    assert gas_cost_wei(row, 150_000) == 1_000_000_000 * 150_000
+    row = {"base_fee_per_gas": "1000000000"}
+    assert gas_cost_wei(row, 400_000) == 1_000_000_000 * 103 // 100 * 400_000
+    assert gas_cost_wei(row, 150_000) == 1_000_000_000 * 103 // 100 * 150_000
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +420,7 @@ def test_20x_spike_preserved_exactly(mocked_http, tmp_path):
         for i in (spike_idx - 1, spike_idx + 1)
     ]
     assert spike == 240_000_000_000  # the exact 20x value, bit-for-bit
-    assert spike >= 20 * max(neighbours)  # 20x above EITHER neighbour, no smoothng
+    assert spike >= 20 * max(neighbours)  # 20x above EITHER neighbour, no smoothing
     assert all(n != spike for n in neighbours)  # nothing averaged toward the spike
     # the whole column round-trips exactly: no value changed from the fixture
     raw = [int(h, 16) for h in FIXTURE["fee_history"]["baseFeePerGas"]]
@@ -383,7 +441,7 @@ def test_cache_hit_zero_network_and_secret_scrubbed(mocked_http, tmp_path, caplo
     with caplog.at_level("WARNING"):
         cold = f.fetch(_gas_request())
         assert cold.from_cache is False
-        assert cold.n_requests == 1
+        assert cold.n_requests == 1  # one chunk fetched (2 HTTP calls inside)
     calls_after_cold = len(mocked_http.calls)
     assert calls_after_cold > 0
 
@@ -405,37 +463,30 @@ def _mock_node(rsp, *, url: str = RPC_URL):
     """A single combined mock serving the index AND the fetch path on one URL.
 
     ``responses`` dispatches to the first matching callback only, so index and fetch must share
-    one handler. Blocks outside the fixture get a monotone virtual header (the constant-12s
-    chain both tests 6/7 rely on), so the binary search stays exact at the fixture's own blocks.
+    one handler. Handles both single RPC calls (index) and batch calls (timestamp fetch via
+    batched ``eth_getBlockByNumber``).
     """
-    start, end = BLOCKS[0], BLOCKS[-1]
-    base_ts = min(FIXTURE_TS.values())
+    end = BLOCKS[-1]
 
-    def virtual_header(bn: int) -> dict:
-        hx = hex(bn)
-        if hx in FIXTURE["block_headers"]:
-            return FIXTURE["block_headers"][hx]
-        return {
-            "number": hx,
-            "timestamp": hex(base_ts + (bn - start) * 12),
-            "baseFeePerGas": hex(10_000_000_000 + (bn % 1000) * 1_000_000),
-            "gasUsed": hex(8_000_000),
-            "gasLimit": hex(30_000_000),
-        }
+    def _batch_block_by_number_response(body: list) -> tuple[int, dict, str]:
+        items = [
+            {
+                "jsonrpc": "2.0",
+                "id": item.get("id", i),
+                "result": {
+                    "number": item["params"][0],
+                    "timestamp": hex(_mock_timestamp(int(item["params"][0], 16))),
+                    "baseFeePerGas": "0x1",
+                },
+            }
+            for i, item in enumerate(body)
+        ]
+        return 200, {}, json.dumps(items)
 
     def cb(request):
         body = json.loads(request.body or "{}")
-        if isinstance(body, list):  # batched eth_getBlockByNumber
-            results = []
-            for call in body:
-                results.append(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": call["id"],
-                        "result": virtual_header(int(call["params"][0], 16)),
-                    }
-                )
-            return 200, {}, json.dumps(results)
+        if isinstance(body, list):
+            return _batch_block_by_number_response(body)
         method = body.get("method")
         if method == "eth_blockNumber":
             return 200, {}, json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": hex(end)})
@@ -445,14 +496,23 @@ def _mock_node(rsp, *, url: str = RPC_URL):
                 200,
                 {},
                 json.dumps(
-                    {"jsonrpc": "2.0", "id": body["id"], "result": virtual_header(bn)}
+                    {
+                        "jsonrpc": "2.0",
+                        "id": body["id"],
+                        "result": {
+                            "number": hex(bn),
+                            "timestamp": hex(_mock_timestamp(bn)),
+                        },
+                    }
                 ),
             )
         if method == "eth_feeHistory":
             return (
                 200,
                 {},
-                json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": FIXTURE["fee_history"]}),
+                json.dumps(
+                    {"jsonrpc": "2.0", "id": body["id"], "result": FIXTURE["fee_history"]}
+                ),
             )
         raise AssertionError(f"unexpected RPC method {method!r} in combined mock")
 
@@ -467,8 +527,8 @@ def test_date_mode_fetch_resolves_bounds_via_block_index(mocked_http, tmp_path):
         pool=None,
         start_block=None,
         end_block=None,
-        start_utc=datetime.fromtimestamp(FIXTURE_TS[START], tz=UTC),
-        end_utc=datetime.fromtimestamp(FIXTURE_TS[END], tz=UTC),
+        start_utc=datetime.fromtimestamp(_mock_timestamp(START), tz=UTC),
+        end_utc=datetime.fromtimestamp(_mock_timestamp(END), tz=UTC),
     )
     result = f.fetch(request)
     table = result.table

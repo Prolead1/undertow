@@ -1,0 +1,43 @@
+# Undertow — USDC/WETH 0.30% pool: 1-month test window.
+# Slim window for pipeline smoke-testing: January 2024.
+
+[pool]
+address = "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8"
+token0_symbol = "USDC"
+token1_symbol = "WETH"
+token0_decimals = 6
+token1_decimals = 18
+fee_tier = 3000
+tick_spacing = 60
+deployment_block = 12370624
+
+[window]
+start_utc = "2024-01-01T00:00:00Z"
+end_utc = "2024-01-31T23:59:59Z"
+
+[regime]
+lookback_days = 30
+vol_threshold = 0.80
+drift_threshold = 0.05
+periods_per_year = 525600
+
+[endpoints]
+graph_url = "https://gateway.thegraph.com/api/${GRAPH_API_KEY}"
+rpc_url = "${ETH_RPC_URL}"
+reference_base_url = "https://api.binance.com"
+max_concurrency = 2
+max_retries = 8
+min_request_interval_s = 2.0
+
+[paths]
+cache_dir = "data/cache/eth_usdc_3000_test"
+output_dir = "data/datasets/eth_usdc_3000_test"
+
+[gas]
+tip_surcharge_pct = 3  # % uplift on base_fee_per_gas to approximate priority fees (ADR-005)
+
+[gas.units]
+mint = 400000
+burn = 250000
+collect = 150000
+swap = 180000

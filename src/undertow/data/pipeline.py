@@ -41,7 +41,7 @@ from undertow.data.pipeline_report import (
     SnapshotReport,
     StreamPullResult,
 )
-from undertow.data.schemas import SCHEMA_REGISTRY, SCHEMA_VERSION
+from undertow.data.schemas import SCHEMA_VERSION
 from undertow.data.storage.manifest import (
     DatasetManifest,
     StreamManifest,
@@ -73,16 +73,25 @@ LOGGER = logging.getLogger("undertow.data.pipeline")
 _LOG_STREAMS: tuple[str, ...] = ("swap", "mint", "burn", "collect")
 """The four log streams the tape unions."""
 
-_ALL_STREAMS: tuple[str, ...] = (
+_DEFAULT_STREAMS: tuple[str, ...] = (
     "swap",
     "mint",
     "burn",
     "collect",
-    "fee_growth",
     "gas",
     "reference",
     "regime",
 )
+"""Streams a bare ``pull`` / ``snapshot`` fetches. Excludes ``fee_growth``: its
+block-range sampling strategy (T14 brief: lifecycle boundaries + a regular stride)
+is not implemented — :class:`RpcFetcher` exposes per-block ``fee_growth_at`` calls,
+not a range, so it cannot flow through the generic ``fetch`` path. Requesting it
+explicitly yields a clear error (see ``_pull_one_stream``); the tape and validation
+treat it as optional (``check_liquidity_conservation`` / ``reconcile_fees_against_collect``
+report ``skipped`` rather than fail)."""
+
+_VALID_STREAMS: frozenset[str] = frozenset(_DEFAULT_STREAMS) | {"fee_growth"}
+"""Every stream name ``--stream`` accepts (a superset of the default pull set)."""
 
 
 # ---------------------------------------------------------------------------
@@ -169,11 +178,11 @@ def pull(
     a re-run with a warm cache makes zero network requests. The manifest is NOT
     written here — ``snapshot()`` writes it after a successful verify.
     """
-    requested = tuple(streams) if streams is not None else _ALL_STREAMS
+    requested = tuple(streams) if streams is not None else _DEFAULT_STREAMS
     for s in requested:
-        if s not in _ALL_STREAMS:
+        if s not in _VALID_STREAMS:
             raise ConfigError(
-                f"Unknown stream {s!r}; expected one of {sorted(_ALL_STREAMS)}"
+                f"Unknown stream {s!r}; expected one of {sorted(_VALID_STREAMS)}"
             )
 
     fetchers = _make_fetchers(config)
@@ -262,11 +271,11 @@ def _pull_one_stream(
     elif stream == "regime":
         return _compute_regime(config, output_dir)
     elif stream == "fee_growth":
-        fetcher = fetchers["rpc"]  # type: ignore[assignment]
-        used_route = Route.RPC
-        request = FetchRequest(
-            stream="fee_growth", pool=pool,
-            start_block=start_block, end_block=end_block,
+        raise FetchError(
+            "fee_growth is not part of the default pull and has no block-range fetch: "
+            "the T14 sampling strategy (position-lifecycle boundaries + a regular stride) "
+            "is not implemented yet. RpcFetcher.fee_growth_at(pool, block, ticks) provides "
+            "per-block snapshots; T10's replay covers the gaps between samples."
         )
     else:
         if force_route == Route.RPC:
@@ -280,7 +289,10 @@ def _pull_one_stream(
             start_block=start_block, end_block=end_block,
         )
 
-    LOGGER.info("pull: fetching %s via %s [%d..%d]", stream, used_route.value, start_block, end_block)
+    LOGGER.info(
+        "pull: fetching %s via %s [%d..%d]",
+        stream, used_route.value, start_block, end_block,
+    )
     result: FetchResult = fetcher.fetch(request)
 
     sm = write_stream(

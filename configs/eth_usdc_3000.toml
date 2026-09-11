@@ -50,6 +50,9 @@ output_dir = "data/datasets/eth_usdc_3000"
 # Order-of-magnitude gas estimates for the NonfungiblePositionManager path (mint/burn/collect)
 # plus a ballpark swap figure. Overrides the defaults in undertow.data.config.GAS_UNITS; T14 /
 # undertow.sim may calibrate these against real receipts without touching code.
+[gas]
+tip_surcharge_pct = 3  # % uplift on base_fee_per_gas to approximate priority fees (ADR-005)
+
 [gas.units]
 mint = 400000
 burn = 250000

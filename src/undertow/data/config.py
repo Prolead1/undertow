@@ -244,6 +244,7 @@ class EndpointConfig:
     max_concurrency: int = 4
     request_timeout_s: float = 30.0
     max_retries: int = 5
+    min_request_interval_s: float = 0.0
 
     def __repr__(self) -> str:
         return (
@@ -270,6 +271,9 @@ class DataConfig:
     # Extension (defaulted, keyword-safe): lets T14/undertow.sim calibrate gas cost without
     # touching config.py; overridden from the `[gas.units]` TOML section when present.
     gas_units: Mapping[str, int] = GAS_UNITS
+    # Flat surcharge percentage on base fee to approximate priority fees (ADR-005).
+    # 0 = no surcharge, 3 = 3% uplift (the post-EIP-1559 average ratio).
+    tip_surcharge_pct: int = 3
 
 
 # ---------------------------------------------------------------------------
@@ -303,10 +307,11 @@ _ENDPOINT_KEYS = frozenset(
         "max_concurrency",
         "request_timeout_s",
         "max_retries",
+        "min_request_interval_s",
     }
 )
 _PATH_KEYS = frozenset({"cache_dir", "output_dir"})
-_GAS_KEYS = frozenset({"units"})
+_GAS_KEYS = frozenset({"units", "tip_surcharge_pct"})
 _GAS_UNIT_KEYS = frozenset({"mint", "burn", "collect", "swap"})
 
 
@@ -463,6 +468,7 @@ def _parse_endpoints(section: Mapping[str, object], where: str) -> EndpointConfi
     concurrent = _opt_int(section, "max_concurrency", f"{where}[endpoints]")
     timeout = _opt_float(section, "request_timeout_s", f"{where}[endpoints]")
     retries = _opt_int(section, "max_retries", f"{where}[endpoints]")
+    min_interval = _opt_float(section, "min_request_interval_s", f"{where}[endpoints]")
     # Fallbacks mirror the EndpointConfig defaults.
     if concurrent is not None and concurrent < 1:
         raise ConfigError(f"{where}[endpoints]: max_concurrency must be >= 1, got {concurrent}")
@@ -470,6 +476,11 @@ def _parse_endpoints(section: Mapping[str, object], where: str) -> EndpointConfi
         raise ConfigError(f"{where}[endpoints]: request_timeout_s must be > 0, got {timeout}")
     if retries is not None and retries < 0:
         raise ConfigError(f"{where}[endpoints]: max_retries must be >= 0, got {retries}")
+    if min_interval is not None and min_interval < 0:
+        raise ConfigError(
+            f"{where}[endpoints]: min_request_interval_s must be >= 0, "
+            f"got {min_interval}"
+        )
     return EndpointConfig(
         graph_url=_expand_env(
             _need_str(section, "graph_url", f"{where}[endpoints]"), f"{where}[endpoints]"
@@ -483,26 +494,54 @@ def _parse_endpoints(section: Mapping[str, object], where: str) -> EndpointConfi
         max_concurrency=concurrent if concurrent is not None else 4,
         request_timeout_s=timeout if timeout is not None else 30.0,
         max_retries=retries if retries is not None else 5,
+        min_request_interval_s=min_interval if min_interval is not None else 0.0,
     )
 
 
-def _parse_gas(section: Mapping[str, object], where: str) -> Mapping[str, int]:
-    """Optional `[gas.units]` section overriding GAS_UNITS; missing section => defaults."""
+def _parse_gas(section: Mapping[str, object], where: str) -> tuple[Mapping[str, int], int]:
+    """Optional `[gas]` section: `tip_surcharge_pct` + `[gas.units]` overriding GAS_UNITS.
+
+    Missing section => defaults. Returns (gas_units, tip_surcharge_pct).
+    """
     if not section:
-        return GAS_UNITS
+        return GAS_UNITS, 3
     _check_unknown(section, _GAS_KEYS, f"{where}[gas]")
-    units = _table(section, "units", f"{where}[gas]")
+
+    # tip_surcharge_pct
+    tip = section.get("tip_surcharge_pct")
+    if tip is not None:
+        if not isinstance(tip, int):
+            raise ConfigError(
+                f"{where}[gas]: tip_surcharge_pct must be an integer, got {tip!r}"
+            )
+        if tip < 0:
+            raise ConfigError(
+                f"{where}[gas]: tip_surcharge_pct must be >= 0, got {tip}"
+            )
+    tip_surcharge_pct = tip if tip is not None else 3
+
+    # gas.units
+    if "units" not in section:
+        return GAS_UNITS, tip_surcharge_pct
+    units = section["units"]
+    if not isinstance(units, dict):
+        raise ConfigError(
+            f"{where}[gas.units]: must be a table, got {units!r}"
+        )
     if set(units) != set(_GAS_UNIT_KEYS):
         raise ConfigError(
-            f"{where}[gas.units]: must define exactly {sorted(_GAS_UNIT_KEYS)}; got {sorted(units)}"
+            f"{where}[gas.units]: must define exactly {sorted(_GAS_UNIT_KEYS)}; "
+            f"got {sorted(units)}"
         )
     out: dict[str, int] = {}
     for key in _GAS_UNIT_KEYS:
         value = _need_int(units, key, f"{where}[gas.units]")
         if value <= 0:
-            raise ConfigError(f"{where}[gas.units]: {key} must be a positive integer, got {value}")
+            raise ConfigError(
+                f"{where}[gas.units]: {key} must be a positive integer, got {value}"
+            )
         out[key] = value
-    return MappingProxyType(out)
+    return MappingProxyType(out), tip_surcharge_pct
 
 
 def load_config(path: str | Path) -> DataConfig:
@@ -533,7 +572,9 @@ def load_config(path: str | Path) -> DataConfig:
     gas = raw.get("gas")
     if gas is not None and not isinstance(gas, dict):
         raise ConfigError(f"{where}: section [gas] must be a table, got {gas!r}")
-    gas_units = _parse_gas(gas if isinstance(gas, dict) else {}, where)
+    gas_units, tip_surcharge_pct = _parse_gas(
+        gas if isinstance(gas, dict) else {}, where
+    )
     return DataConfig(
         pool=pool,
         window=window,
@@ -542,6 +583,7 @@ def load_config(path: str | Path) -> DataConfig:
         cache_dir=cache_dir,
         output_dir=output_dir,
         gas_units=gas_units,
+        tip_surcharge_pct=tip_surcharge_pct,
     )
 
 

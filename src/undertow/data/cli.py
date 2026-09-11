@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from undertow.data.config import DataConfig, load_config
+from undertow.data.logging_setup import configure_logging
 from undertow.data.pipeline import (
     info,
     pull,
@@ -41,6 +42,18 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="re-raise exceptions with full tracebacks (default: clean error messages)",
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        default=False,
+        help="debug-level logging to stderr (default: info)",
+    )
+    parser.add_argument(
+        "--quiet", "-q",
+        action="store_true",
+        default=False,
+        help="warning-level logging to stderr (default: info)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -365,6 +378,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     debug: bool = args.debug
+
+    if args.verbose and args.quiet:
+        parser.error("--verbose and --quiet are mutually exclusive")
+    if args.verbose:
+        configure_logging(level="DEBUG")
+    elif args.quiet:
+        configure_logging(level="WARNING")
+    else:
+        configure_logging()  # default INFO
 
     try:
         if args.command == "pull":
