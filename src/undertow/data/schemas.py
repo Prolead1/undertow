@@ -148,14 +148,11 @@ _FEE_GROWTH_UNITS: dict[str, str] = {
 
 _GAS_UNITS: dict[str, str] = {
     "block_number": "block height; one row per block, no gaps (int64)",
-    "block_timestamp": "block time, UTC (timestamp[us])",
     "base_fee_per_gas": "wei, EIP-1559 base fee (uint256)",
     "gas_used": "block gas used (int64)",
     "gas_limit": "block gas limit (int64)",
     "priority_fee_p50_wei": "median effective priority fee of txs in the block (uint256)",
     "priority_fee_p90_wei": "90th percentile effective priority fee — the spike cost (uint256)",
-    "eth_usd_price": "USD price of ETH at the block's prevailing price; null as written by "
-    "T07, populated by T11 via a backward as-of join (float64)",
 }
 
 _REFERENCE_UNITS: dict[str, str] = {
@@ -309,13 +306,11 @@ GAS_SCHEMA: Final[pa.Schema] = _build_schema(
     "gas",
     [
         pa.field("block_number", pa.int64(), nullable=False),
-        pa.field("block_timestamp", pa.timestamp("us", tz="UTC"), nullable=False),
         pa.field("base_fee_per_gas", pa.string(), nullable=False),
         pa.field("gas_used", pa.int64(), nullable=False),
         pa.field("gas_limit", pa.int64(), nullable=False),
         pa.field("priority_fee_p50_wei", pa.string(), nullable=False),
         pa.field("priority_fee_p90_wei", pa.string(), nullable=False),
-        pa.field("eth_usd_price", pa.float64(), nullable=True),
     ],
     _GAS_UNITS,
 )

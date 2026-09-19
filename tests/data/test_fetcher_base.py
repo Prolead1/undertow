@@ -89,6 +89,7 @@ def _maker(
     url: str = STUB_URL,
     max_retries: int = 3,
     max_concurrency: int = 1,
+    min_interval: float = 0.0,
     cache_endpoint: str | None = None,
     seed: int = 1,
 ) -> _StubFetcher:
@@ -99,6 +100,7 @@ def _maker(
         max_concurrency=max_concurrency,
         request_timeout_s=5.0,
         max_retries=max_retries,
+        min_request_interval_s=min_interval,
     )
     return _StubFetcher(
         url,
@@ -190,6 +192,52 @@ def test_retry_after_seconds_float_value(mocked_http, tmp_path: Path) -> None:
     mocked_http.add(responses.POST, STUB_URL, json=[], status=200)
     f.fetch_rows(_req(start=1, end=1))
     assert sleeps == [0.5]
+
+
+def test_request_paces_every_call_not_just_each_chunk(
+    mocked_http, tmp_path: Path
+) -> None:
+    """``min_request_interval_s`` throttles *every* ``_request``, not once per chunk.
+
+    A chunk that fans out into several RPC calls would otherwise fire them back-to-back
+    and burst past a provider's CUPS bucket. The first request has nothing to wait for;
+    the second must be paced.
+    """
+    sleeps: list[float] = []
+    f = _maker(tmp_path, min_interval=0.5)
+    f._sleep = sleeps.append
+    mocked_http.add(responses.POST, STUB_URL, json=[], status=200)
+    mocked_http.add(responses.POST, STUB_URL, json=[], status=200)
+
+    f._request(STUB_URL, method="POST", json={}, context="first")
+    f._request(STUB_URL, method="POST", json={}, context="second")
+
+    assert len(sleeps) == 1  # only the second request had a predecessor to pace against
+    assert 0.0 <= sleeps[0] <= 0.5  # waits at most min_request_interval_s
+
+
+def test_raise_for_jsonrpc_classifies_compute_units_as_transient(
+    tmp_path: Path,
+) -> None:
+    """Alchemy CUPS throttle inside an HTTP 200 body is retryable, not permanent."""
+    f = _maker(tmp_path)
+    with pytest.raises(RateLimitError):
+        f._raise_for_jsonrpc(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {
+                    "code": 429,
+                    "message": "Your app has exceeded its compute units per second capacity",
+                },
+            },
+            "ctx",
+        )
+    with pytest.raises(PermanentFetchError):
+        f._raise_for_jsonrpc(
+            {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "boom"}},
+            "ctx",
+        )
 
 
 # ---------------------------------------------------------------------------

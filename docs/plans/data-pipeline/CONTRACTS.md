@@ -387,16 +387,18 @@ One row per `(block_number, tick)` observation, plus global rows.
 
 ### 4.5 `gas` (T07) — complete column list
 
+> **ADR-006:** gas is **base-fee only**. Per-block timestamps and `eth_usd_price` were removed —
+> the event tape carries block timestamps (free, from the event logs) and converts gas to USD via
+> its own `price_reference` as-of join.
+
 | Column | Type | Notes |
 |---|---|---|
 | `block_number` | `int64` | one row **per block** in the window — no gaps allowed; the sort key |
-| `block_timestamp` | `timestamp[us,UTC]` | |
 | `base_fee_per_gas` | `string`→`int` | wei, EIP-1559 |
 | `gas_used` | `int64` | always `0` — not consumed by any module (ADR-005) |
-| `gas_limit` | `int64` | always `0` — not consumed by any module | |
+| `gas_limit` | `int64` | always `0` — not consumed by any module |
 | `priority_fee_p50_wei` | `string`→`int` | always `"0"` — flat `tip_surcharge_pct` replaces per-block resolution (ADR-005) |
 | `priority_fee_p90_wei` | `string`→`int` | always `"0"` — not consumed by any module; kept for schema compat only |
-| `eth_usd_price` | `float64` | **nullable, always null as written by T07.** Populated by T11 (§6.2) via a backward as-of join from `reference.close`, so that a gas cost can be expressed in USD at the block's prevailing price. T07 does not fetch prices. |
 
 No `log_index`, `tx_hash`, `pool_address` or `event_type`: `gas` is a **non-log, chain-wide** stream
 (§4.0). It is not partitioned per pool — both pinned pools share one gas table.

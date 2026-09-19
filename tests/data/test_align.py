@@ -38,7 +38,6 @@ from undertow.data.storage.parquet import content_hash
 from undertow.data.transforms.align import (
     Dataset,
     assert_no_lookahead,
-    attach_reference_prices,
     build_event_tape,
 )
 from undertow.data.types import BlockNumber, Regime, ValidationError
@@ -538,30 +537,9 @@ def test_dataset_require() -> None:
     assert "undertow-data pull" in str(ei2.value)
 
 
-# ---------------------------------------------------------------------------
-# 11. gas.eth_usd_price populated by the join
-# ---------------------------------------------------------------------------
-
-
-def test_gas_eth_usd_price_populated() -> None:
-    """gas.eth_usd_price is populated by a backward as-of join and is null only in
-    pre-history (no prior reference bar)."""
-    data = build_tiny_dataset()
-    enriched = attach_reference_prices(data.gas, data.reference)
-    bn = enriched.column("block_number").to_pylist()
-    price = enriched.column("eth_usd_price").to_pylist()
-    prehistory = data.physical_constants["prehistory_blocks"]
-    for b in range(prehistory):
-        assert price[bn.index(b + 17_000_000)] is None
-    # A bar exists well before the last block -> non-null and positive.
-    later_val = price[bn.index(17_000_000 + prehistory)]
-    assert later_val is not None and later_val > 0
-
-
-def test_gas_eth_usd_price_idempotent() -> None:
-    data = build_tiny_dataset()
-    enriched = attach_reference_prices(data.gas, data.reference)
-    enriched2 = attach_reference_prices(enriched, data.reference)
-    assert content_hash(enriched.select([f.name for f in GAS_SCHEMA])) == content_hash(
-        enriched2.select([f.name for f in GAS_SCHEMA])
-    )
+# ----------------------------------------------------------------------------
+# 11. Gas stream is base-fee only; tape carries the reference price (ADR-006)
+# ----------------------------------------------------------------------------
+# ``attach_reference_prices`` was removed with the per-block gas timestamp column;
+# USD conversion now happens on the tape via ``price_reference`` (exercised by the
+# as-of join tests in section 4 above).

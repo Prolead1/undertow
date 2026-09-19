@@ -48,7 +48,7 @@ exist so T09 and T14 never have to infer any of this.
 
 4. **Nullability is declared, not incidental.** Be explicit per field, and write the nullability table
    into `docs/schema_notes.md`. Notably:
-   - `gas.eth_usd_price` is nullable (T07 writes null; T11 joins it in).
+   - `gas` has no nullable fields (ADR-006: `block_timestamp`/`eth_usd_price` removed).
    - `fee_growth.fee_growth_outside_*` are nullable (null on global-only rows).
    - `mint.sender` is **nullable**, and is **null** — not `""` — on burn rows and wherever else it does
      not apply. `CONTRACTS.md` §4.2 makes this a project-wide rule: an absent value is null, never an

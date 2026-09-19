@@ -480,13 +480,11 @@ def build_tiny_dataset() -> TinyDataset:
         gas_rows.append(
             {
                 "block_number": _bn(index),
-                "block_timestamp": _ts(index),
                 "base_fee_per_gas": _s(600_000_000_000 if spike else 30_000_000_000),
                 "gas_used": 12_000_000 if not spike else 29_000_000,
                 "gas_limit": 30_000_000,
                 "priority_fee_p50_wei": _s(40_000_000_000 if spike else 2_000_000_000),
                 "priority_fee_p90_wei": _s(120_000_000_000 if spike else 14_000_000_000),
-                "eth_usd_price": None,
             }
         )
     gas = _table(GAS_SCHEMA, gas_rows)

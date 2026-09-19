@@ -31,3 +31,6 @@ logs/
 
 # OS
 .DS_Store
+
+# Coverage artifacts
+.coverage

@@ -99,6 +99,8 @@ TRANSIENT_ERROR_PATTERNS: frozenset[str] = frozenset(
         "slow down",
         "please try again",
         "429",
+        # Alchemy CUPS throttle arrives as a JSON-RPC error body inside an HTTP 200.
+        "compute units",
     }
 )
 
@@ -441,6 +443,7 @@ class BaseHttpFetcher:
         attempt = 0
         while True:
             try:
+                self._pace()
                 response = self._session.request(
                     method, url, headers=headers, json=json, timeout=self._timeout
                 )
@@ -515,7 +518,9 @@ class BaseHttpFetcher:
     def _pace(self) -> None:
         """Sleep to respect ``min_request_interval_s`` between HTTP requests.
 
-        Idempotent in tests — a mock ``_sleep`` that immediately returns is the
+        Called before **every** network request (see :meth:`_request`), not once per chunk,
+        so a chunk that fans out into several RPC calls cannot burst past a provider's
+        CUPS bucket. Idempotent in tests — a mock ``_sleep`` that immediately returns is the
         canonical way to skip pacing. Thread-safe enough for the current
         ThreadPoolExecutor usage: two threads racing on ``_last_request`` may both
         see a stale value, but the point is to reduce burstiness, not enforce a
@@ -568,7 +573,6 @@ class BaseHttpFetcher:
         cached = self._cache_read(request, start, end)
         if cached is not None:
             return cached, True
-        self._pace()
         rows = self._fetch_chunk_adaptive(request, start, end)
         self._cache_write(request, start, end, rows)
         return rows, False
