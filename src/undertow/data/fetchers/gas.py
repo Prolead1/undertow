@@ -262,6 +262,13 @@ class GasFetcher(BaseHttpFetcher):
 
         No reward percentiles are requested — archive nodes reject them (ADR-005 §Problem.1).
         The response carries ``baseFeePerGas[]`` aligned to blocks via ``oldestBlock``.
+
+        EIP-1559 returns ``block_count + 1`` base-fee entries: entry ``i`` (``i`` in
+        ``[0, block_count)``) belongs to block ``oldestBlock + i``, and the trailing entry is
+        the *projected* base fee for the block after ``newestBlock``. Only the first
+        ``block_count`` are consumed; the trailing projection is never read as a row. An
+        array genuinely shorter than ``block_count`` still raises, so a gap can never be
+        silently interpreted as a zero fee.
         """
         block_count = end - start + 1
         result = self._rpc(
@@ -278,16 +285,13 @@ class GasFetcher(BaseHttpFetcher):
             )
         oldest = result.get("oldestBlock")
         anchor = _from_hex(oldest) if isinstance(oldest, str) else start
-        out: dict[int, int] = {}
-        for i, fee in enumerate(base_fees):
-            out[anchor + i] = _from_hex(fee)
-        if len(out) != block_count:
+        if len(base_fees) < block_count:
             raise PermanentFetchError(
-                f"{context}: eth_feeHistory returned {len(out)} baseFeePerGas entries for "
-                f"{block_count} blocks ({start}..{end}); refusing to interpret trailing "
+                f"{context}: eth_feeHistory returned {len(base_fees)} baseFeePerGas entries "
+                f"for {block_count} blocks ({start}..{end}); refusing to interpret missing "
                 "blocks as zero-fee"
             )
-        return out
+        return {anchor + i: _from_hex(base_fees[i]) for i in range(block_count)}
 
     # ------------------------------------------------------------------
     # The block index (public, owns date->block resolution; ADR-003)
