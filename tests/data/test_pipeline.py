@@ -401,6 +401,97 @@ def test_snapshot_manifest_json_valid(tmp_path: Path, tiny_dataset) -> None:
     assert "9999/graph" not in raw  # only the host, not the path
 
 
+def test_snapshot_fresh_output_dir_writes_manifest(tmp_path: Path, tiny_dataset) -> None:
+    """snapshot() works on a bare output dir with streams but no pre-written manifest.
+
+    ``build()``/``verify()`` read the manifest from disk, so snapshot() must write a
+    provisional manifest between pull and verify; without this a live first-run
+    snapshot fails with "No manifest found" (regression test).
+    """
+    from undertow.data.fetchers.base import FetchResult
+    from undertow.data.fetchers.gas import GasFetcher
+    from undertow.data.fetchers.reference import ReferenceFetcher
+    from undertow.data.fetchers.thegraph import TheGraphFetcher
+
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    config = _write_tiny_streams(tiny_dataset, output_dir)
+    (output_dir / "manifest.json").unlink()  # streams present, manifest absent
+
+    def fake_logs_fetch(self, request: FetchRequest) -> FetchResult:
+        return FetchResult(
+            table=tiny_dataset.streams[request.stream],
+            route=self.route,
+            request=request,
+            n_requests=1,
+            from_cache=False,
+            warnings=(),
+        )
+
+    def fake_table_fetch(table):
+        def fake(self, request: FetchRequest) -> FetchResult:
+            return FetchResult(
+                table=table, route=self.route, request=request,
+                n_requests=1, from_cache=False, warnings=(),
+            )
+        return fake
+
+    with (
+        patch.object(TheGraphFetcher, "fetch", fake_logs_fetch),
+        patch.object(GasFetcher, "fetch", fake_table_fetch(tiny_dataset.gas)),
+        patch.object(ReferenceFetcher, "fetch", fake_table_fetch(tiny_dataset.reference)),
+    ):
+        report = snapshot(config)
+
+    assert (output_dir / "manifest.json").exists()
+    assert report.manifest_path.exists()
+
+
+def test_snapshot_critical_failure_removes_provisional_manifest(
+    tmp_path: Path, tiny_dataset
+) -> None:
+    """A critical check failure leaves no manifest behind (manifest-last invariant)."""
+    from undertow.data.types import CheckResult
+
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    config = _write_tiny_streams(tiny_dataset, output_dir)
+    good_report = pull(config)  # a valid, all-cached pull report
+    (output_dir / "manifest.json").unlink()
+
+    failed = [
+        CheckResult(
+            name="check_x", passed=False, severity="critical", detail="boom",
+        )
+    ]
+    with (
+        patch("undertow.data.pipeline.pull", return_value=good_report),
+        patch("undertow.data.pipeline.verify", return_value=failed),
+    ):
+        with pytest.raises(ValidationError):
+            snapshot(config)
+
+    assert not (output_dir / "manifest.json").exists()
+
+
+def test_snapshot_exception_removes_provisional_manifest(tmp_path: Path, tiny_dataset) -> None:
+    """An exception mid-verify removes the provisional manifest and re-raises."""
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    config = _write_tiny_streams(tiny_dataset, output_dir)
+    good_report = pull(config)
+    (output_dir / "manifest.json").unlink()
+
+    with (
+        patch("undertow.data.pipeline.pull", return_value=good_report),
+        patch("undertow.data.pipeline.verify", side_effect=RuntimeError("boom")),
+    ):
+        with pytest.raises(RuntimeError):
+            snapshot(config)
+
+    assert not (output_dir / "manifest.json").exists()
+
+
 # ---------------------------------------------------------------------------
 # info tests
 # ---------------------------------------------------------------------------
