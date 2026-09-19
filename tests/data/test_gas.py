@@ -83,7 +83,8 @@ def _mock_fetch(rsp, url: str = RPC_URL, *, drop: int | None = None):
     one batched eth_getBlockByNumber for real timestamps per block."""
     fee_history = dict(FIXTURE["fee_history"])
     if drop is not None:
-        # Remove the base fee for the dropped block to simulate a gap.
+        # Remove the base fee for the dropped block to simulate a short array. The slice
+        # over range(len(BLOCKS)) deliberately ignores the trailing blockCount+1 projection.
         fee_history["baseFeePerGas"] = [
             fee_history["baseFeePerGas"][i] for i in range(len(BLOCKS)) if BLOCKS[i] != drop
         ]
@@ -240,11 +241,8 @@ def test_priority_fees_are_zero_adr005(mocked_http, tmp_path):
 
 def test_gap_detection_short_fee_history(mocked_http, tmp_path):
     """A short baseFeePerGas array is rejected (PermanentFetchError)."""
-    # Use drop to produce a short array
     _mock_fetch(mocked_http, drop=16200004)
     f = _make_fetcher(tmp_path)
-    # The fixture already only has 9 entries for 10 blocks — the fetcher should flag it.
-    # Actually the drop mechanism above just drops one entry from the array.
     with pytest.raises(PermanentFetchError, match="baseFeePerGas entries"):
         f.fetch(_gas_request())
 
@@ -253,6 +251,24 @@ def test_contiguous_range_ok_no_raise(mocked_http, tmp_path):
     _mock_fetch(mocked_http)
     f = _make_fetcher(tmp_path)
     table = f.fetch(_gas_request()).table
+    assert table.num_rows == len(BLOCKS)
+
+
+def test_fee_history_trailing_projection_ignored(mocked_http, tmp_path) -> None:
+    """EIP-1559 ``eth_feeHistory`` returns ``blockCount + 1`` base fees.
+
+    The trailing entry is the *projected* fee for ``newestBlock + 1``: it must not be
+    emitted as a row, and it must not shift the ``oldestBlock``-anchored mapping.
+    """
+    _mock_fetch(mocked_http)
+    f = _make_fetcher(tmp_path)
+    table = f.fetch(_gas_request()).table
+
+    fees = FIXTURE["fee_history"]["baseFeePerGas"]
+    assert len(fees) == len(BLOCKS) + 1  # fixture encodes the spec shape
+    expected = [int(h, 16) for h in fees[: len(BLOCKS)]]
+    got = [decode_uint(v.as_py()) for v in table["base_fee_per_gas"]]
+    assert got == expected
     assert table.num_rows == len(BLOCKS)
 
 
@@ -422,8 +438,10 @@ def test_20x_spike_preserved_exactly(mocked_http, tmp_path):
     assert spike == 240_000_000_000  # the exact 20x value, bit-for-bit
     assert spike >= 20 * max(neighbours)  # 20x above EITHER neighbour, no smoothing
     assert all(n != spike for n in neighbours)  # nothing averaged toward the spike
-    # the whole column round-trips exactly: no value changed from the fixture
-    raw = [int(h, 16) for h in FIXTURE["fee_history"]["baseFeePerGas"]]
+    # the whole column round-trips exactly: no value changed from the fixture. The fixture
+    # carries the EIP-1559 trailing projection (blockCount+1); only the first len(BLOCKS)
+    # entries map to the requested range.
+    raw = [int(h, 16) for h in FIXTURE["fee_history"]["baseFeePerGas"]][: len(BLOCKS)]
     assert [decode_uint(v) for v in table["base_fee_per_gas"].to_pylist()] == raw
 
 
