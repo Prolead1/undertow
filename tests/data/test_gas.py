@@ -26,6 +26,7 @@ from undertow.data.fetchers.base import FetchRequest, FetchResult
 from undertow.data.fetchers.gas import (
     EIP1559_LONDON_BLOCK,
     GasFetcher,
+    MAX_JSONRPC_BATCH_SIZE,
     gas_cost_wei,
 )
 from undertow.data.schemas import GAS_SCHEMA, decode_uint, validate_table
@@ -298,6 +299,60 @@ def test_header_batches_stay_within_provider_cap(mocked_http, tmp_path, monkeypa
     # Timestamps from every sub-batch land on the right block: the merge is value-correct.
     timestamps = [int(v.as_py().timestamp()) for v in table["block_timestamp"]]
     assert timestamps == [_mock_timestamp(bn) for bn in BLOCKS]
+
+
+def test_batch_headers_once_rejects_oversize_batch(tmp_path) -> None:
+    """A caller that bypasses the split and asks for too many blocks fails locally."""
+    f = _make_fetcher(tmp_path)
+    oversize = [0] * (MAX_JSONRPC_BATCH_SIZE + 1)
+    with pytest.raises(ValueError, match="split before calling"):
+        f._batch_headers_once(oversize, "test context")
+
+
+def test_batch_headers_once_retries_cups_error_item(mocked_http, tmp_path) -> None:
+    """A CUPS throttle inside a 200 body is transient and retried, not permanent.
+
+    Alchemy can answer an HTTP 200 whose per-item ``error`` is a compute-units-per-second
+    throttle; the retry loop must catch it and re-issue the batch.
+    """
+    f = _make_fetcher(tmp_path)
+    blocks = BLOCKS[:3]
+    attempts = {"n": 0}
+
+    def cb(request):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            items = [
+                {
+                    "jsonrpc": "2.0",
+                    "id": i,
+                    "error": {
+                        "code": 429,
+                        "message": "Your app has exceeded its compute units per second capacity",
+                    },
+                }
+                for i in range(len(blocks))
+            ]
+            return (200, {}, json.dumps(items))
+        items = [
+            {
+                "jsonrpc": "2.0",
+                "id": i,
+                "result": {
+                    "number": hex(bn),
+                    "timestamp": hex(_mock_timestamp(bn)),
+                    "baseFeePerGas": "0x1",
+                },
+            }
+            for i, bn in enumerate(blocks)
+        ]
+        return (200, {}, json.dumps(items))
+
+    mocked_http.add_callback(responses.POST, RPC_URL, callback=cb)
+    out = f._batch_headers_once(blocks, "test context")
+
+    assert out == {bn: _mock_timestamp(bn) for bn in blocks}
+    assert attempts["n"] == 2  # first attempt throttled, second succeeded
 
 
 # ---------------------------------------------------------------------------

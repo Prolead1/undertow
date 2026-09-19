@@ -77,13 +77,23 @@ FEE_HISTORY_BLOCK_COUNT: int = 1024
 """Max ``blockCount`` per ``eth_feeHistory`` call; also our chunk size (≈ one HTTP call
 per 1024 blocks, per the brief)."""
 
-MAX_JSONRPC_BATCH_SIZE: int = 500
+MAX_JSONRPC_BATCH_SIZE: int = 50
 """Max ``eth_getBlockByNumber`` calls in one HTTP JSON-RPC batch.
 
-Archive providers reject oversized batches (Alchemy: "maximum batch request size is 1000",
-HTTP 400). A gas chunk spans ``FEE_HISTORY_BLOCK_COUNT`` (1024) blocks, so timestamps for a
-chunk are fetched in batches of at most this many calls. Kept below the common provider cap
-to leave headroom and to bound the burst size of a single request."""
+Two provider limits interact here:
+
+1. Alchemy rejects a batch with more than 1000 calls outright (HTTP 400).
+2. Alchemy bills ``eth_getBlockByNumber`` at 16 CU **per block in the batch** and throttles
+   on a per-second compute-unit budget ("your app has exceeded its compute units per second
+   capacity"). On the free tier, live probing showed batches of 50 sustained cleanly, 100
+   started failing (~25%), and 160 mostly failed (~67%) — see the bug note on this constant's
+   PR. 50 × 16 CU = 800 CU per burst, comfortably inside the observed bucket while still
+   amortising HTTP overhead.
+
+A gas chunk spans ``FEE_HISTORY_BLOCK_COUNT`` (1024) blocks, so ``_batch_headers`` fans a
+chunk out into ~21 sub-batches of at most this size; each sub-batch is an independent request,
+and :meth:`BaseHttpFetcher._request` paces every request by ``min_request_interval_s``.
+"""
 
 
 
@@ -558,7 +568,8 @@ class GasFetcher(BaseHttpFetcher):
 
         Returns ``{block_number: unix_timestamp}``. Base fees come from
         ``_fee_history_base_fees`` — they are not returned here.
-        A missing or erroneous response item raises ``PermanentFetchError`` —
+        A missing or non-transient erroneous response item raises ``PermanentFetchError``;
+        a transient provider error (Alchemy CUPS) raises ``RateLimitError`` and is retried —
         timestamps are never fabricated.
 
         ``blocks`` is split into batches of at most :data:`MAX_JSONRPC_BATCH_SIZE` because
@@ -585,42 +596,46 @@ class GasFetcher(BaseHttpFetcher):
                 f"_batch_headers_once got {len(blocks)} blocks; max is "
                 f"{MAX_JSONRPC_BATCH_SIZE} — split before calling"
             )
-        calls = [
-            {
-                "jsonrpc": "2.0",
-                "id": i,
-                "method": "eth_getBlockByNumber",
-                "params": [_to_hex(bn), False],
-            }
-            for i, bn in enumerate(blocks)
-        ]
-        response = self._request(
-            self._rpc_url, method="POST", json=calls, context=context
-        )
-        payload = response.json()
-        if not isinstance(payload, list):
-            raise PermanentFetchError(
-                f"{context}: batch eth_getBlockByNumber returned a non-batch"
+
+        def once() -> dict[int, int]:
+            calls = [
+                {
+                    "jsonrpc": "2.0",
+                    "id": i,
+                    "method": "eth_getBlockByNumber",
+                    "params": [_to_hex(bn), False],
+                }
+                for i, bn in enumerate(blocks)
+            ]
+            response = self._request(
+                self._rpc_url, method="POST", json=calls, context=context
             )
-        out: dict[int, int] = {}
-        for item in payload:
-            if not isinstance(item, dict):
-                continue
-            if "error" in item:
+            payload = response.json()
+            if not isinstance(payload, list):
                 raise PermanentFetchError(
-                    f"{context}: batch eth_getBlockByNumber error: "
-                    f"{item.get('error')!r}"
+                    f"{context}: batch eth_getBlockByNumber returned a non-batch"
                 )
-            result = item.get("result")
-            if not isinstance(result, dict):
-                continue
-            number = result.get("number")
-            if not isinstance(number, str):
-                continue
-            ts_raw = result.get("timestamp")
-            if not isinstance(ts_raw, str):
-                raise PermanentFetchError(
-                    f"{context}: block {number} header missing timestamp"
-                )
-            out[_from_hex(number)] = _from_hex(ts_raw)
-        return out
+            out: dict[int, int] = {}
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                if "error" in item:
+                    # Transient providers errors (Alchemy CUPS "compute units") raise
+                    # RateLimitError here and are retried by _with_jsonrpc_retry; anything
+                    # else raises PermanentFetchError. Either way execution does not continue.
+                    self._raise_for_jsonrpc(item, context)
+                result = item.get("result")
+                if not isinstance(result, dict):
+                    continue
+                number = result.get("number")
+                if not isinstance(number, str):
+                    continue
+                ts_raw = result.get("timestamp")
+                if not isinstance(ts_raw, str):
+                    raise PermanentFetchError(
+                        f"{context}: block {number} header missing timestamp"
+                    )
+                out[_from_hex(number)] = _from_hex(ts_raw)
+            return out
+
+        return self._with_jsonrpc_retry(once, context)
