@@ -410,52 +410,13 @@ def verify(config: DataConfig) -> list[CheckResult]:
 # ---------------------------------------------------------------------------
 
 
-def snapshot(
+def _build_manifest(
     config: DataConfig,
-    out: Path | None = None,
-) -> SnapshotReport:
-    """Run the full pipeline: pull → build → verify → write manifest + report.
-
-    The manifest is written ONLY after all checks pass — a failed run never
-    leaves a manifest claiming completeness.
-    """
-    output_dir = out if out is not None else config.output_dir
-    if out is not None:
-        config = DataConfig(
-            pool=config.pool,
-            window=config.window,
-            regime=config.regime,
-            endpoints=config.endpoints,
-            cache_dir=config.cache_dir,
-            output_dir=output_dir,
-            gas_units=config.gas_units,
-        )
-
-    pull_report = pull(config)
-    dataset = build(config)
-    checks = verify(config)
-
-    critical_failures = [c for c in checks if not c.passed and c.severity == "critical"]
-    if critical_failures:
-        LOGGER.warning(
-            "snapshot: %d critical check(s) failed — manifest will NOT be written",
-            len(critical_failures),
-        )
-        report_path = output_dir / "validation_report.md"
-        render_report(checks, report_path, manifest=dataset.manifest)
-        raise ValidationError(
-            f"snapshot: {len(critical_failures)} critical check(s) failed; "
-            "manifest not written. See validation_report.md for details."
-        )
-
-    all_warnings: list[str] = []
-    for spr in pull_report.streams.values():
-        all_warnings.extend(spr.warnings)
-    for c in checks:
-        if not c.passed and c.severity == "warning":
-            all_warnings.append(f"{c.name}: {c.detail}")
-
-    manifest = DatasetManifest(
+    pull_report: PullReport,
+    warnings: tuple[str, ...] = (),
+) -> DatasetManifest:
+    """Assemble the manifest from a completed pull and the check-derived warnings."""
+    return DatasetManifest(
         schema_version=SCHEMA_VERSION,
         pool=config.pool,
         window=config.window,
@@ -474,8 +435,73 @@ def snapshot(
         created_at_utc=datetime.now(UTC),
         git_commit=git_commit(),
         library_versions=library_versions(),
-        warnings=tuple(dict.fromkeys(all_warnings)),
+        warnings=warnings,
         endpoint_hosts=endpoint_hosts(config.endpoints),
+    )
+
+
+def snapshot(
+    config: DataConfig,
+    out: Path | None = None,
+) -> SnapshotReport:
+    """Run the full pipeline: pull → build → verify → write manifest + report.
+
+    A provisional manifest is written between pull and verify because ``build()`` and
+    ``verify()`` read it from disk — but a fresh output directory has none. The
+    provisional manifest is replaced by the final one after checks pass, and deleted
+    if a critical check fails, so a failed run never leaves a manifest claiming
+    completeness (the manifest-last invariant).
+    """
+    output_dir = out if out is not None else config.output_dir
+    if out is not None:
+        config = DataConfig(
+            pool=config.pool,
+            window=config.window,
+            regime=config.regime,
+            endpoints=config.endpoints,
+            cache_dir=config.cache_dir,
+            output_dir=output_dir,
+            gas_units=config.gas_units,
+        )
+
+    pull_report = pull(config)
+
+    provisional_path = write_manifest(
+        _build_manifest(config, pull_report, warnings=()),
+        output_dir,
+    )
+    try:
+        dataset = build(config)
+        checks = verify(config)
+    except BaseException:
+        # BaseException (not Exception) is deliberate: a Ctrl-C mid-verify must also
+        # clean up, so an unverified provisional manifest never survives.
+        provisional_path.unlink(missing_ok=True)
+        raise
+
+    critical_failures = [c for c in checks if not c.passed and c.severity == "critical"]
+    if critical_failures:
+        LOGGER.warning(
+            "snapshot: %d critical check(s) failed — manifest will NOT be written",
+            len(critical_failures),
+        )
+        report_path = output_dir / "validation_report.md"
+        render_report(checks, report_path, manifest=dataset.manifest)
+        provisional_path.unlink(missing_ok=True)
+        raise ValidationError(
+            f"snapshot: {len(critical_failures)} critical check(s) failed; "
+            "manifest not written. See validation_report.md for details."
+        )
+
+    all_warnings: list[str] = []
+    for spr in pull_report.streams.values():
+        all_warnings.extend(spr.warnings)
+    for c in checks:
+        if not c.passed and c.severity == "warning":
+            all_warnings.append(f"{c.name}: {c.detail}")
+
+    manifest = _build_manifest(
+        config, pull_report, warnings=tuple(dict.fromkeys(all_warnings))
     )
     manifest_path = write_manifest(manifest, output_dir)
 
