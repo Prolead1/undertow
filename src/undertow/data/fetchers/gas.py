@@ -77,6 +77,14 @@ FEE_HISTORY_BLOCK_COUNT: int = 1024
 """Max ``blockCount`` per ``eth_feeHistory`` call; also our chunk size (≈ one HTTP call
 per 1024 blocks, per the brief)."""
 
+MAX_JSONRPC_BATCH_SIZE: int = 500
+"""Max ``eth_getBlockByNumber`` calls in one HTTP JSON-RPC batch.
+
+Archive providers reject oversized batches (Alchemy: "maximum batch request size is 1000",
+HTTP 400). A gas chunk spans ``FEE_HISTORY_BLOCK_COUNT`` (1024) blocks, so timestamps for a
+chunk are fetched in batches of at most this many calls. Kept below the common provider cap
+to leave headroom and to bound the burst size of a single request."""
+
 
 
 
@@ -546,13 +554,37 @@ class GasFetcher(BaseHttpFetcher):
     def _batch_headers(
         self, blocks: list[int], context: str
     ) -> dict[int, int]:
-        """One batched ``eth_getBlockByNumber`` call for block timestamps.
+        """Batched ``eth_getBlockByNumber`` calls for block timestamps.
 
         Returns ``{block_number: unix_timestamp}``. Base fees come from
         ``_fee_history_base_fees`` — they are not returned here.
         A missing or erroneous response item raises ``PermanentFetchError`` —
         timestamps are never fabricated.
+
+        ``blocks`` is split into batches of at most :data:`MAX_JSONRPC_BATCH_SIZE` because
+        archive providers reject a single batch above their cap (HTTP 400). Each sub-batch
+        is an independent request with its own retry policy.
         """
+        out: dict[int, int] = {}
+        for offset in range(0, len(blocks), MAX_JSONRPC_BATCH_SIZE):
+            batch = blocks[offset : offset + MAX_JSONRPC_BATCH_SIZE]
+            out.update(self._batch_headers_once(batch, context))
+        return out
+
+    def _batch_headers_once(
+        self, blocks: list[int], context: str
+    ) -> dict[int, int]:
+        """One batched ``eth_getBlockByNumber`` request for ``blocks``.
+
+        ``blocks`` must not exceed :data:`MAX_JSONRPC_BATCH_SIZE`; the caller owns splitting.
+        A violation is an internal programming error, not a provider condition, so it fails
+        locally rather than as a provider HTTP 400.
+        """
+        if len(blocks) > MAX_JSONRPC_BATCH_SIZE:
+            raise ValueError(
+                f"_batch_headers_once got {len(blocks)} blocks; max is "
+                f"{MAX_JSONRPC_BATCH_SIZE} — split before calling"
+            )
         calls = [
             {
                 "jsonrpc": "2.0",

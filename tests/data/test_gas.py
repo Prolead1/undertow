@@ -89,23 +89,25 @@ def _mock_fetch(rsp, url: str = RPC_URL, *, drop: int | None = None):
             fee_history["baseFeePerGas"][i] for i in range(len(BLOCKS)) if BLOCKS[i] != drop
         ]
 
-    def _batch_block_by_number_response(body: dict) -> tuple[int, dict, str]:
-        """Simulate a batch eth_getBlockByNumber response for all blocks in the range."""
-        blocks = BLOCKS[:]
-        if drop is not None:
-            blocks = [b for b in blocks if b != drop]
-        items = [
-            {
-                "jsonrpc": "2.0",
-                "id": i,
-                "result": {
-                    "number": hex(bn),
-                    "timestamp": hex(_mock_timestamp(bn)),
-                    "baseFeePerGas": "0x1",  # not consumed — base fees come from fee_history
-                },
-            }
-            for i, bn in enumerate(blocks)
-        ]
+    def _batch_block_by_number_response(batch: list) -> tuple[int, dict, str]:
+        """Simulate a batch eth_getBlockByNumber response for the blocks requested."""
+        items = []
+        for item in batch:
+            bn = int(item["params"][0], 16)
+            if drop is not None and bn == drop:
+                # Simulate the provider omitting the header for the dropped block.
+                continue
+            items.append(
+                {
+                    "jsonrpc": "2.0",
+                    "id": item["id"],
+                    "result": {
+                        "number": hex(bn),
+                        "timestamp": hex(_mock_timestamp(bn)),
+                        "baseFeePerGas": "0x1",  # not consumed — base fees come from fee_history
+                    },
+                }
+            )
         return 200, {}, json.dumps(items)
 
     def cb(request):
@@ -270,6 +272,32 @@ def test_fee_history_trailing_projection_ignored(mocked_http, tmp_path) -> None:
     got = [decode_uint(v.as_py()) for v in table["base_fee_per_gas"]]
     assert got == expected
     assert table.num_rows == len(BLOCKS)
+
+
+def test_header_batches_stay_within_provider_cap(mocked_http, tmp_path, monkeypatch) -> None:
+    """A gas chunk larger than one allowed HTTP batch is split, never sent oversize.
+
+    Archive providers reject a single JSON-RPC batch above their cap (HTTP 400), while a
+    gas chunk spans ``FEE_HISTORY_BLOCK_COUNT`` (1024) blocks. Force a small cap so the
+    split is observable against the 10-block fixture.
+    """
+    monkeypatch.setattr("undertow.data.fetchers.gas.MAX_JSONRPC_BATCH_SIZE", 4)
+    _mock_fetch(mocked_http)
+    f = _make_fetcher(tmp_path)
+    table = f.fetch(_gas_request()).table
+
+    batch_sizes = [
+        len(json.loads(call.request.body or "[]"))
+        for call in mocked_http.calls
+        if isinstance(json.loads(call.request.body or "{}"), list)
+    ]
+
+    assert sorted(batch_sizes) == [2, 4, 4]  # 10 blocks, cap 4 → 4 + 4 + 2
+    assert all(size <= 4 for size in batch_sizes)
+    assert table.num_rows == len(BLOCKS)
+    # Timestamps from every sub-batch land on the right block: the merge is value-correct.
+    timestamps = [int(v.as_py().timestamp()) for v in table["block_timestamp"]]
+    assert timestamps == [_mock_timestamp(bn) for bn in BLOCKS]
 
 
 # ---------------------------------------------------------------------------
