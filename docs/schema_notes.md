@@ -49,8 +49,8 @@ auditable. The flag is what lets T13's validation distinguish "genuinely flat" f
 
 Nullability is declared per field, not incidental. The notable cases:
 
-- `gas.eth_usd_price` is **nullable** — T07 writes `null` (it does not fetch USD
-  prices); T11 joins the value in later.
+- `gas` has **no nullable columns** after ADR-006: `block_timestamp` and `eth_usd_price`
+  were removed — gas is base-fee only. (Supersedes the old `gas.eth_usd_price` nullable note.)
 - `fee_growth.fee_growth_outside_*` are **nullable** — `null` on global-only rows
   where no tick is referenced.
 - `mint.sender` is **nullable** and is `null` — not `""` — on burn rows and wherever

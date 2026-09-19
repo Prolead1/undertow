@@ -31,6 +31,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 - `adr/001-regime-drift-definition.md` — **accepted**: `μ` is total window log return, not per-step mean.
 - `adr/003-window-blocks-optional.md` — **accepted**: `WindowConfig.start_block/end_block` widened to `BlockNumber | None` with XOR validation.
 - `adr/005-gas-flat-tip-surcharge.md` — **accepted**: per-block priority-fee resolution replaced with `eth_feeHistory(no pctls)` + flat `tip_surcharge_pct` in `gas_cost_wei`. 2000× CU reduction; priority fees on Alchemy archive are undeliverable.
+- `adr/006-gas-timestamps-feehistory-only.md` — **accepted**: `GAS_SCHEMA` is base-fee only; per-block `block_timestamp`/`eth_usd_price` removed (~122M CU saved; the event tape already carries timestamps free from the event logs).
 
 ## All tasks complete — data module v1 done 🎉
 

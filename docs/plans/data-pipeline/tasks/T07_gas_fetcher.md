@@ -34,7 +34,9 @@ and never touches schemas. So *your* module implements `_rows_to_table(rows, str
 empty range.
 
 ### 1. Per-block fields
-- `base_fee_per_gas`, `gas_used`, `gas_limit`, `block_timestamp` from `eth_getBlockByNumber`.
+- `base_fee_per_gas` from `eth_feeHistory(blockCount, newestBlock, [])` — one call per ~1024
+  blocks (ADR-005). **ADR-006:** `block_timestamp` is no longer fetched — gas is base-fee only; the
+  event tape carries block timestamps free from the event-log rows.
 - `priority_fee_p50_wei` / `priority_fee_p90_wei` — percentiles of the *effective priority fee* paid by
   transactions in the block. Two ways to get them:
   - **Preferred:** `eth_feeHistory(blockCount, newestBlock, [50, 90])`, which returns exactly this and
@@ -46,8 +48,6 @@ empty range.
 - **EIP-1559 only.** The pinned window starts 2022-01-01, comfortably after the London fork
   (block 12,965,000, Aug 2021), so `baseFeePerGas` is always present. If a caller requests a
   pre-London block, raise `ConfigError` rather than inventing a base fee. Test this boundary.
-- `eth_usd_price` is left **null** here; T11 joins it from the reference feed (its §2 join table) and
-  writes it back into the gas table. Do not fetch prices.
 - `priority_fee_p90_wei` is deliberately **not** consumed by the event tape — T11 joins only `p50`. Fetch
   it anyway: it is what lets `undertow.sim` later ask "what if we had to pay to get included during a
   spike?", and re-pulling three years of blocks to add one column is exactly the waste §10.7 warns about.
@@ -89,7 +89,7 @@ price a rebalance, so keep it pure and integer.
 1. Fixture → `GAS_SCHEMA` conformance under `validate_table(strict=True)`, and an explicit assertion that
    the table has **no** `log_index` / `tx_hash` / `pool_address` / `event_type` column.
 2. Field decode: `base_fee_per_gas` as an exact integer (a real value ~1e10 wei), `gas_used`,
-   `gas_limit`, UTC-aware `block_timestamp`.
+   `gas_limit` (both zero per ADR-005).
 3. Percentiles: from a mocked `eth_feeHistory` reward array, `p50` and `p90` match hand-computed values;
    a block with `reward: null` yields `0` for both and is flagged in `FetchResult.warnings`.
 4. **Gap detection:** a mocked response missing one block in the middle raises `ValidationError` naming

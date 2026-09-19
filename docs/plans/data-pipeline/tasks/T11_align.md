@@ -47,7 +47,7 @@ Implement `CONTRACTS.md` §6.2: `Dataset`, `build_event_tape`, `assert_no_lookah
 | `base_fee_per_gas`, `priority_fee_p50_wei` | T07 gas | **exact** equi-join on `block_number` |
 | `fee_growth_global_{0,1}_x128` | T06/T10 snapshots | as-of **backward** on `block_number` |
 | `price_pool` | derived | `fixedpoint.sqrt_price_x96_to_price` on this row |
-| `gas.eth_usd_price` | T08 reference | as-of **backward** on `close_time <= block_timestamp`, written back into the **gas** table (T07 leaves it null) so a gas cost can be expressed in USD at the block's prevailing price |
+| `price_reference` | T08 reference | as-of **backward** on `close_time <= block_timestamp` — this is the tape's USD conversion column (ADR-006 removed the stale `gas.eth_usd_price` join) |
 
 - Gas is an **exact** join, not as-of: §10.2.3 requires *that block's* gas price. A missing block in the
   gas stream must therefore raise, not fill — that is why T07 guarantees no gaps. Assert the join
@@ -127,7 +127,7 @@ API.
 14. `Dataset.require("gas")` returns the table when present and raises `ValidationError` mentioning
     `undertow-data pull` when the field is `None`; a `None` field and an `empty_table` field are
     distinguishable.
-15. `gas.eth_usd_price` is populated by the join and is null only where no prior reference bar exists.
+15. ~~`gas.eth_usd_price` is populated by the join and is null only where no prior reference bar exists.~~ **Superseded by ADR-006:** the tape's `price_reference` column is the USD conversion path; gas is base-fee only.
 
 ## Acceptance criteria
 

@@ -191,7 +191,7 @@ def test_key_columns_present_in_contract_order_for_log_streams(stream: str) -> N
 def test_gas_has_no_log_index() -> None:
     names = set(GAS_SCHEMA.names)
     assert "block_number" in names
-    assert "block_timestamp" in names
+    assert "block_timestamp" not in names  # ADR-006: gas is base-fee only
     assert "log_index" not in names
     assert "tx_hash" not in names
     assert "pool_address" not in names
@@ -312,18 +312,15 @@ def test_fee_growth_schema_columns() -> None:
 def test_gas_schema_columns() -> None:
     assert GAS_SCHEMA.names == [
         "block_number",
-        "block_timestamp",
         "base_fee_per_gas",
         "gas_used",
         "gas_limit",
         "priority_fee_p50_wei",
         "priority_fee_p90_wei",
-        "eth_usd_price",
     ]
     for col in ("base_fee_per_gas", "priority_fee_p50_wei", "priority_fee_p90_wei"):
         assert GAS_SCHEMA.field(col).type == pa.string()
     assert GAS_SCHEMA.field("gas_used").type == pa.int64()
-    assert GAS_SCHEMA.field("eth_usd_price").type == pa.float64()
 
 
 def test_reference_schema_columns() -> None:
@@ -396,8 +393,7 @@ def test_event_tape_column_order_is_contractual() -> None:
 
 
 def test_nullability_declarations() -> None:
-    # The three contract-mandated nullable fields.
-    assert GAS_SCHEMA.field("eth_usd_price").nullable
+    # The contract-mandated nullable fields.
     assert FEE_GROWTH_SCHEMA.field("fee_growth_outside_0_x128").nullable
     assert FEE_GROWTH_SCHEMA.field("fee_growth_outside_1_x128").nullable
     assert MINT_SCHEMA.field("sender").nullable
@@ -567,10 +563,10 @@ def test_validate_table_rejects_nulls_in_non_nullable_column() -> None:
 
 
 def test_validate_table_accepts_nulls_in_nullable_column() -> None:
-    arrays = _conforming_arrays(GAS_SCHEMA)
-    arrays["eth_usd_price"] = pa.array([None], type=pa.float64())
+    arrays = _conforming_arrays(FEE_GROWTH_SCHEMA)
+    arrays["fee_growth_outside_0_x128"] = pa.array([None], type=pa.string())
     table = pa.Table.from_arrays(list(arrays.values()), names=list(arrays.keys()))
-    validate_table(table, GAS_SCHEMA)  # must not raise
+    validate_table(table, FEE_GROWTH_SCHEMA)  # must not raise
 
 
 def test_validate_table_rejects_naive_timestamp() -> None:

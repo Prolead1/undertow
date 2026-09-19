@@ -2,13 +2,10 @@
 
 Everything runs offline against a ``responses``-mocked archive node and the committed
 ``tests/data/fixtures/blocks_gas.json`` fixture (SYNTHETIC — see its header note; no live RPC
-token exists in this sandbox, so the payloads are fabricated but wire-faithful). The mock
-dispatches on JSON-RPC method: ``eth_feeHistory`` (empty percentiles, ADR-005) + batched
-``eth_getBlockByNumber`` for real timestamps per block + ``eth_blockNumber`` for the block
-index.
-
-Timestamps are always fetched from chain — post-merge skipped slots make a linear
-slot-spacing model inaccurate (cumulative drift of many hours over a multi-year window).
+token exists in this sandbox, so the payloads are fabricated but wire-faithful). The fetch-path
+mock serves a single ``eth_feeHistory`` (empty percentiles, ADR-005) per chunk; per-block
+timestamps are no longer fetched (ADR-006). The block index still uses single-block
+``eth_getBlockByNumber`` + ``eth_blockNumber``.
 """
 
 from __future__ import annotations
@@ -39,7 +36,8 @@ BLOCKS = [int(hex_b, 16) for hex_b in FIXTURE["_blocks"]]
 START, END = BLOCKS[0], BLOCKS[-1]
 
 # Deterministic mock timestamps — a simple 12 s/slot model is fine for synthetic
-# test data; the code always fetches real timestamps, never computes them.
+# test data; only the block index consumes timestamps via single eth_getBlockByNumber
+# lookups.
 _MOCK_MERGE_BLOCK = 15_537_394
 _MOCK_MERGE_TS = datetime(2022, 9, 15, 6, 42, 59, tzinfo=UTC)
 
@@ -79,8 +77,11 @@ def _make_fetcher(tmp_path: Path, *, rpc_url: str = RPC_URL, retries: int = 2) -
 
 
 def _mock_fetch(rsp, url: str = RPC_URL, *, drop: int | None = None):
-    """Register the fetch-path mock: one eth_feeHistory (empty percentiles, ADR-005) +
-    one batched eth_getBlockByNumber for real timestamps per block."""
+    """Register the fetch-path mock: one ``eth_feeHistory`` call per chunk (ADR-005).
+
+    ADR-006 removed the per-block ``eth_getBlockByNumber`` timestamp batch — gas rows are
+    base-fee only.
+    """
     fee_history = dict(FIXTURE["fee_history"])
     if drop is not None:
         # Remove the base fee for the dropped block to simulate a short array. The slice
@@ -89,32 +90,8 @@ def _mock_fetch(rsp, url: str = RPC_URL, *, drop: int | None = None):
             fee_history["baseFeePerGas"][i] for i in range(len(BLOCKS)) if BLOCKS[i] != drop
         ]
 
-    def _batch_block_by_number_response(batch: list) -> tuple[int, dict, str]:
-        """Simulate a batch eth_getBlockByNumber response for the blocks requested."""
-        items = []
-        for item in batch:
-            bn = int(item["params"][0], 16)
-            if drop is not None and bn == drop:
-                # Simulate the provider omitting the header for the dropped block.
-                continue
-            items.append(
-                {
-                    "jsonrpc": "2.0",
-                    "id": item["id"],
-                    "result": {
-                        "number": hex(bn),
-                        "timestamp": hex(_mock_timestamp(bn)),
-                        "baseFeePerGas": "0x1",  # not consumed — base fees come from fee_history
-                    },
-                }
-            )
-        return 200, {}, json.dumps(items)
-
     def cb(request):
         body = json.loads(request.body or "{}")
-        if isinstance(body, list):
-            # Batch call: eth_getBlockByNumber for timestamps
-            return _batch_block_by_number_response(body)
         method = body.get("method")
         if method == "eth_feeHistory":
             return (
@@ -194,8 +171,7 @@ def test_gas_schema_conformance_no_forbidden_columns(mocked_http, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 2. Field decode: real big-int base fee, zeroed gas_used/gas_limit, fetched timestamp
-#    (ADR-005).
+# 2. Field decode: real big-int base fee, zeroed gas_used/gas_limit (ADR-005/006)
 # ---------------------------------------------------------------------------
 
 
@@ -213,12 +189,9 @@ def test_field_decode_exact_integers(mocked_http, tmp_path):
     assert int(table["gas_limit"][0].as_py()) == 0
     assert table["gas_used"].type == table["gas_limit"].type
 
-    ts = table["block_timestamp"][0].as_py()
-    assert ts.tzinfo is not None and ts.utcoffset() is not None
-    assert ts.tzname() == "UTC"
-
-    # eth_usd_price is null as written by T07 (T11 joins it later)
-    assert table["eth_usd_price"].null_count == table.num_rows
+    # ADR-006: gas is base-fee only — no per-block timestamp or price column.
+    assert "block_timestamp" not in table.column_names
+    assert "eth_usd_price" not in table.column_names
 
 
 # ---------------------------------------------------------------------------
@@ -274,32 +247,6 @@ def test_fee_history_trailing_projection_ignored(mocked_http, tmp_path) -> None:
     assert table.num_rows == len(BLOCKS)
 
 
-def test_header_batches_stay_within_provider_cap(mocked_http, tmp_path, monkeypatch) -> None:
-    """A gas chunk larger than one allowed HTTP batch is split, never sent oversize.
-
-    Archive providers reject a single JSON-RPC batch above their cap (HTTP 400), while a
-    gas chunk spans ``FEE_HISTORY_BLOCK_COUNT`` (1024) blocks. Force a small cap so the
-    split is observable against the 10-block fixture.
-    """
-    monkeypatch.setattr("undertow.data.fetchers.gas.MAX_JSONRPC_BATCH_SIZE", 4)
-    _mock_fetch(mocked_http)
-    f = _make_fetcher(tmp_path)
-    table = f.fetch(_gas_request()).table
-
-    batch_sizes = [
-        len(json.loads(call.request.body or "[]"))
-        for call in mocked_http.calls
-        if isinstance(json.loads(call.request.body or "{}"), list)
-    ]
-
-    assert sorted(batch_sizes) == [2, 4, 4]  # 10 blocks, cap 4 → 4 + 4 + 2
-    assert all(size <= 4 for size in batch_sizes)
-    assert table.num_rows == len(BLOCKS)
-    # Timestamps from every sub-batch land on the right block: the merge is value-correct.
-    timestamps = [int(v.as_py().timestamp()) for v in table["block_timestamp"]]
-    assert timestamps == [_mock_timestamp(bn) for bn in BLOCKS]
-
-
 # ---------------------------------------------------------------------------
 # 5. Duplicate block in the response → ValidationError
 # ---------------------------------------------------------------------------
@@ -316,9 +263,9 @@ def test_duplicate_block_validation_error(mocked_http, tmp_path):
     # the guard still exists). We can't easily trigger it with the mock, so
     # test it via the internal method.
     rows = [
-        {"block_number": 16200000, "block_timestamp": 0, "base_fee_per_gas": 0,
+        {"block_number": 16200000, "base_fee_per_gas": 0,
          "gas_used": 0, "gas_limit": 0, "priority_fee_p50_wei": 0, "priority_fee_p90_wei": 0},
-        {"block_number": 16200000, "block_timestamp": 0, "base_fee_per_gas": 0,
+        {"block_number": 16200000, "base_fee_per_gas": 0,
          "gas_used": 0, "gas_limit": 0, "priority_fee_p50_wei": 0, "priority_fee_p90_wei": 0},
     ]
     with pytest.raises(ValidationError) as ei:
@@ -487,7 +434,7 @@ def test_cache_hit_zero_network_and_secret_scrubbed(mocked_http, tmp_path, caplo
     with caplog.at_level("WARNING"):
         cold = f.fetch(_gas_request())
         assert cold.from_cache is False
-        assert cold.n_requests == 1  # one chunk fetched (2 HTTP calls inside)
+        assert cold.n_requests == 1  # one chunk fetched (1 HTTP call — eth_feeHistory only)
     calls_after_cold = len(mocked_http.calls)
     assert calls_after_cold > 0
 

@@ -23,10 +23,9 @@ tape. A duplicate means a fetcher paginated wrong; raising ``ValidationError``
 instead of silently de-duplicating keeps that bug loud (T05's boundary de-dup is
 T05's job). ``seq`` is the dense 0..N-1 step index the RL environment uses.
 
-This module performs no fetching and no disk I/O beyond what T09 provides; the
-enriched ``gas`` table with ``eth_usd_price`` populated is produced by
-``attach_reference_prices`` (the ``CONTRACTS.md`` GAS_SCHEMA note says T11 fills
-that column, which T07 writes null).
+This module performs no fetching and no disk I/O beyond what T09 provides. The gas stream
+is base-fee only (ADR-006): USD conversion happens on the tape via its ``price_reference``
+column, not on the standalone gas table.
 """
 
 from __future__ import annotations
@@ -466,42 +465,6 @@ def build_event_tape(
     return tape
 
 
-def attach_reference_prices(gas: pa.Table, reference: pa.Table) -> pa.Table:
-    """Populate ``gas.eth_usd_price`` by a backward as-of join on
-    ``close_time <= block_timestamp`` (the GAS_SCHEMA note: T07 writes that column
-    null; T11 fills it), so a gas cost can be expressed in USD at the block's
-    prevailing price. Rows before the first reference bar keep null. Returns a
-    schema-validated gas table; the input is not mutated.
-    """
-    validate_table(gas, GAS_SCHEMA, strict=True)
-    validate_table(reference, SCHEMA_REGISTRY["reference"], strict=True)
-    frame = pl.from_arrow(gas).sort("block_timestamp")
-    ref_join = pl.from_arrow(reference.select(["close_time", "close"])).sort("close_time")
-    if ref_join.height > 0:
-        joined = frame.join_asof(
-            ref_join,
-            left_on="block_timestamp",
-            right_on="close_time",
-            strategy="backward",  # last bar with close_time <= the block's timestamp
-        )
-    else:
-        joined = frame.with_columns(pl.lit(None).cast(pl.Float64).alias("close"))
-    # coalesce: the matched bar's close wins; rows without one keep the previous value
-    # (which is null for freshly-fetched gas, but enrichment is idempotent).
-    enriched = joined.with_columns(
-        pl.coalesce("close", "eth_usd_price").alias("eth_usd_price")
-    ).drop("close")
-    out = enriched.to_arrow()
-    out = out.select([f.name for f in GAS_SCHEMA]).cast(GAS_SCHEMA)
-    validate_table(out, GAS_SCHEMA, strict=True)
-    return out
-
-
-# ---------------------------------------------------------------------------
-# The mechanical no-look-ahead guard (CONTRACTS.md §6.2, §4).
-# ---------------------------------------------------------------------------
-
-
 def assert_no_lookahead(table: pa.Table, time_col: str = "block_timestamp") -> None:
     """Raise ``ValidationError`` if any as-of-joined column could only have been known
     at a later time than the row's own ``time_col``.
@@ -587,6 +550,5 @@ def assert_no_lookahead(table: pa.Table, time_col: str = "block_timestamp") -> N
 __all__ = [
     "Dataset",
     "build_event_tape",
-    "attach_reference_prices",
     "assert_no_lookahead",
 ]

@@ -10,17 +10,15 @@ with a warning, or the fetch fails.
 Data path (ADR-005 — flat tip surcharge; priority fees are not fetched from the chain):
 
 * ``eth_feeHistory(blockCount, newestBlock, [])`` — one call per ``FEE_HISTORY_BLOCK_COUNT``
-  blocks — supplies ``baseFeePerGas[]`` and ``oldestBlock``.
-* ``block_timestamp`` is **always fetched** from the chain via batched ``eth_getBlockByNumber``
-  — post-merge skipped slots make a linear slot-spacing model inaccurate (cumulative drift of
-  many hours over a multi-year window defeats the 30 s join tolerance; ADR-005 §Decision.2
-  amended). Per-block gas header fields (``gas_used``, ``gas_limit``) are still written as
-  ``0`` — nobody reads them.
+  blocks — supplies ``baseFeePerGas[]`` and ``oldestBlock``. This is the ONLY chain fetch per
+  chunk (ADR-006): per-block timestamps are not fetched — the gas stream is base-fee only, and
+  the event tape carries block timestamps free from the event-log rows.
+* Per-block gas header fields (``gas_used``, ``gas_limit``) are still written as ``0`` —
+  nobody reads them.
 * ``priority_fee_p50_wei`` and ``priority_fee_p90_wei`` are always written as ``0`` — they are
   not consumed by any module (ADR-005 §Decision.4).
 
-``eth_usd_price`` is left **null** here; T11 fills it from the reference feed via a backward
-as-of join. ``base_fee_per_gas`` is stored as decimal strings per the big-int convention
+``base_fee_per_gas`` is stored as decimal strings per the big-int convention
 and handled as ``int`` end-to-end.
 
 The block index (``timestamp_for_block`` / ``block_for_timestamp``) is binary-searched and
@@ -77,14 +75,6 @@ FEE_HISTORY_BLOCK_COUNT: int = 1024
 """Max ``blockCount`` per ``eth_feeHistory`` call; also our chunk size (≈ one HTTP call
 per 1024 blocks, per the brief)."""
 
-MAX_JSONRPC_BATCH_SIZE: int = 500
-"""Max ``eth_getBlockByNumber`` calls in one HTTP JSON-RPC batch.
-
-Archive providers reject oversized batches (Alchemy: "maximum batch request size is 1000",
-HTTP 400). A gas chunk spans ``FEE_HISTORY_BLOCK_COUNT`` (1024) blocks, so timestamps for a
-chunk are fetched in batches of at most this many calls. Kept below the common provider cap
-to leave headroom and to bound the burst size of a single request."""
-
 
 
 
@@ -121,7 +111,7 @@ def _coerce_int(value: object) -> int:
     )
 
 
-def _make_row(block_number: int, timestamp: int, base_fee_per_gas: int) -> dict:
+def _make_row(block_number: int, base_fee_per_gas: int) -> dict:
     """Build one raw gas row with the ADR-005 zeroed columns.
 
     ``gas_used``, ``gas_limit``, ``priority_fee_p50_wei``, and ``priority_fee_p90_wei``
@@ -129,26 +119,12 @@ def _make_row(block_number: int, timestamp: int, base_fee_per_gas: int) -> dict:
     """
     return {
         "block_number": block_number,
-        "block_timestamp": timestamp,
         "base_fee_per_gas": base_fee_per_gas,
         "gas_used": 0,
         "gas_limit": 0,
         "priority_fee_p50_wei": 0,
         "priority_fee_p90_wei": 0,
     }
-
-
-def _as_utc(value: object) -> datetime:
-    """Unix epoch-seconds -> UTC-aware datetime, or a passthrough datetime."""
-    if isinstance(value, datetime):
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ConfigError(f"block timestamps must be timezone-aware UTC; got {value!r}")
-        return value.astimezone(UTC)
-    if isinstance(value, bool) or not isinstance(value, (int, str)):
-        raise TypeError(
-            f"expected epoch seconds or a datetime, got {type(value).__name__} {value!r}"
-        )
-    return datetime.fromtimestamp(int(value), tz=UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -465,9 +441,7 @@ class GasFetcher(BaseHttpFetcher):
         cleaned.sort(key=lambda r: int(r["block_number"]))
         self._check_contiguous(cleaned, request)
 
-        n = len(cleaned)
         numbers = [int(r["block_number"]) for r in cleaned]
-        timestamps = [_as_utc(r["block_timestamp"]) for r in cleaned]
         base_fees = [encode_uint(_coerce_int(r["base_fee_per_gas"])) for r in cleaned]
         gas_used = [_coerce_int(r["gas_used"]) for r in cleaned]
         gas_limits = [_coerce_int(r["gas_limit"]) for r in cleaned]
@@ -477,13 +451,11 @@ class GasFetcher(BaseHttpFetcher):
         table = pa.table(
             {
                 "block_number": numbers,
-                "block_timestamp": timestamps,
                 "base_fee_per_gas": base_fees,
                 "gas_used": gas_used,
                 "gas_limit": gas_limits,
                 "priority_fee_p50_wei": p50,
                 "priority_fee_p90_wei": p90,
-                "eth_usd_price": [None] * n,
             },
             schema=GAS_SCHEMA,
         )
@@ -520,10 +492,9 @@ class GasFetcher(BaseHttpFetcher):
     def _fetch_chunk(self, request: FetchRequest, start: int, end: int) -> list[dict]:
         """Raw ``GAS_SCHEMA``-shaped row dicts for the inclusive range ``[start, end]``.
 
-        Base fees come from ``eth_feeHistory`` with empty percentiles (ADR-005).
-        Timestamps are **always** fetched from the chain via batched
-        ``eth_getBlockByNumber`` — post-merge skipped slots make a linear slot-spacing
-        model inaccurate (cumulative drift of many hours defeats the 30 s join tolerance).
+        Base fees come from ``eth_feeHistory`` with empty percentiles (ADR-005). Per-block
+        timestamps are deliberately not fetched (ADR-006): the gas stream is base-fee only,
+        and the event tape carries block timestamps free from the event-log rows.
         ``gas_used``, ``gas_limit``, ``priority_fee_p50_wei``, and ``priority_fee_p90_wei``
         are written as ``0`` per ADR-005 §Decision.4–5.
 
@@ -533,94 +504,12 @@ class GasFetcher(BaseHttpFetcher):
         """
         context = self._describe(request, start, end)
         base_fees = self._fee_history_base_fees(start, end, context)
-        blocks = list(range(start, end + 1))
-        headers = self._batch_headers(blocks, context)
         rows: list[dict] = []
-        for bn in blocks:
+        for bn in range(start, end + 1):
             if bn not in base_fees:
                 raise PermanentFetchError(
                     f"{context}: eth_feeHistory is missing baseFeePerGas for block {bn} "
                     f"in range {start}..{end}"
                 )
-            if bn not in headers:
-                raise PermanentFetchError(
-                    f"{context}: batch eth_getBlockByNumber missing block {bn} "
-                    f"in range {start}..{end}"
-                )
-            ts = headers[bn]
-            rows.append(_make_row(bn, ts, base_fees[bn]))
+            rows.append(_make_row(bn, base_fees[bn]))
         return rows
-
-    def _batch_headers(
-        self, blocks: list[int], context: str
-    ) -> dict[int, int]:
-        """Batched ``eth_getBlockByNumber`` calls for block timestamps.
-
-        Returns ``{block_number: unix_timestamp}``. Base fees come from
-        ``_fee_history_base_fees`` — they are not returned here.
-        A missing or erroneous response item raises ``PermanentFetchError`` —
-        timestamps are never fabricated.
-
-        ``blocks`` is split into batches of at most :data:`MAX_JSONRPC_BATCH_SIZE` because
-        archive providers reject a single batch above their cap (HTTP 400). Each sub-batch
-        is an independent request with its own retry policy.
-        """
-        out: dict[int, int] = {}
-        for offset in range(0, len(blocks), MAX_JSONRPC_BATCH_SIZE):
-            batch = blocks[offset : offset + MAX_JSONRPC_BATCH_SIZE]
-            out.update(self._batch_headers_once(batch, context))
-        return out
-
-    def _batch_headers_once(
-        self, blocks: list[int], context: str
-    ) -> dict[int, int]:
-        """One batched ``eth_getBlockByNumber`` request for ``blocks``.
-
-        ``blocks`` must not exceed :data:`MAX_JSONRPC_BATCH_SIZE`; the caller owns splitting.
-        A violation is an internal programming error, not a provider condition, so it fails
-        locally rather than as a provider HTTP 400.
-        """
-        if len(blocks) > MAX_JSONRPC_BATCH_SIZE:
-            raise ValueError(
-                f"_batch_headers_once got {len(blocks)} blocks; max is "
-                f"{MAX_JSONRPC_BATCH_SIZE} — split before calling"
-            )
-        calls = [
-            {
-                "jsonrpc": "2.0",
-                "id": i,
-                "method": "eth_getBlockByNumber",
-                "params": [_to_hex(bn), False],
-            }
-            for i, bn in enumerate(blocks)
-        ]
-        response = self._request(
-            self._rpc_url, method="POST", json=calls, context=context
-        )
-        payload = response.json()
-        if not isinstance(payload, list):
-            raise PermanentFetchError(
-                f"{context}: batch eth_getBlockByNumber returned a non-batch"
-            )
-        out: dict[int, int] = {}
-        for item in payload:
-            if not isinstance(item, dict):
-                continue
-            if "error" in item:
-                raise PermanentFetchError(
-                    f"{context}: batch eth_getBlockByNumber error: "
-                    f"{item.get('error')!r}"
-                )
-            result = item.get("result")
-            if not isinstance(result, dict):
-                continue
-            number = result.get("number")
-            if not isinstance(number, str):
-                continue
-            ts_raw = result.get("timestamp")
-            if not isinstance(ts_raw, str):
-                raise PermanentFetchError(
-                    f"{context}: block {number} header missing timestamp"
-                )
-            out[_from_hex(number)] = _from_hex(ts_raw)
-        return out
