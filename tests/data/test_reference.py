@@ -220,6 +220,58 @@ def test_ms_to_utc_exact_and_interval_delta(
     assert opens[0] == datetime(2022, 8, 1, 0, 0, tzinfo=UTC)
 
 
+def test_malformed_source_close_time_is_re_derived_not_fatal(
+    tmp_path: Path, mocked_http: responses.RequestsMock
+) -> None:
+    """A bad source ``close_time`` must not abort the pull (upstream data defect).
+
+    Binance published one malformed ETHUSDT bar (2023-03-24 12:39Z) in both the
+    monthly archive and the REST API, with ``close_time`` 43 s into the bar. The
+    fetcher re-derives ``close_time`` from ``open_time`` anyway, so it must keep
+    the bar instead of raising — the old hard failure aborted a full pull on
+    this single row.
+    """
+
+    def good(minute: int, close: str) -> list[object]:
+        open_ms = _epoch_ms(T0 + timedelta(minutes=minute))
+        return [
+            open_ms, "1700.0", "1700.0", "1700.0", close, "0.0",
+            open_ms + 59_999, "0.0", 0, "0.0", "0.0", "0",
+        ]
+
+    bad_open = _epoch_ms(T0 + timedelta(minutes=2))
+    corrupt: list[object] = [
+        bad_open, "1700.0", "1700.0", "1700.0", "1701.0", "0.0",
+        bad_open + 43_061,  # not open_time + 59_999 ms
+        "0.0", 0, "0.0", "0.0", "0",
+    ]
+    _register_rest(
+        mocked_http,
+        {"klines": [good(0, "1700.0"), good(1, "1700.25"), corrupt, good(3, "1700.5")]},
+    )
+
+    res = _fetcher(tmp_path).fetch(_req(T0, T0 + timedelta(minutes=4)))
+    by_open = {
+        _epoch_ms(o): (c, close, filled)
+        for o, c, close, filled in zip(
+            res.table.column("open_time").to_pylist(),
+            res.table.column("close_time").to_pylist(),
+            res.table.column("close").to_pylist(),
+            res.table.column("is_gap_filled").to_pylist(),
+            strict=True,
+        )
+    }
+    assert set(by_open) == {
+        _epoch_ms(T0 + timedelta(minutes=m)) for m in range(4)
+    }  # dense grid — no dropped or extra bar
+    close_time, close, filled = by_open[bad_open]
+    assert filled is False  # kept as an observed bar, not a forward-filled gap
+    assert close == 1701.0  # prices from the source row are preserved
+    # close_time is re-derived from open_time, ignoring the bad source value.
+    delta_us = (close_time - ms_epoch_to_utc(bad_open)) // timedelta(microseconds=1)
+    assert delta_us == INTERVAL_CLOSE_DELTA_US
+
+
 # ---------------------------------------------------------------------------
 # 3. float64 round-trip for realistic ETH price strings
 # ---------------------------------------------------------------------------

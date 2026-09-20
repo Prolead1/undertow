@@ -7,32 +7,34 @@ network — pipeline functions are mocked where needed.
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from undertow.data.cli import (
     _build_parser,
     _format_checks,
+    _format_info_report,
     _format_pull_report,
     _format_snapshot_report,
-    _format_info_report,
     main,
 )
+from undertow.data.config import PoolConfig, WindowConfig
+from undertow.data.logging_setup import configure_logging
 from undertow.data.pipeline_report import (
     InfoReport,
     PullReport,
     SnapshotReport,
     StreamPullResult,
 )
-from undertow.data.storage.manifest import DatasetManifest
 from undertow.data.schemas import SCHEMA_VERSION
-from undertow.data.config import WindowConfig, PoolConfig
-from undertow.data.types import Route, CheckResult, FeeTier
-
+from undertow.data.storage.manifest import DatasetManifest
+from undertow.data.types import CheckResult, FeeTier, Route
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -360,6 +362,108 @@ reference_base_url = "http://localhost/ref"
     # No manifest → info returns dataset_exists=False → exit 1
     result = main(["info", "--config", str(toml_path)])
     assert result == 1
+
+
+def _write_pull_config(tmp_path: Path) -> Path:
+    """Minimal valid config whose log_dir points inside ``tmp_path``."""
+    toml_path = tmp_path / "test.toml"
+    toml_path.write_text(f"""
+[pool]
+address = "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8"
+token0_symbol = "USDC"
+token1_symbol = "WETH"
+token0_decimals = 6
+token1_decimals = 18
+fee_tier = 3000
+tick_spacing = 60
+deployment_block = 12376729
+
+[window]
+start_block = 100
+end_block = 200
+
+[regime]
+# all defaults
+
+[paths]
+cache_dir = "{tmp_path / 'cache'}"
+output_dir = "{tmp_path / 'out'}"
+log_dir = "{tmp_path / 'logs'}"
+
+[endpoints]
+graph_url = "http://localhost/graph"
+rpc_url = "http://localhost/rpc"
+reference_base_url = "http://localhost/ref"
+""")
+    return toml_path
+
+
+def _log_and_return(report: object, message: str) -> Callable[..., object]:
+    """Mock side effect that emits a package log record, so file capture is real."""
+
+    def _side_effect(*_args: object, **_kwargs: object) -> object:
+        logging.getLogger("undertow.data.pipeline").info(message)
+        return report
+
+    return _side_effect
+
+
+def test_main_pull_auto_writes_a_log_file(tmp_path: Path) -> None:
+    """Every pull invocation must leave a DEBUG log under config.log_dir."""
+    toml_path = _write_pull_config(tmp_path)
+
+    try:
+        with patch("undertow.data.cli.pull") as mock_pull:
+            mock_pull.side_effect = _log_and_return(_pull_report(), "pull started")
+            result = main(["pull", "--config", str(toml_path)])
+    finally:
+        # add_file_handler raised the package logger to DEBUG; reset the global state.
+        configure_logging(force=True)
+
+    assert result == 0
+    logs = sorted((tmp_path / "logs").glob("pull-*.log"))
+    assert len(logs) == 1  # one unique timestamped file per run
+    assert "pull started" in logs[0].read_text(encoding="utf-8")  # capture is live
+
+
+def test_main_snapshot_auto_writes_a_log_file(tmp_path: Path) -> None:
+    """snapshot is a download too, so it must auto-capture a log as well."""
+    toml_path = _write_pull_config(tmp_path)
+    report = SnapshotReport(
+        pull=_pull_report(),
+        dataset=MagicMock(),
+        checks=[_check("ck1", True)],
+        manifest_path=tmp_path / "manifest.json",
+        validation_report_path=tmp_path / "report.md",
+    )
+
+    try:
+        with patch("undertow.data.cli.snapshot") as mock_snapshot:
+            mock_snapshot.side_effect = _log_and_return(report, "snapshot started")
+            result = main(["snapshot", "--config", str(toml_path)])
+    finally:
+        configure_logging(force=True)
+
+    assert result == 0
+    logs = sorted((tmp_path / "logs").glob("snapshot-*.log"))
+    assert len(logs) == 1
+    assert "snapshot started" in logs[0].read_text(encoding="utf-8")
+
+
+def test_main_pull_log_open_failure_is_not_fatal(tmp_path: Path) -> None:
+    """An unwritable log dir warns but must never abort the pull."""
+    toml_path = _write_pull_config(tmp_path)
+    try:
+        with (
+            patch("undertow.data.cli.pull") as mock_pull,
+            patch("undertow.data.cli.add_file_handler", side_effect=OSError("nope")),
+        ):
+            mock_pull.return_value = _pull_report()
+            result = main(["pull", "--config", str(toml_path)])
+    finally:
+        configure_logging(force=True)
+
+    assert result == 0  # the pull still ran and reported success
 
 
 # ---------------------------------------------------------------------------

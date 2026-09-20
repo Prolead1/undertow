@@ -51,6 +51,9 @@ GAS_UNITS: Mapping[str, int] = MappingProxyType(
     }
 )
 
+DEFAULT_LOG_DIR: Path = Path("logs")
+"""Default directory for auto-captured run logs (``[paths] log_dir``)."""
+
 
 @dataclass(frozen=True, slots=True)
 class PoolConfig:
@@ -268,6 +271,9 @@ class DataConfig:
     endpoints: EndpointConfig
     cache_dir: Path
     output_dir: Path
+    # Directory for automatically captured run logs (``[paths] log_dir``). Defaulted so
+    # direct DataConfig construction in tests needs no log path; every real config sets it.
+    log_dir: Path = DEFAULT_LOG_DIR
     # Extension (defaulted, keyword-safe): lets T14/undertow.sim calibrate gas cost without
     # touching config.py; overridden from the `[gas.units]` TOML section when present.
     gas_units: Mapping[str, int] = GAS_UNITS
@@ -310,7 +316,7 @@ _ENDPOINT_KEYS = frozenset(
         "min_request_interval_s",
     }
 )
-_PATH_KEYS = frozenset({"cache_dir", "output_dir"})
+_PATH_KEYS = frozenset({"cache_dir", "output_dir", "log_dir"})
 _GAS_KEYS = frozenset({"units", "tip_surcharge_pct"})
 _GAS_UNIT_KEYS = frozenset({"mint", "burn", "collect", "swap"})
 
@@ -336,6 +342,15 @@ def _need_str(data: Mapping[str, object], key: str, where: str) -> str:
     value = data[key]
     if not isinstance(value, str):
         raise ConfigError(f"{where}: key {key!r} must be a string, got {value!r}")
+    return value
+
+
+def _opt_str(data: Mapping[str, object], key: str, where: str) -> str | None:
+    if key not in data:
+        return None
+    value = data[key]
+    if not isinstance(value, str) or not value:
+        raise ConfigError(f"{where}: key {key!r} must be a non-empty string, got {value!r}")
     return value
 
 
@@ -569,6 +584,8 @@ def load_config(path: str | Path) -> DataConfig:
     _check_unknown(paths, _PATH_KEYS, f"{where}[paths]")
     cache_dir = Path(_need_str(paths, "cache_dir", f"{where}[paths]"))
     output_dir = Path(_need_str(paths, "output_dir", f"{where}[paths]"))
+    log_dir_str = _opt_str(paths, "log_dir", f"{where}[paths]")
+    log_dir = Path(log_dir_str) if log_dir_str is not None else DEFAULT_LOG_DIR
     gas = raw.get("gas")
     if gas is not None and not isinstance(gas, dict):
         raise ConfigError(f"{where}: section [gas] must be a table, got {gas!r}")
@@ -582,6 +599,7 @@ def load_config(path: str | Path) -> DataConfig:
         endpoints=endpoints,
         cache_dir=cache_dir,
         output_dir=output_dir,
+        log_dir=log_dir,
         gas_units=gas_units,
         tip_surcharge_pct=tip_surcharge_pct,
     )

@@ -241,8 +241,10 @@ def _parse_kline(seq: object, symbol: str) -> dict:
     Field order (both sources): ``open_time, open, high, low, close, volume,
     close_time, quote_volume, trades, taker_buy_base, taker_buy_quote, ignore``.
     ``taker_*`` and ``ignore`` are accepted but dropped — they are not part of
-    ``REFERENCE_SCHEMA``. ``close_time`` is validated for consistency and then
-    re-derived (see the interval convention in the module docstring).
+    ``REFERENCE_SCHEMA``. ``close_time`` is checked for consistency but never
+    trusted: the emitted ``close_time`` is re-derived as
+    ``open_time + INTERVAL_CLOSE_DELTA_MS`` (see the interval convention in the
+    module docstring), so a mismatched source value cannot shift the output.
     """
     if not isinstance(seq, (list, tuple)) or len(seq) < 12:
         raise PermanentFetchError(
@@ -255,11 +257,20 @@ def _parse_kline(seq: object, symbol: str) -> dict:
             f"{symbol}: kline open_time {open_ms} is not aligned to the {INTERVAL} minute grid"
         )
     if close_ms != open_ms + INTERVAL_CLOSE_DELTA_MS:
-        # Source close_time is a consistency check only; the fetcher re-derives
-        # close_time per the pinned convention (module docstring).
-        raise PermanentFetchError(
-            f"{symbol}: kline close_time {close_ms} != open_time + 59 999 ms "
-            f"({open_ms + INTERVAL_CLOSE_DELTA_MS}) — interval convention violated"
+        # Source close_time is a consistency check only; the emitted close_time
+        # is re-derived from open_time. Binance's own feed carries rare
+        # malformed bars (e.g. ETHUSDT at 2023-03-24 12:39Z, in both the monthly
+        # archive and the REST API), so warn and keep the bar instead of
+        # aborting the whole pull — the re-derived close_time is correct
+        # regardless of the source value.
+        logger.warning(
+            "%s: source kline close_time %d != open_time + %d ms (%d) at open_time %d; "
+            "keeping the bar and re-deriving close_time per the pinned interval convention",
+            symbol,
+            close_ms,
+            INTERVAL_CLOSE_DELTA_MS,
+            open_ms + INTERVAL_CLOSE_DELTA_MS,
+            open_ms,
         )
     return {
         "symbol": symbol,
