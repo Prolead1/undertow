@@ -402,6 +402,8 @@ def test_data_config_constructs_with_only_contract_fields() -> None:
     )
     assert cfg.gas_units is GAS_UNITS
     assert cfg.tip_surcharge_pct == 3
+    # Unspecified log_dir falls back to the module default for direct construction.
+    assert cfg.log_dir == Path("logs")
 
 
 def test_pool_config_is_frozen() -> None:
@@ -481,6 +483,7 @@ def test_load_config_round_trip_real_configs(
     assert cfg.endpoints.max_retries == 5
     assert cfg.cache_dir == Path(cache_dir)
     assert cfg.output_dir == Path(output_dir)
+    assert cfg.log_dir == Path("logs") / name.removesuffix(".toml")
     # The [gas.units] section re-declares the pinned defaults; DataConfig picks them up.
     assert dict(cfg.gas_units) == dict(GAS_UNITS)
     # ADR-005: flat tip surcharge default of 3%.
@@ -492,6 +495,36 @@ def test_real_configs_use_pinned_env_placeholders() -> None:
         text = (CONFIG_DIR / name).read_text(encoding="utf-8")
         assert "${GRAPH_API_KEY}" in text
         assert "${ETH_RPC_URL}" in text
+
+
+def test_load_config_log_dir_defaults_when_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_env(monkeypatch)
+    cfg = load_config(_write(tmp_path, GOOD_TOML))
+    assert cfg.log_dir == Path("logs")
+
+
+def test_load_config_log_dir_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_env(monkeypatch)
+    body = GOOD_TOML.replace(
+        'output_dir = "data/datasets/test"',
+        'output_dir = "data/datasets/test"\nlog_dir = "var/logs/test"',
+    )
+    cfg = load_config(_write(tmp_path, body))
+    assert cfg.log_dir == Path("var/logs/test")
+
+
+def test_load_config_rejects_non_string_log_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_env(monkeypatch)
+    body = GOOD_TOML.replace(
+        'output_dir = "data/datasets/test"',
+        'output_dir = "data/datasets/test"\nlog_dir = 7',
+    )
+    with pytest.raises(ConfigError, match="log_dir"):
+        load_config(_write(tmp_path, body))
 
 
 def test_load_config_missing_env_var_names_var_no_value(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -46,6 +46,7 @@ reference_base_url = "https://api.binance.com"
 [paths]
 cache_dir = "data/cache/eth_usdc_3000"
 output_dir = "data/datasets/eth_usdc_3000"
+log_dir = "logs/eth_usdc_3000"
 
 # Order-of-magnitude gas estimates for the NonfungiblePositionManager path (mint/burn/collect)
 # plus a ballpark swap figure. Overrides the defaults in undertow.data.config.GAS_UNITS; T14 /

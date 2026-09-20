@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -91,3 +92,63 @@ def test_configure_logging_accepts_standard_levels(level):
     logging_setup.configure_logging(level=level, force=True)
     logger = logging.getLogger("undertow.data")
     assert logger.level == getattr(logging, level)
+
+
+# ---------------------------------------------------------------------------
+# add_file_handler — automatic DEBUG capture to a file
+# ---------------------------------------------------------------------------
+
+
+def _file_handlers() -> list[logging.Handler]:
+    logger = logging.getLogger("undertow.data")
+    return [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
+
+
+def test_add_file_handler_creates_parent_dirs_and_captures_debug(tmp_path: Path) -> None:
+    logging_setup.configure_logging(level="INFO", force=True)
+    log_path = tmp_path / "nested" / "run.log"
+    returned = logging_setup.add_file_handler(log_path)
+    assert returned == log_path
+    assert log_path.parent.is_dir()
+
+    # A child logger's debug record must land in the file...
+    logging.getLogger("undertow.data.fetchers.reference").debug("diagnostic %d", 7)
+    for handler in _file_handlers():
+        handler.flush()
+    assert "diagnostic 7" in log_path.read_text(encoding="utf-8")
+
+
+def test_add_file_handler_raises_logger_floor_but_not_console_level(tmp_path: Path) -> None:
+    logging_setup.configure_logging(level="INFO", force=True)
+    logging_setup.add_file_handler(tmp_path / "run.log")
+    logger = logging.getLogger("undertow.data")
+    assert logger.level == logging.DEBUG  # so debug records reach the file
+    assert logging_setup._stderr_handler().level == logging.INFO  # console unchanged
+
+
+def test_add_file_handler_file_level_defaults_to_debug(tmp_path: Path) -> None:
+    logging_setup.configure_logging(force=True)
+    logging_setup.add_file_handler(tmp_path / "run.log")
+    assert _file_handlers()[0].level == logging.DEBUG
+
+
+def test_add_file_handler_is_idempotent_per_path(tmp_path: Path) -> None:
+    logging_setup.configure_logging(force=True)
+    log_path = tmp_path / "run.log"
+    logging_setup.add_file_handler(log_path)
+    logging_setup.add_file_handler(log_path)
+    assert len(_file_handlers()) == 1
+    # A distinct path still attaches a second handler.
+    logging_setup.add_file_handler(tmp_path / "run2.log")
+    assert len(_file_handlers()) == 2
+
+
+def test_configure_logging_force_removes_file_handlers(tmp_path: Path) -> None:
+    logging_setup.configure_logging(force=True)
+    logging_setup.add_file_handler(tmp_path / "run.log")
+    assert len(_file_handlers()) == 1
+    logging_setup.configure_logging(force=True)
+    assert _file_handlers() == []
+    # The sentinel is reset, so the same path can be attached again after force.
+    logging_setup.add_file_handler(tmp_path / "run.log")
+    assert len(_file_handlers()) == 1

@@ -41,6 +41,7 @@ reference_base_url = "https://api.binance.com"
 [paths]
 cache_dir = "data/cache/eth_usdc_500"
 output_dir = "data/datasets/eth_usdc_500"
+log_dir = "logs/eth_usdc_500"
 
 [gas]
 tip_surcharge_pct = 3  # % uplift on base_fee_per_gas to approximate priority fees (ADR-005)

@@ -32,6 +32,7 @@ min_request_interval_s = 2.0
 [paths]
 cache_dir = "data/cache/eth_usdc_3000_test"
 output_dir = "data/datasets/eth_usdc_3000_test"
+log_dir = "logs/eth_usdc_3000_test"
 
 [gas]
 tip_surcharge_pct = 3  # % uplift on base_fee_per_gas to approximate priority fees (ADR-005)

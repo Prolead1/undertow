@@ -14,10 +14,11 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 from undertow.data.config import DataConfig, load_config
-from undertow.data.logging_setup import configure_logging
+from undertow.data.logging_setup import add_file_handler, configure_logging
 from undertow.data.pipeline import (
     info,
     pull,
@@ -426,8 +427,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 3
 
 
+def _enable_file_logging(config: DataConfig, command: str) -> Path | None:
+    """Capture this run's full DEBUG log next to the dataset's other artifacts.
+
+    The file lives under ``config.log_dir`` and is named
+    ``{command}-{dataset}-{UTC timestamp}.log`` so a failed pull always leaves a
+    diagnosable log without the user having to redirect output by hand. Failure to
+    open the file is a warning, never fatal — the pull itself must still run.
+    """
+    # Microsecond precision guarantees a distinct file per invocation: minute/second
+    # resolution would let two runs collide and FileHandler (append mode) would then
+    # interleave their records in one file.
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    dataset = config.output_dir.name or "dataset"
+    path = config.log_dir / f"{command}-{dataset}-{stamp}.log"
+    try:
+        return add_file_handler(path)
+    except OSError as exc:
+        print(f"Warning: could not open log file {path}: {exc}", file=sys.stderr)
+        return None
+
+
 def _cmd_pull(args: argparse.Namespace) -> int:
     config = _load_config(args.config)
+    log_path = _enable_file_logging(config, "pull")
+    if log_path is not None:
+        print(f"Logging to {log_path}", file=sys.stderr)
     route = None
     if args.route is not None:
         route = Route(args.route)
@@ -453,6 +478,9 @@ def _cmd_verify(args: argparse.Namespace) -> int:
 
 def _cmd_snapshot(args: argparse.Namespace) -> int:
     config = _load_config(args.config)
+    log_path = _enable_file_logging(config, "snapshot")
+    if log_path is not None:
+        print(f"Logging to {log_path}", file=sys.stderr)
     report = snapshot(config, out=args.out)
     print(_format_snapshot_report(report, json_output=args.json))
     return 0
