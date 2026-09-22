@@ -474,6 +474,46 @@ def test_snapshot_critical_failure_removes_provisional_manifest(
     assert not (output_dir / "manifest.json").exists()
 
 
+def test_snapshot_warning_failure_writes_manifest_and_surfaces_warning(
+    tmp_path: Path, tiny_dataset
+) -> None:
+    """A failed check at warning severity must not block the manifest.
+
+    This is the snapshot gate contract behind the documented zero-amount dust-swap
+    downgrade: only ``severity == "critical"`` failures abort; warning failures are
+    written into ``manifest.warnings`` so the count remains visible.
+    """
+    from undertow.data.types import CheckResult
+
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    config = _write_tiny_streams(tiny_dataset, output_dir)
+    good_report = pull(config)  # a valid, all-cached pull report
+    (output_dir / "manifest.json").unlink()
+
+    warned = [
+        CheckResult(
+            name="check_swap_sign_convention",
+            passed=False,
+            severity="warning",
+            detail="26 swap(s) with exactly one zero amount",
+            metrics={"zero_amount": 26},
+        )
+    ]
+    with (
+        patch("undertow.data.pipeline.pull", return_value=good_report),
+        patch("undertow.data.pipeline.verify", return_value=warned),
+    ):
+        report = snapshot(config)
+
+    assert report.manifest_path.exists()
+    manifest = read_manifest(output_dir)
+    assert any(
+        "check_swap_sign_convention" in w and "26 swap(s)" in w
+        for w in manifest.warnings
+    )
+
+
 def test_snapshot_exception_removes_provisional_manifest(tmp_path: Path, tiny_dataset) -> None:
     """An exception mid-verify removes the provisional manifest and re-raises."""
     output_dir = tmp_path / "output"

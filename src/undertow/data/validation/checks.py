@@ -5,10 +5,16 @@ raises on a failed check — the runner (``__init__.py``) decides what a failure
 means and T14's CLI decides the exit code. A validator that crashes on the first
 problem cannot report the other nine.
 
-Severity is **per check, never per data** — registered in ``CHECK_SEVERITIES``,
-the single source of truth, pinned by ``tests/data/test_checks.py`` so a later
-edit that quietly downgrades a Critical to a warning breaks a test. Per-data
-nuance lives in the *detail* string and the *metrics*, never in the severity.
+Severity is **per check by default, registered in ``CHECK_SEVERITIES``** — the
+single source of truth, pinned by ``tests/data/test_checks.py`` so a later edit
+that quietly downgrades a Critical to a warning breaks a test. Per-data nuance
+lives in the *detail* string and the *metrics*. The **one** documented exception
+is ``check_swap_sign_convention``: a same-signed non-zero pair (or a both-zero
+row) is a protocol/decoding contradiction and stays critical, while an
+exactly-one-zero dust swap is a real on-chain edge case that the T13 brief
+allows reporting as a warning. Its registry entry stays ``critical``; the result
+overrides its own severity only for that narrow, named class — never silently
+(LOCALIZED OVERRIDE, see ``_result``).
 
 Severity rationale (mirrors the T13 brief):
 
@@ -58,13 +64,19 @@ CHECK_SEVERITIES: Final[Mapping[str, Severity]] = {
     "check_reference_coverage": "warning",
     "check_regime_labels_complete": "warning",
 }
-"""Check name -> severity. Overridden only for ``skip``-flavoured results (``info``)."""
+"""Check name -> severity. Overridden for ``skip``-flavoured results (``info``)
+and for the one documented per-data class in ``check_swap_sign_convention``
+(exactly-one-zero dust swaps, reported as a warning)."""
 
 # Reference-coverage thresholds (config-separation rule: named, not inlined).
 # A gap-fill share above 2% or a single outage run above 12 bars means the
 # exchange feed was down enough that the as-of reference joins degrade.
 GAP_FILL_WARNING_SHARE: Final[float] = 0.02
 GAP_FILL_WARNING_RUN: Final[int] = 12
+
+# The one documented per-data severity override (see module docstring).
+ZERO_AMOUNT_DUST_SEVERITY: Final[Severity] = "warning"
+"""Severity for exactly-one-zero (real dust) swaps in ``check_swap_sign_convention``."""
 
 
 def _result(
@@ -75,9 +87,14 @@ def _result(
     severity: Severity | None = None,
     registry: Mapping[str, Severity] | None = None,
 ) -> CheckResult:
-    """Build a :class:`CheckResult` with the registered severity for ``name``
-    (override allowed for ``skip``-style results, which are ``info``). Cross-check
-    modules pass their own severity registry (each module owns its checks)."""
+    """Build a :class:`CheckResult` with the registered severity for ``name``.
+
+    ``severity`` overrides are for (a) ``skip``-style results (``info``) and
+    (b) the single documented per-data class in ``check_swap_sign_convention``
+    (exactly-one-zero dust swaps -> ``warning``); any other use of the override
+    should be treated as a contract change, not a convenience. Cross-check modules
+    pass their own severity registry (each module owns its checks).
+    """
     sev = severity if severity is not None else (registry or CHECK_SEVERITIES)[name]
     return CheckResult(
         name=name,
@@ -283,33 +300,68 @@ def check_swap_sign_convention(swaps: pa.Table) -> CheckResult:
     neither may be zero; report the offending ``tx_hash`` (the positive amount is
     the input, CONTRACTS.md §4.1).
 
-    Critical. The T13 brief allows downgrading to a warning *if real data ever
-    shows a degenerate zero-amount swap* — that would be a documented decision
-    (the count is reported either way), not a silent tolerance.
+    Two failure classes are distinguished:
+
+    * **same-signed, non-zero** amounts — a decoding/sign bug, always Critical;
+    * **both amounts zero** — definitionally invalid (no swap moves no tokens on
+      either side), so also Critical;
+    * **exactly one amount zero** — a real on-chain edge case: dust swaps whose
+      rounded token delta is exactly zero. This project's USDC/WETH 0.30% pool
+      produced 26 of them over 2022-2024; each was verified against mainnet
+      ``Swap`` logs (e.g. block 14353766 log 322, ``amount0 = 0``). The T13 brief
+      permits documenting this and downgrading it to a **warning** — the count
+      stays visible in the manifest, but it does not block a snapshot.
+
+    The registry pin for this check stays ``critical``; only the
+    exactly-one-zero result overrides its own severity to ``warning``.
     """
     name = "check_swap_sign_convention"
     a0 = _as_int_col(swaps, "amount0")
     a1 = _as_int_col(swaps, "amount1")
     txs = [str(v) for v in _col(swaps, "tx_hash")]
-    bad: list[str] = []
+    same_sign: list[str] = []
+    zero_amount: list[str] = []  # exactly one side is zero (real dust swaps)
+    both_zero: list[str] = []  # x == y == 0 — definitionally a decoding bug
     for x, y, tx in zip(a0, a1, txs, strict=True):
-        if x == 0 or y == 0 or (x > 0) == (y > 0):
-            bad.append(tx)
+        if x == 0 and y == 0:
+            both_zero.append(tx)
+        elif x == 0 or y == 0:
+            zero_amount.append(tx)
+        elif (x > 0) == (y > 0):
+            same_sign.append(tx)
     if not a0:
         return _result(name, True, "no swaps to check", {"rows": 0})
-    if not bad:
+    n_same, n_zero, n_both = len(same_sign), len(zero_amount), len(both_zero)
+    if n_same == 0 and n_zero == 0 and n_both == 0:
         return _result(
             name,
             True,
             f"all {len(a0)} swaps have opposite-signed, non-zero amounts",
             {"rows": len(a0)},
         )
+    metrics = {
+        "violations": n_same + n_zero + n_both,
+        "same_sign": n_same,
+        "zero_amount": n_zero,
+        "both_zero": n_both,
+    }
+    if n_same or n_both:
+        # A sign/decoding bug is never tolerated, even alongside dust swaps.
+        dust_note = f" and {n_zero} one-zero dust swap(s)" if n_zero else ""
+        return _result(
+            name,
+            False,
+            f"{n_same} same-signed non-zero and {n_both} both-zero swap(s){dust_note}; "
+            f"example tx_hash: {sorted(same_sign or both_zero)[:4]}",
+            metrics,
+        )
     return _result(
         name,
         False,
-        f"{len(bad)} swap(s) where amount0/amount1 are same-signed or zero; "
-        f"example tx_hash: {sorted(bad)[:4]}",
-        {"violations": len(bad)},
+        f"{n_zero} swap(s) with exactly one zero amount (real dust-swap edge case; "
+        f"see docstring); example tx_hash: {sorted(zero_amount)[:4]}",
+        metrics,
+        severity=ZERO_AMOUNT_DUST_SEVERITY,
     )
 
 

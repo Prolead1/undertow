@@ -258,6 +258,66 @@ def test_check_swap_sign_convention_passes_and_fails_same_sign() -> None:
     assert "tx_hash" in res.detail
 
 
+def test_check_swap_sign_convention_zero_amount_is_a_documented_warning() -> None:
+    """A zero-amount (dust) swap is a real edge case and must warn, not block.
+
+    Verified against mainnet Swap logs for this pool: 26 swaps over 2022-2024
+    have one amount exactly 0. Those rows are reported as a warning so the count
+    stays visible without failing the snapshot; the registry pin remains critical.
+    """
+    rows = [r for r in _rows(_tiny_tape()) if r["event_type"] == "swap"][:2]
+    degenerate = _table(
+        SWAP_SCHEMA,
+        [
+            dict(rows[0], amount0="0", amount1="100000000"),
+            dict(rows[1], amount0="1", amount1="0"),
+        ],
+    )
+    res = check_swap_sign_convention(degenerate)
+    assert not res.passed
+    assert res.severity == "warning"  # documented downgrade for exactly-one-zero only
+    assert res.metrics == {
+        "violations": 2,
+        "same_sign": 0,
+        "zero_amount": 2,
+        "both_zero": 0,
+    }
+    assert "one zero amount" in res.detail
+
+    # A same-signed pair is a sign/decoding bug and dominates: the result stays Critical.
+    mixed = _table(
+        SWAP_SCHEMA,
+        [
+            dict(rows[0], amount0="0", amount1="100000000"),
+            dict(rows[1], amount0="123456789", amount1="987654321"),
+        ],
+    )
+    res_mixed = check_swap_sign_convention(mixed)
+    assert not res_mixed.passed
+    assert res_mixed.severity == "critical"
+    assert res_mixed.metrics == {
+        "violations": 2,
+        "same_sign": 1,
+        "zero_amount": 1,
+        "both_zero": 0,
+    }
+
+    # Both amounts zero is definitionally invalid — always Critical, never the dust warning.
+    both_zero = _table(
+        SWAP_SCHEMA,
+        [dict(rows[0], amount0="0", amount1="0")],
+    )
+    res_both = check_swap_sign_convention(both_zero)
+    assert not res_both.passed
+    assert res_both.severity == "critical"
+    assert res_both.metrics == {
+        "violations": 1,
+        "same_sign": 0,
+        "zero_amount": 0,
+        "both_zero": 1,
+    }
+
+
 def test_check_tick_price_consistency_passes_and_fails_beyond_tolerance() -> None:
     rows = [r for r in _rows(_tiny_tape()) if r["event_type"] == "swap"]
     ok = check_tick_price_consistency(_table(SWAP_SCHEMA, rows), POOL)
