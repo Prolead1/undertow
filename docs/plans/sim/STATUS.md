@@ -10,7 +10,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 |---|---|---|---|---|---|---|
 | S00 scaffold + RL-library ADR | merged | `feature-sim-scaffold` | [#26](https://github.com/Prolead1/undertow/pull/26) | 574 passed | approved | Went beyond brief — all modules built as one scaffold |
 | S01 types/config | merged | `feature-sim-types-config` | [#27](https://github.com/Prolead1/undertow/pull/27) | 38 passed | approved | Implements CONTRACTS §§1-2
-| S02 data API extension | pr-open | `feature-sim-data-api` | | 64 passed, 1 xfailed | approved | Focused `test_data_api.py`; full suite 680 passed, 5 skipped, 1 xfailed; ADR-007 |
+| S02 data API extension | pr-open | `feature-sim-data-api` | [#36](https://github.com/Prolead1/undertow/pull/36) | 64 passed, 1 xfailed | approved | Focused `test_data_api.py`; full suite 680 passed, 5 skipped, 1 xfailed; ADR-007 |
 | S03 marketview + split | todo | | | | | |
 | S04 position math | todo | | | | | |
 | S05 metrics | todo | | | | | |
