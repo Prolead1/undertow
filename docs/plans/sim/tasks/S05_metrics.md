@@ -35,7 +35,10 @@ All functions operate on `pl.Series` (float64). Assume equally-spaced steps at t
   is NaN → drop).
 
 - `sortino_ratio(equity_curve, risk_free_rate=0.0, periods_per_year=365*24*6)` → `float`:
-  Same numerator as Sharpe, denominator = std of only negative period returns.
+  Same numerator as Sharpe; denominator = the RMS downside deviation over **all** periods,
+  `sqrt(mean(min(excess, 0)^2))`, where `excess = period_returns - rf/periods_per_year`
+  (positive excesses contribute 0). This is the standard semi-deviation and satisfies
+  CONTRACTS §14's "uses only downside deviation in denominator".
 
 - `max_drawdown(equity_curve)` → `float`: Maximum peak-to-trough decline as a negative fraction.
   E.g., -0.25 means a 25% drawdown. Track the running maximum and compute
@@ -56,7 +59,9 @@ All functions operate on `pl.Series` (float64). Assume equally-spaced steps at t
 ### 2. `metrics/decompose.py` — CONTRACTS.md §14
 
 - `pnl_decomposition(ledger)` → `dict[str, float]`: Takes a ledger DataFrame with columns
-  `fees`, `il_change`, `gas`, `slippage` (per-step values in USDC). Returns:
+  `fees`, `il`, `gas`, `slippage` (per-step values in USDC). CONTRACTS §13 names the
+  equity-curve impermanent-loss column `il`; the brief's `il_change` spelling is also
+  accepted as an alias. Returns:
   ```python
   {
       "total_fees": float,       # Σ fees
