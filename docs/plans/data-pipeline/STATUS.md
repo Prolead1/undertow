@@ -35,7 +35,8 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 
 ## All tasks complete — data module v1 merged 🎉
 
-T14 + T16 merged via PR #25. The sim-facing surface was later widened from T16's 16-name baseline by
-**ADR-008** (`docs/decisions/008-data-sim-public-api-reconciliation.md`), enforced by
-`tests/data/test_public_api.py`. Outstanding T16 brief items not addressed by that reconciliation:
-`docs/data_dictionary.md` + `tests/data/test_data_dictionary.py`.
+T14 + T16 merged via PR #25. The sim-facing surface was later widened from T16's documented
+list by **ADR-008** (`docs/decisions/008-data-sim-public-api-reconciliation.md`), enforced by
+`tests/data/test_public_api.py`. T16's remaining brief items — the generated data dictionary and its
+tests — shipped in PR #37 (`docs/data_dictionary.md`, `tests/data/test_data_dictionary.py`,
+`src/undertow/data/dictionary.py`). T16 is now fully delivered.
