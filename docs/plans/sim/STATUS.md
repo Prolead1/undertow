@@ -13,7 +13,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | S02 data API extension | pr-open | `feature-sim-data-api` | [#36](https://github.com/Prolead1/undertow/pull/36) | 129 passed (API+guard); full 745 passed, 5 skipped | approved | Surface widened + phantom `tick_to_sqrt_price` dropped; ADR-007 + ADR-008 |
 | S03 marketview + split | todo | | | | | |
 | S04 position math | todo | | | | | |
-| S05 metrics | todo | | | | | |
+| S05 metrics | pr-open | `feature-sim-metrics` | [#35](https://github.com/Prolead1/undertow/pull/35) | 39 passed; suite 655 passed, 5 skipped | approved | Sortino as RMS downside deviation; PnL IL column accepts `il` (CONTRACTS §13) or `il_change` |
 | S06 price processes | todo | | | | | |
 | S07 pool engine | todo | | | | | |
 | S08 frictions | todo | | | | | |
