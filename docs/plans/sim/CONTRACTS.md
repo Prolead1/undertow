@@ -227,7 +227,11 @@ from undertow.data.schemas import (
 from undertow.data.fixedpoint import (
     Q96, Q128, TICK_BASE, MIN_TICK, MAX_TICK,
     sqrt_price_x96_to_price, price_to_sqrt_price_x96,
-    price_to_tick, tick_to_price, tick_to_sqrt_price,
+    price_to_tick, tick_to_price,
+    # NOTE (ADR-008): this block is the **required subset** the sim consumes; the settled
+    # `undertow.data.__all__` is a superset. ``tick_to_sqrt_price`` is not a data name:
+    # human-unit sqrt-price is S04's ``calc_sqrt_price_a``; the exact integer form is
+    # ``tick_to_sqrt_price_x96``.
 )
 
 # New exports (S02 writes these adapters in loader.py or directly in __init__.py):

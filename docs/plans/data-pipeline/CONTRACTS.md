@@ -863,6 +863,16 @@ def load_dataset(config: DataConfig | str | Path, *,
 
 `undertow.data` imports nothing from `undertow.sim`. Ever. The reviewer checks this.
 
+> **Amendment (ADR-008).** The list above is the **plan-documented list** (18 names), not the settled
+> surface and not even what T16 actually shipped: T16's as-built `undertow.data.__all__` had 16 names,
+> differing from this list. The sim plan's `CONTRACTS.md` §3 requires a documented superset (types,
+> schema constants, fixed-point primitives, config types, and the `load_*` adapters); sim `PLAN.md`
+> §0.7 mandates it. ADR-008 supersedes both this list and the as-built T16 surface with one settled,
+> enforced surface. The authoritative list lives in `undertow.data.__all__` on the sim S02 branch and
+> is pinned by `tests/data/test_public_api.py` (set equality) and `tests/sim/test_data_api.py`
+> (required subset). The "Nothing more" clause above is superseded for the names the sim contract
+> requires. See `docs/decisions/008-data-sim-public-api-reconciliation.md`.
+
 ---
 
 ## 10. Shared test fixtures (who creates what)

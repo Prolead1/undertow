@@ -1,8 +1,14 @@
 # ADR 007 — `undertow.data` sim-API loader attribution and the T16-pending `tick_to_sqrt_price` stub
 
-**Status:** accepted
+**Status:** accepted, **superseded in part by ADR-008**
 **Affects:** S02 `src/undertow/data/__init__.py` · `src/undertow/data/loader.py` · CONTRACTS.md §3
 **Raised by:** S02 (`feature-sim-data-api`)
+
+> **Correction (ADR-008).** The premise that T16 had not shipped is **false** — T16 (PR #25) is
+> merged, and it never contained a `tick_to_sqrt_price` name. The `TICK_BASE`-from-`.config`
+> attribution decision below stands. The `tick_to_sqrt_price` `NotImplementedError` stub, its
+> `strict=True` xfail, and the "T16 pending" framing are **withdrawn**; ADR-008 drops the phantom
+> name and settles the sim-facing surface. Read this ADR for the module-attribution decision only.
 
 ## Context
 

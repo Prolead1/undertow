@@ -44,7 +44,7 @@ All schema constants: `SWAP_SCHEMA`, `MINT_SCHEMA`, `BURN_SCHEMA`, `COLLECT_SCHE
 **From `undertow.data.fixedpoint`:**
 `Q96`, `Q128`, `TICK_BASE`, `MIN_TICK`, `MAX_TICK`,
 `sqrt_price_x96_to_price`, `price_to_sqrt_price_x96`,
-`price_to_tick`, `tick_to_price`, `tick_to_sqrt_price`
+`price_to_tick`, `tick_to_price`, `tick_to_sqrt_price_x96`
 
 **New (S02 writes these — they live directly in `__init__.py` or a tiny `loader.py`):**
 `load_dataset`, `load_tape`, `load_reference_feed`, `load_gas_feed`, `load_regime_labels`

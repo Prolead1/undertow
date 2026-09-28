@@ -6,9 +6,9 @@ top-level :mod:`undertow.data` package and never reaches into
 ``undertow.data.pipeline`` / ``.storage`` / ``.transforms`` directly.
 
 The loaders deliberately delegate to the real internal modules (``pipeline.build``
-via :func:`load_dataset`) rather than re-implementing any I/O. When the data plan's
-T16 ships the final public surface these adapters stay thin — they are the seam, not
-the implementation.
+via :func:`load_dataset`) rather than re-implementing any I/O. The data plan's T16
+public surface has shipped (PR #25); these adapters are the seam, not the
+implementation.
 """
 
 from __future__ import annotations
@@ -133,20 +133,3 @@ def load_regime_labels(config: DataConfig) -> pa.Table:
     """Load the regime labels (``REGIME_SCHEMA``), sorted by ``timestamp``."""
     dataset = load_dataset(config, streams=frozenset({"regime"}))
     return _sorted(dataset.require("regime"), "regime")
-
-
-# ---------------------------------------------------------------------------
-# Fixed-point adapter pending T16.
-# ---------------------------------------------------------------------------
-
-
-def tick_to_sqrt_price(tick: int) -> float:
-    """Human sqrt-price ``sqrt(1.0001 ** tick)`` at ``tick``.
-
-    Pending T16 — data public API not yet complete. The internal
-    ``undertow.data.fixedpoint`` module currently exposes only the exact-integer
-    ``tick_to_sqrt_price_x96``; T16 owns the final fixedpoint surface, so this
-    adapter is a placeholder rather than a re-implementation.
-    """
-    # T16 owns the final data public API; do not guess the intended units/return type.
-    raise NotImplementedError("Pending T16 — data public API not yet complete")

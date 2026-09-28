@@ -22,9 +22,9 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | T11 align | merged | feature-data-event-tape | #22 | 21 tests | APPROVE | tiny_dataset() fixture; backward-only as-of joins |
 | T12 regimes | merged | feature-data-regimes | #18 | 15 tests | APPROVE | rolling σ_rv + μ labeller |
 | T13 validation | merged | feature-data-validation | #23 | 15 test_checks + 17 test_crosscheck | APPROVE | 11 checks + route-agreement + fee reconciliation |
-| T14 cli | pr-open | feature-data-cli | #25 | 25 test_cli + 15 test_pipeline | awaiting merge | pull/verify/snapshot/info subcommands; JSON + human output |
+| T14 cli | merged | feature-data-cli | #25 | 25 test_cli + 15 test_pipeline | APPROVE (merged by human) | pull/verify/snapshot/info subcommands; JSON + human output |
 | T15 dune | merged | feature-data-dune-queries | #17 | 17 tests | APPROVE | 6 SQL queries + magnitude expectations |
-| T16 public api | pr-open | feature-data-cli | #25 | included in T14 | awaiting merge | load_dataset() entry point; 16-name stable __all__ |
+| T16 public api | merged | feature-data-cli | #25 | included in T14 | APPROVE (merged by human) | `load_dataset()` entry point; surface widened for sim by ADR-008 |
 
 ## ADRs raised
 
@@ -33,6 +33,9 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 - `adr/005-gas-flat-tip-surcharge.md` — **accepted**: per-block priority-fee resolution replaced with `eth_feeHistory(no pctls)` + flat `tip_surcharge_pct` in `gas_cost_wei`. 2000× CU reduction; priority fees on Alchemy archive are undeliverable.
 - `adr/006-gas-timestamps-feehistory-only.md` — **accepted**: `GAS_SCHEMA` is base-fee only; per-block `block_timestamp`/`eth_usd_price` removed (~122M CU saved; the event tape already carries timestamps free from the event logs).
 
-## All tasks complete — data module v1 done 🎉
+## All tasks complete — data module v1 merged 🎉
 
-Last remaining action: merge PR #25 (T14 + T16) into `main`.
+T14 + T16 merged via PR #25. The sim-facing surface was later widened from T16's 16-name baseline by
+**ADR-008** (`docs/decisions/008-data-sim-public-api-reconciliation.md`), enforced by
+`tests/data/test_public_api.py`. Outstanding T16 brief items not addressed by that reconciliation:
+`docs/data_dictionary.md` + `tests/data/test_data_dictionary.py`.

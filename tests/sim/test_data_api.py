@@ -74,7 +74,7 @@ FIXEDPOINT_NAMES = (
     "price_to_sqrt_price_x96",
     "price_to_tick",
     "tick_to_price",
-    "tick_to_sqrt_price",
+    "tick_to_sqrt_price_x96",
 )
 
 LOADER_NAMES = (
@@ -144,15 +144,13 @@ def test_specific_import_works() -> None:
     assert callable(tick_to_price)
 
 
-@pytest.mark.xfail(
-    reason="Pending T16 — data public API not yet complete",
-    raises=NotImplementedError,
-    strict=True,
-)
-def test_tick_to_sqrt_price_pending_t16() -> None:
-    # ``undertow.data.fixedpoint`` only exposes the exact-integer
-    # ``tick_to_sqrt_price_x96`` today; T16 owns the final surface.
-    data.tick_to_sqrt_price(0)
+def test_tick_to_sqrt_price_absent_and_x96_present() -> None:
+    """ADR-008: ``tick_to_sqrt_price`` is not a data name and is intentionally
+    not exported. The exact-integer ``tick_to_sqrt_price_x96`` is."""
+    assert "tick_to_sqrt_price" not in data.__all__
+    assert not hasattr(data, "tick_to_sqrt_price")
+    assert "tick_to_sqrt_price_x96" in data.__all__
+    assert callable(data.tick_to_sqrt_price_x96)
 
 
 @pytest.mark.parametrize(

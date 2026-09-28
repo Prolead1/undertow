@@ -44,6 +44,8 @@ __all__ = [
     "liquidity_for_amounts",
     "amounts_for_liquidity",
     # === S02 additions (sim public API, docs/plans/sim/CONTRACTS.md §3) ===
+    # The settled sim-facing surface is a deliberate superset of T16's baseline 16
+    # names; see docs/decisions/008-data-sim-public-api-reconciliation.md.
     # --- Re-exported from undertow.data.types ---
     "Address",
     "BlockNumber",
@@ -82,7 +84,9 @@ __all__ = [
     "sqrt_price_x96_to_price",
     "price_to_sqrt_price_x96",
     "price_to_tick",
-    "tick_to_sqrt_price",
+    # NOTE: CONTRACTS §3's ``tick_to_sqrt_price`` does not exist in the data package.
+    # The sim gets human-unit sqrt-prices from S04's ``calc_sqrt_price_a`` and the
+    # exact integer form from ``tick_to_sqrt_price_x96`` (ADR-008).
     # --- Bridge adapters (undertow.data.loader) ---
     "load_tape",
     "load_reference_feed",
@@ -124,7 +128,6 @@ from undertow.data.loader import (
     load_reference_feed,
     load_regime_labels,
     load_tape,
-    tick_to_sqrt_price,
 )
 from undertow.data.schemas import (
     BURN_SCHEMA,
