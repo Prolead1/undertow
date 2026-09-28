@@ -8,9 +8,9 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 
 | Task | State | Branch | PR | pytest | Reviewer | Notes |
 |---|---|---|---|---|---|---|
-| S00 scaffold + RL-library ADR | pr-open | `feature-sim-scaffold` | [#26](https://github.com/Prolead1/undertow/pull/26) | 574 passed | approved | Went beyond brief — all modules built as one scaffold |
-| S01 types/config | in-review | `feature-sim-types-config` | — | — | reviewing | Implements CONTRACTS §§1-2
-| S02 data API extension | todo | | | | | |
+| S00 scaffold + RL-library ADR | merged | `feature-sim-scaffold` | [#26](https://github.com/Prolead1/undertow/pull/26) | 574 passed | approved | Went beyond brief — all modules built as one scaffold |
+| S01 types/config | merged | `feature-sim-types-config` | [#27](https://github.com/Prolead1/undertow/pull/27) | 38 passed | approved | Implements CONTRACTS §§1-2
+| S02 data API extension | pr-open | `feature-sim-data-api` | | 64 passed, 1 xfailed | approved | Focused `test_data_api.py`; full suite 680 passed, 5 skipped, 1 xfailed; ADR-007 |
 | S03 marketview + split | todo | | | | | |
 | S04 position math | todo | | | | | |
 | S05 metrics | todo | | | | | |
@@ -29,3 +29,4 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 ## ADRs raised
 
 - **ADR-004** — RL library selection (`stable-baselines3 >= 2.9`), in `docs/decisions/004-rl-library.md`
+- **ADR-007** — `undertow.data` sim-API loader attribution and the T16-pending `tick_to_sqrt_price` stub (`TICK_BASE` imported from `.config`; `load_*`/`tick_to_sqrt_price` in `.loader`), in `docs/decisions/007-data-api-loader-module-attribution.md`
