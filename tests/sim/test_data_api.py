@@ -257,7 +257,7 @@ def test_sim_boundary_grep_ripgrep() -> None:
         pytest.skip("ripgrep not installed; pure-Python boundary scan covers this")
     sim_dir = _repo_root() / "src" / "undertow" / "sim"
     result = subprocess.run(
-        [rg, "--no-filename", BOUNDARY_MARKER, str(sim_dir)],
+        [rg, "--no-filename", "-F", BOUNDARY_MARKER, str(sim_dir)],
         capture_output=True,
         text=True,
         check=False,

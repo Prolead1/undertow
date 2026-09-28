@@ -11,7 +11,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | S00 scaffold + RL-library ADR | merged | `feature-sim-scaffold` | [#26](https://github.com/Prolead1/undertow/pull/26) | 574 passed | approved | Scaffold only: deps, test markers, config skeleton, RL ADR |
 | S01 types/config | merged | `feature-sim-types-config` | [#27](https://github.com/Prolead1/undertow/pull/27) | 38 passed | approved | Implements CONTRACTS §§1-2 |
 | S02 data API extension | merged | `feature-sim-data-api` | [#36](https://github.com/Prolead1/undertow/pull/36) | 129 passed (API+guard); full 745 passed, 5 skipped | approved | Surface widened + phantom `tick_to_sqrt_price` dropped; ADR-007 + ADR-008 |
-| S03 marketview + split | todo | | | | | |
+| S03 marketview + split | pr-open | `feature-sim-marketview` | [#39](https://github.com/Prolead1/undertow/pull/39) | 39 passed; full 853 passed, 6 skipped | approved | Look-ahead wall enforced; pyarrow→polars; relaxed stale scaffold guard to allow top-level data API (ADR-008) |
 | S04 position math | todo | | | | | |
 | S05 metrics | merged | `feature-sim-metrics` | [#35](https://github.com/Prolead1/undertow/pull/35) | 39 passed; suite 655 passed, 5 skipped | approved | Sortino as RMS downside deviation; PnL IL column accepts `il` (CONTRACTS §13) or `il_change` |
 | S06 price processes | todo | | | | | |
