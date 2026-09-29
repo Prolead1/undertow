@@ -392,3 +392,68 @@ def tiny_ledger(tiny_market_view: MarketView) -> BacktestLedger:
 
     window = tiny_market_view.slice(0, 100)
     return run_backtest(HODLPolicy(), window, SimConfig())
+
+
+# ---------------------------------------------------------------------------
+# S12 append — tiny Gymnasium environment fixture (CONTRACTS.md §18).
+# Appended at the very end (S11 edits this file in parallel) so the shared
+# fixtures above are never touched.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def tiny_env(
+    tiny_market_view: MarketView,
+    mock_gas_model: object,
+    mock_slippage_model: object,
+) -> object:
+    """S12: an ``LpEnvironment`` with all mock components (CONTRACTS.md §18).
+
+    Built on a *fresh* pool engine (base liquidity ``1e18`` plus a 21-tick
+    background lattice, no agent position) so the environment can own its
+    per-episode deployment.  The base is intentionally larger than
+    ``tiny_pool_engine``'s ``1e15``: at ``1e18`` the ~3% agent fee share
+    exercises the marginal-agent path instead of the agent dominating the pool.
+    Replay prices come from the full
+    ``tiny_market_view`` train split; the 30-day episode config makes
+    ``build_episode`` span the whole split, yielding one decision per reference
+    bar (99 steps, the fixture's reference feed length).  Deterministic:
+    ``reset(seed=...)`` fixes the episode window and price stream.
+    """
+    from undertow.sim.config import EpisodeConfig, SimConfig
+    from undertow.sim.core.pool import PoolEngine, PoolState, TickState
+    from undertow.sim.core.position import calc_sqrt_price_a
+    from undertow.sim.env.lp_env import LpEnvironment
+    from undertow.sim.prices.replay import ReplayPriceProcess
+    from undertow.sim.types import Tick as _Tick
+
+    engine = PoolEngine(
+        state=PoolState(
+            sqrt_price=calc_sqrt_price_a(_Tick(196242)),
+            tick=_Tick(196242),
+            liquidity=1.0e18,
+            fee_growth_global_0=0.0,
+            fee_growth_global_1=0.0,
+            fee_tier_bps=3000,
+            tick_spacing=60,
+        ),
+        ticks={
+            _Tick(196200 + step * 60): TickState(initialized=True)
+            for step in range(-10, 11)
+        },
+    )
+    config = SimConfig(
+        episode=EpisodeConfig(duration_days=30, step_minutes=10),
+        seed=0,
+    )
+    price_process = ReplayPriceProcess(
+        tiny_market_view, 0, tiny_market_view.step_count()
+    )
+    return LpEnvironment(
+        tiny_market_view,
+        engine,
+        price_process,
+        mock_gas_model,
+        mock_slippage_model,
+        config,
+    )
