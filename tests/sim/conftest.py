@@ -23,6 +23,7 @@ from undertow.data import (
     tick_to_sqrt_price_x96,
 )
 from undertow.sim.config import EpisodeConfig
+from undertow.sim.core.position import Position
 from undertow.sim.marketview import MarketView
 
 
@@ -208,4 +209,32 @@ def tiny_market_view(rng: np.random.Generator) -> MarketView:
         eval_end_utc=_TINY_EVAL_END,
         is_train=True,
         episode_config=EpisodeConfig(),
+    )
+
+
+@pytest.fixture
+def entry_position() -> Position:
+    """S04: a ±120-tick position built via ``initial_deposit`` at tick 196242.
+
+    ADR-009 orientation: ``entry_sqrt = calc_sqrt_price_a(196242)`` is the raw
+    sqrt price (~18244.326) and ``entry_price = tick_to_price(196242, 6, 18)``
+    is the human USDC-per-WETH price (~3004.307).  The position's ``value`` at
+    that point consumes exactly the 100,000 capital budget, i.e.
+    ``entry_position.value(entry_sqrt, entry_price) == 100_000`` to float64
+    precision.  Fee-growth snapshots start at zero.
+    """
+    from undertow.data import tick_to_price
+    from undertow.sim.core.position import calc_sqrt_price_a, initial_deposit
+    from undertow.sim.types import Tick, TickSpacing
+
+    entry_tick = 196242
+    entry_sqrt = calc_sqrt_price_a(Tick(entry_tick))
+    entry_price = float(tick_to_price(entry_tick, 6, 18))
+    return initial_deposit(
+        entry_sqrt,
+        entry_price,
+        Tick(entry_tick - 120),
+        Tick(entry_tick + 120),
+        100_000.0,
+        TickSpacing(60),
     )

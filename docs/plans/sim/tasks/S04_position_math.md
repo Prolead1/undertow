@@ -3,6 +3,12 @@
 **Wave 2 · size M · depends on: S01, S02 · blocks: S07, S10, S11, S12**  
 **Branch:** `feature-sim-position-math`
 
+> **ADR-009 (accepted) supersedes parts of this brief.** `sqrt_price`, `tick` and `liquidity` are
+> **raw** protocol quantities; `price` is the **human** USDC-per-WETH price; `amount0`/`amount1` and
+> fee outputs are **human** token units (raw divided by `10**dec0`/`10**dec1`); `Position` and both
+> factories gain `dec0=6`/`dec1=18`. Where this brief conflicts, the ADR wins — see
+> `docs/decisions/009-sim-price-orientation.md`.
+
 ## Why this task exists
 
 Every component that values a position — the pool engine, baselines, backtester, and environment —
@@ -56,8 +62,8 @@ Implement everything from CONTRACTS.md §5:
   The position starts with fee-growth snapshots at 0.
 
 - `position_from_amounts(tick_lower, tick_upper, amount0, amount1, sqrt_price, tick_spacing)` →
-  `Position`: Given raw token amounts, compute L (equations 8–9 inverted). Useful for
-  reconstructing positions from on-chain data.
+  `Position`: Given human token amounts, compute L (equations 8–9 inverted with the
+  `10**dec0`/`10**dec1` scaling applied). Useful for reconstructing positions from on-chain data.
 
 ### 2. Math details
 
@@ -92,7 +98,8 @@ Append an `entry_position` fixture:
 
 ## Tests you must write
 
-1. **Golden: V2 IL at r=1.2** → −0.00454 (−0.45%). Use full-range position (MIN_TICK, MAX_TICK)
+1. **Golden: V2 IL at r=1.2** → −0.004141 (−0.41%). Use full-range position (MIN_TICK, MAX_TICK)
+   (ADR-009 corrects the §19 typo from −0.00454)
 2. **Golden: V2 IL at r=0.5** → −0.0572 (−5.7%)
 3. **Golden: Concentrated ±10% IL at r=1.2** → −0.066 (−6.6%)
 4. **Golden: Concentrated ±10% IL at r=0.5** → −0.325 (−32.5%)
