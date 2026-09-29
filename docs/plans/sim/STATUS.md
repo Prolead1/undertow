@@ -15,10 +15,10 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | S04 position math | merged | `feature-sim-position-math` | [#40](https://github.com/Prolead1/undertow/pull/40) | 35 passed; full 888 passed, 6 skipped | approved | ADR-009 orientation: raw sqrt/liquidity, human amounts/price/value |
 | S05 metrics | merged | `feature-sim-metrics` | [#35](https://github.com/Prolead1/undertow/pull/35) | 39 passed; suite 655 passed, 5 skipped | approved | Sortino as RMS downside deviation; PnL IL column accepts `il` (CONTRACTS §13) or `il_change` |
 | S06 price processes | merged | `feature-sim-price-processes` | [#44](https://github.com/Prolead1/undertow/pull/44) | 41 passed; full 929 passed, 6 skipped | approved | ADR-010 (dt cadence = 10 min) |
-| S07 pool engine | pr-open | `feature-sim-pool-engine` | [#43](https://github.com/Prolead1/undertow/pull/43) | 36 passed; full 924 passed, 6 skipped | approved | ADR-012 fee/pip units |
-| S08 frictions | pr-open | `feature-sim-frictions` | [#45](https://github.com/Prolead1/undertow/pull/45) | 30 passed; full 954 passed, 6 skipped | approved | Stacked on #43; ADR-012 slippage units (pips/1e6 + bps/1e4); gas per ADR-005/006 |
+| S07 pool engine | merged | `feature-sim-pool-engine` | [#43](https://github.com/Prolead1/undertow/pull/43) | 36 passed; full 924 passed, 6 skipped | approved | ADR-012 fee/pip units |
+| S08 frictions | merged | `feature-sim-frictions` | [#45](https://github.com/Prolead1/undertow/pull/45) | 30 passed; full 954 passed, 6 skipped | approved | ADR-012 slippage units (pips/1e6 + bps/1e4); gas per ADR-005/006 |
 | S09 reward | merged | `feature-sim-reward` | [#41](https://github.com/Prolead1/undertow/pull/41) | 34 passed; full 922 passed, 6 skipped | approved | normalize_reward at env boundary; ablation flags gate but pnl_net ungated |
-| S10 baselines | todo | | | | | |
+| S10 baselines | pr-open | `feature-sim-baselines` | [#42](https://github.com/Prolead1/undertow/pull/42) | 33 passed; full 921 passed, 6 skipped | approved | ADR-011 baseline action encoding; Observation typed via TYPE_CHECKING (S12) |
 | S11 backtester | todo | | | | | |
 | S12 gym env | todo | | | | | |
 | S13 training harness | todo | | | | | |
@@ -33,4 +33,5 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 - **ADR-008** — data ⇄ sim public-API surface reconciliation (superset of T16's baseline; drops phantom `tick_to_sqrt_price`; restores the public-API guard), in `docs/decisions/008-data-sim-public-api-reconciliation.md`
 - **ADR-009** — sim price orientation: raw sqrt price, human amounts/price (USDC numeraire); V2 IL r=1.2 typo corrected to −0.004141, in `docs/decisions/009-sim-price-orientation.md`
 - **ADR-010** — MRSJD step size: `dt` is the 10-minute cadence (`1/(6·24·365.25)`), correcting the literal `1/(6·365.25)` (4h) in `CONTRACTS.md` §7; σ = 0 allowed as pure-drift limit, in `docs/decisions/010-sim-mrsjd-dt-cadence.md`
+- **ADR-011** — baseline policies encode ranges through the factored `Action`; full range is the widest snapped band (not byte-exact `MIN_TICK`/`MAX_TICK`), in `docs/decisions/011-sim-baseline-action-encoding.md`
 - **ADR-012** — fee tier units: `fee_tier_bps` holds Uniswap pips (3000 = 0.30%), pool-fee denominator `1_000_000`, slippage = notional × (pips/1e6 + impact bps/1e4), in `docs/decisions/012-fee-and-pip-units.md`
