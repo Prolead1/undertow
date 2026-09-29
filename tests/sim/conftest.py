@@ -23,6 +23,7 @@ from undertow.data import (
     tick_to_sqrt_price_x96,
 )
 from undertow.sim.config import EpisodeConfig
+from undertow.sim.core.pool import PoolEngine
 from undertow.sim.core.position import Position
 from undertow.sim.marketview import MarketView
 
@@ -238,3 +239,61 @@ def entry_position() -> Position:
         100_000.0,
         TickSpacing(60),
     )
+
+
+# ---------------------------------------------------------------------------
+# S07 append — tiny_pool_engine fixture (CONTRACTS.md §18).
+# Kept at the very end so parallel tasks can append after S04/S07 without
+# touching each other's fixtures.
+# ---------------------------------------------------------------------------
+
+#: Reference tick for ~$3004 USDC/WETH (CONTRACTS §19), and the fee tier /
+#: spacing of the WETH/USDC 0.30% pool.  The current tick need not be a
+#: multiple of the spacing; position bounds are snapped by the engine.
+_TINY_POOL_ENTRY_TICK = 196242
+_TINY_POOL_FEE_TIER_BPS = 3000
+_TINY_POOL_TICK_SPACING = 60
+#: Nearest spacing-grid anchor to the reference tick, used to lay out the
+#: background lattice so that entry bounds land on initialized ticks.
+_TINY_POOL_GRID_ANCHOR = 196200
+#: External active liquidity the agent's positions are marginal against.
+_TINY_POOL_BASE_LIQUIDITY = 1.0e15
+
+
+@pytest.fixture
+def tiny_pool_engine(entry_position: Position) -> PoolEngine:
+    """S07: a `PoolEngine` at raw tick 196242 with a populated lattice.
+
+    ADR-009 raw orientation: ``sqrt_price = calc_sqrt_price_a(196242)``
+    (~18244.3), ``tick = 196242``, raw ``liquidity``.  The lattice has 21
+    initialized background ticks from tick 195600 to 196800 (the reference
+    tick ±600 on the 60-spacing grid), and one open position whose bounds come
+    from ``entry_position`` (snapped to the spacing) carrying its raw ``L``.
+    """
+    from undertow.sim.core.pool import PoolState, TickState
+    from undertow.sim.core.position import calc_sqrt_price_a
+    from undertow.sim.types import Tick as _Tick
+
+    entry_tick = _Tick(_TINY_POOL_ENTRY_TICK)
+    state = PoolState(
+        sqrt_price=calc_sqrt_price_a(entry_tick),
+        tick=entry_tick,
+        liquidity=_TINY_POOL_BASE_LIQUIDITY,
+        fee_growth_global_0=0.0,
+        fee_growth_global_1=0.0,
+        fee_tier_bps=_TINY_POOL_FEE_TIER_BPS,
+        tick_spacing=_TINY_POOL_TICK_SPACING,
+    )
+
+    ticks: dict[_Tick, TickState] = {}
+    for step in range(-10, 11):
+        tick = _Tick(_TINY_POOL_GRID_ANCHOR + step * _TINY_POOL_TICK_SPACING)
+        ticks[tick] = TickState(initialized=True)
+
+    engine = PoolEngine(state=state, ticks=ticks)
+    engine.open_position(
+        entry_position.tick_lower,
+        entry_position.tick_upper,
+        entry_position.liquidity,
+    )
+    return engine

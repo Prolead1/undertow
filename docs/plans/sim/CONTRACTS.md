@@ -124,7 +124,7 @@ class EpisodeConfig:
     step_minutes: int = 10         # decision cadence
     agent_capital_usdc: float = 100_000.0
     marginal_agent: bool = True    # agent liquidity never moves the price path
-    fee_tier_bps: int = 3000       # 0.30% default for WETH/USDC
+    fee_tier_bps: int = 3000       # Uniswap pips (3000 = 0.30%; ADR-012); the `_bps` name is a legacy misnomer
     tick_spacing: int = 60
 
 @dataclass(frozen=True, slots=True)
@@ -537,7 +537,8 @@ class PoolEngine:
         """Advance the pool by one step.
 
         Updates sqrt_price → tick → liquidity (crossing ticks as needed), updates
-        fee_growth_global from swap volume at the pool's fee tier, and returns a dict
+        fee_growth_global from swap volume at the pool's fee tier
+        (fee = swap_volume * fee_tier_pips / 1_000_000 — ADR-012), and returns a dict
         with:
           - fees_accrued: dict[position_id, (fees_0, fees_1)]
           - ticks_crossed: list[Tick]
@@ -646,7 +647,10 @@ class SlippageModel(Protocol):
     def slippage_cost_usdc(self, notional_usdc: float,
                            pool_fee_tier_bps: int,
                            fixed_impact_bps: float) -> float:
-        """Slippage = notional * (pool_fee_tier_bps + fixed_impact_bps) / 10000."""
+        """Slippage = notional * (pool_fee_tier_pips / 1_000_000 + fixed_impact_bps / 10_000).
+
+        The ``pool_fee_tier_bps`` argument holds Uniswap pips (1e-6); the impact term is true bps
+        (1e-4). See ADR-012."""
         ...
 ```
 

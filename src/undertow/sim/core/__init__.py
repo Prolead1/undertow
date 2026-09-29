@@ -7,6 +7,7 @@ the export list below.
 
 from __future__ import annotations
 
+from undertow.sim.core.pool import PoolEngine, PoolState, TickState
 from undertow.sim.core.position import (
     DEFAULT_DEC0,
     DEFAULT_DEC1,
@@ -20,7 +21,10 @@ from undertow.sim.core.position import (
 __all__ = [
     "DEFAULT_DEC0",
     "DEFAULT_DEC1",
+    "PoolEngine",
+    "PoolState",
     "Position",
+    "TickState",
     "calc_sqrt_price_a",
     "calc_sqrt_price_b",
     "initial_deposit",
