@@ -63,8 +63,8 @@ Validate in `__post_init__`: transition matrix is square, rows sum to 1 (within 
 all tuples have the same length, σ > 0 for all states, df > 2 for finite variance.
 
 **`CalibratedPriceProcess`**:
-- `__init__(self, params: MRSJDParams, dt: float = 1 / (6 * 365.25))`: `dt` defaults to 10 minutes
-  in annualized units. Initialize the hidden regime state (sample from the stationary distribution
+- `__init__(self, params: MRSJDParams, dt: float = 1 / (6 * 24 * 365.25))`: `dt` defaults to 10 minutes
+  in annualized units (ADR-010). Initialize the hidden regime state (sample from the stationary distribution
   of the transition matrix).
 - `reset(rng)`: reset price to an arbitrary starting value (e.g., log-price = 0 for simplicity,
   or take a starting price parameter). Resample the initial regime from the stationary distribution.

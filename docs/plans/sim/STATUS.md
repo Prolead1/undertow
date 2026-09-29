@@ -14,7 +14,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | S03 marketview + split | merged | `feature-sim-marketview` | [#39](https://github.com/Prolead1/undertow/pull/39) | 39 passed; full 853 passed, 6 skipped | approved | Look-ahead wall enforced; pyarrow→polars; relaxed stale scaffold guard to allow top-level data API (ADR-008) |
 | S04 position math | pr-open | `feature-sim-position-math` | [#40](https://github.com/Prolead1/undertow/pull/40) | 35 passed; full 849 passed, 5 skipped | approved | ADR-009 orientation: raw sqrt/liquidity, human amounts/price/value |
 | S05 metrics | merged | `feature-sim-metrics` | [#35](https://github.com/Prolead1/undertow/pull/35) | 39 passed; suite 655 passed, 5 skipped | approved | Sortino as RMS downside deviation; PnL IL column accepts `il` (CONTRACTS §13) or `il_change` |
-| S06 price processes | todo | | | | | |
+| S06 price processes | pr-open | `feature-sim-price-processes` | | 41 passed; full 929 passed, 6 skipped | approved | ADR-010 (dt cadence = 10 min) |
 | S07 pool engine | todo | | | | | |
 | S08 frictions | todo | | | | | |
 | S09 reward | todo | | | | | |
@@ -32,3 +32,4 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 - **ADR-007** — `undertow.data` sim-API loader module attribution (`TICK_BASE` imported from `.config`; `load_*` adapters in `.loader`), in `docs/decisions/007-data-api-loader-module-attribution.md`
 - **ADR-008** — data ⇄ sim public-API surface reconciliation (superset of T16's baseline; drops phantom `tick_to_sqrt_price`; restores the public-API guard), in `docs/decisions/008-data-sim-public-api-reconciliation.md`
 - **ADR-009** — sim price orientation: raw sqrt price, human amounts/price (USDC numeraire); V2 IL r=1.2 typo corrected to −0.004141, in `docs/decisions/009-sim-price-orientation.md`
+- **ADR-010** — MRSJD step size: `dt` is the 10-minute cadence (`1/(6·24·365.25)`), correcting the literal `1/(6·365.25)` (4h) in `CONTRACTS.md` §7; σ = 0 allowed as pure-drift limit, in `docs/decisions/010-sim-mrsjd-dt-cadence.md`
