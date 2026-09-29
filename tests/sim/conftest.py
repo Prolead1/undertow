@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
@@ -297,3 +298,53 @@ def tiny_pool_engine(entry_position: Position) -> PoolEngine:
         entry_position.liquidity,
     )
     return engine
+
+
+# ---------------------------------------------------------------------------
+# S08 append — friction fixtures (CONTRACTS.md §8).
+# Appended at the very end so parallel tasks can edit this file without
+# conflicting with S00/S03/S04 fixtures above.
+# ---------------------------------------------------------------------------
+
+if TYPE_CHECKING:
+    from undertow.sim.frictions import FlatGasModel, ProportionalSlippageModel
+
+
+@pytest.fixture
+def mock_gas_model() -> FlatGasModel:
+    """A ``FlatGasModel`` at $3000 ETH, 30 gwei base fee + 3% tip surcharge.
+
+    Explicit expected USDC costs (hand-computed, ADR-005 base-fee-only
+    arithmetic) are asserted in ``tests/sim/test_frictions.py``:
+
+    * ``mint``      -> 460_000 * 30e9 * 1.03 * 3000 / 1e18 == 42.642
+    * ``rebalance`` -> 825_000 * 30e9 * 1.03 * 3000 / 1e18 == 76.4775
+    * ``hold``      -> 0.0
+
+    The ``priority_fee_gwei=1.0`` argument is retained for the S08 brief's
+    constructor but is ignored under ADR-005.
+    """
+    from undertow.sim.config import GasConfig
+    from undertow.sim.frictions import FlatGasModel
+
+    return FlatGasModel(
+        GasConfig(),
+        eth_usd_price=3000.0,
+        base_fee_gwei=30.0,
+        priority_fee_gwei=1.0,
+    )
+
+
+@pytest.fixture
+def mock_slippage_model() -> ProportionalSlippageModel:
+    """A ``ProportionalSlippageModel`` with the pinned default impact.
+
+    Applies ``notional * (pool_fee_tier_bps + fixed_impact_bps) / 10000`` (the frozen
+    CONTRACTS §8 formula). NOTE: with the pinned ``EpisodeConfig.fee_tier_bps=3000``
+    that yields ``notional * (3000 + 5) / 10000 == notional * 0.3005`` — see the S08
+    report/PR for the fee-tier-unit mismatch flagged against the "0.003 + 0.0005"
+    shorthand in the brief.
+    """
+    from undertow.sim.frictions import ProportionalSlippageModel
+
+    return ProportionalSlippageModel()
