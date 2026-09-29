@@ -367,3 +367,28 @@ def dummy_policy() -> object:
     from undertow.sim.policies import HODLPolicy
 
     return HODLPolicy()
+
+
+# ---------------------------------------------------------------------------
+# S11 append — shared BacktestLedger fixture (CONTRACTS.md §18).
+# Appended at the very end so S12 can append its own `tiny_env` fixture
+# without touching this block.  Imports stay lazy, matching the S10 style.
+# ---------------------------------------------------------------------------
+
+if TYPE_CHECKING:
+    from undertow.sim.backtest import BacktestLedger
+
+
+@pytest.fixture
+def tiny_ledger(tiny_market_view: MarketView) -> BacktestLedger:
+    """S11: a ``BacktestLedger`` from a 100-step replay of ``dummy_policy``.
+
+    Deterministically built from the shared ``tiny_market_view`` (sliced to the
+    first 100 tape events) and a default ``SimConfig``; reused by S14-S15.
+    """
+    from undertow.sim.backtest import run_backtest
+    from undertow.sim.config import SimConfig
+    from undertow.sim.policies import HODLPolicy
+
+    window = tiny_market_view.slice(0, 100)
+    return run_backtest(HODLPolicy(), window, SimConfig())
