@@ -17,7 +17,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | S06 price processes | todo | | | | | |
 | S07 pool engine | todo | | | | | |
 | S08 frictions | todo | | | | | |
-| S09 reward | todo | | | | | |
+| S09 reward | pr-open | `feature-sim-reward` | | 34 passed; full 922 passed, 6 skipped | approved | normalize_reward at env boundary; ablation flags gate but pnl_net ungated |
 | S10 baselines | todo | | | | | |
 | S11 backtester | todo | | | | | |
 | S12 gym env | todo | | | | | |
