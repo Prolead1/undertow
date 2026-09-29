@@ -18,8 +18,8 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | S07 pool engine | merged | `feature-sim-pool-engine` | [#43](https://github.com/Prolead1/undertow/pull/43) | 36 passed; full 924 passed, 6 skipped | approved | ADR-012 fee/pip units |
 | S08 frictions | merged | `feature-sim-frictions` | [#45](https://github.com/Prolead1/undertow/pull/45) | 30 passed; full 954 passed, 6 skipped | approved | ADR-012 slippage units (pips/1e6 + bps/1e4); gas per ADR-005/006 |
 | S09 reward | merged | `feature-sim-reward` | [#41](https://github.com/Prolead1/undertow/pull/41) | 34 passed; full 922 passed, 6 skipped | approved | normalize_reward at env boundary; ablation flags gate but pnl_net ungated |
-| S10 baselines | pr-open | `feature-sim-baselines` | [#42](https://github.com/Prolead1/undertow/pull/42) | 33 passed; full 921 passed, 6 skipped | approved | ADR-011 baseline action encoding; Observation typed via TYPE_CHECKING (S12) |
-| S11 backtester | todo | | | | | |
+| S10 baselines | merged | `feature-sim-baselines` | [#42](https://github.com/Prolead1/undertow/pull/42) | 33 passed; full 921 passed, 6 skipped | approved | ADR-011 baseline action encoding; Observation typed via TYPE_CHECKING (S12) |
+| S11 backtester | pr-open | `feature-sim-backtester` | pending | 38 passed; full 1100 passed, 6 skipped | approved | CONTRACTS §13; exact tape Q128 fee path; `net == excess_vs_hodl` accounting identity; explicit look-ahead probe; ADR-013; local `BacktestObservation` until S12 |
 | S12 gym env | todo | | | | | |
 | S13 training harness | todo | | | | | |
 | S14 parity/look-ahead | todo | | | | | |
@@ -35,3 +35,4 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 - **ADR-010** — MRSJD step size: `dt` is the 10-minute cadence (`1/(6·24·365.25)`), correcting the literal `1/(6·365.25)` (4h) in `CONTRACTS.md` §7; σ = 0 allowed as pure-drift limit, in `docs/decisions/010-sim-mrsjd-dt-cadence.md`
 - **ADR-011** — baseline policies encode ranges through the factored `Action`; full range is the widest snapped band (not byte-exact `MIN_TICK`/`MAX_TICK`), in `docs/decisions/011-sim-baseline-action-encoding.md`
 - **ADR-012** — fee tier units: `fee_tier_bps` holds Uniswap pips (3000 = 0.30%), pool-fee denominator `1_000_000`, slippage = notional × (pips/1e6 + impact bps/1e4), in `docs/decisions/012-fee-and-pip-units.md`
+- **ADR-013** — backtester fee growth consumes the tape's Q128 global columns (exact in range, documented approximation on boundary crossings); proposes a deliberate public inside-accrual/`FeeGrowthTracker` export from `undertow.data`, in `docs/decisions/013-backtester-fee-growth-api.md`
