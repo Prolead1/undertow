@@ -23,13 +23,21 @@ def _walk_py_files(package_path: Path) -> list[Path]:
     return sorted(p for p in package_path.rglob("*.py") if p.is_file())
 
 
-def _imports_across_boundary(package_path: Path, other_pkg: str) -> list[str]:
+def _imports_across_boundary(
+    package_path: Path, other_pkg: str, *, allow_toplevel: bool = False
+) -> list[str]:
     """Return files (relative to ``package_path``) importing ``other_pkg``.
 
     Uses ``ast`` to inspect every module in ``package_path`` for either
     ``import <other_pkg>`` or ``from <other_pkg> import ...``. This is checked on
     source text rather than runtime imports, so it also catches imports hidden
     inside functions and under ``if TYPE_CHECKING``.
+
+    With ``allow_toplevel=True`` only imports of ``<other_pkg>.<submodule>`` are
+    flagged; importing the package's top-level public API is permitted. This is
+    the ``undertow.sim`` -> ``undertow.data`` direction, where the frozen sim
+    CONTRACTS §3 requires reading the top-level public surface but forbids any
+    internal submodule.
     """
     offenders: list[str] = []
     prefix = "undertow." + other_pkg
@@ -45,7 +53,7 @@ def _imports_across_boundary(package_path: Path, other_pkg: str) -> list[str]:
                 # node.module is None for `from . import x` — skip relative imports
                 imported_names = [node.module] if node.module else []
             for name in imported_names:
-                if name == prefix or name.startswith(prefix + "."):
+                if name.startswith(prefix + ".") or (name == prefix and not allow_toplevel):
                     offenders.append(str(path.relative_to(package_path)))
                     break
     return offenders
@@ -68,10 +76,14 @@ def test_data_does_not_import_sim() -> None:
     )
 
 
-def test_sim_does_not_import_data() -> None:
-    offenders = _imports_across_boundary(SRC / "undertow" / "sim", "data")
+def test_sim_does_not_import_data_internals() -> None:
+    """Sim may read the top-level ``undertow.data`` public API (S02 / CONTRACTS §3),
+    but must never import a ``undertow.data.<submodule>`` internal."""
+    offenders = _imports_across_boundary(
+        SRC / "undertow" / "sim", "data", allow_toplevel=True
+    )
     assert offenders == [], (
-        "undertow.sim must never import undertow.data; "
+        "undertow.sim must never import an undertow.data internal; "
         f"offending files: {', '.join(offenders) or 'none'}"
     )
 
