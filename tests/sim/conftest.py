@@ -347,3 +347,23 @@ def mock_slippage_model() -> ProportionalSlippageModel:
     from undertow.sim.frictions import ProportionalSlippageModel
 
     return ProportionalSlippageModel()
+
+
+# ---------------------------------------------------------------------------
+# S10 append — shared baseline-policy fixture (CONTRACTS.md §18).
+# S00 owns the seeds/markers above; S03 the MarketView/position fixtures; this
+# is added at the very end so the other tasks' append points stay intact.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def dummy_policy() -> object:
+    """S10: an always-hold :class:`~undertow.sim.policies.HODLPolicy`.
+
+    The fixture is reused by S11-S15 as a deterministic stand-in policy.  It is
+    returned as ``object`` only because the policy import is done lazily here to
+    keep the shared conftest's import block untouched.
+    """
+    from undertow.sim.policies import HODLPolicy
+
+    return HODLPolicy()
