@@ -339,11 +339,10 @@ def mock_gas_model() -> FlatGasModel:
 def mock_slippage_model() -> ProportionalSlippageModel:
     """A ``ProportionalSlippageModel`` with the pinned default impact.
 
-    Applies ``notional * (pool_fee_tier_bps + fixed_impact_bps) / 10000`` (the frozen
-    CONTRACTS §8 formula). NOTE: with the pinned ``EpisodeConfig.fee_tier_bps=3000``
-    that yields ``notional * (3000 + 5) / 10000 == notional * 0.3005`` — see the S08
-    report/PR for the fee-tier-unit mismatch flagged against the "0.003 + 0.0005"
-    shorthand in the brief.
+    Applies ``notional * (fee_pips/1_000_000 + impact_bps/10_000)`` (ADR-012 /
+    CONTRACTS §8): with the pinned ``EpisodeConfig.fee_tier_bps=3000`` (Uniswap
+    pips = 0.30%) and ``fixed_impact_bps=5`` that is
+    ``notional * 0.0035``.
     """
     from undertow.sim.frictions import ProportionalSlippageModel
 

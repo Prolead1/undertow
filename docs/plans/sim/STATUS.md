@@ -16,8 +16,8 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | S05 metrics | merged | `feature-sim-metrics` | [#35](https://github.com/Prolead1/undertow/pull/35) | 39 passed; suite 655 passed, 5 skipped | approved | Sortino as RMS downside deviation; PnL IL column accepts `il` (CONTRACTS §13) or `il_change` |
 | S06 price processes | merged | `feature-sim-price-processes` | [#44](https://github.com/Prolead1/undertow/pull/44) | 41 passed; full 929 passed, 6 skipped | approved | ADR-010 (dt cadence = 10 min) |
 | S07 pool engine | pr-open | `feature-sim-pool-engine` | [#43](https://github.com/Prolead1/undertow/pull/43) | 36 passed; full 924 passed, 6 skipped | approved | ADR-012 fee/pip units |
-| S08 frictions | todo | | | | | |
-| S09 reward | pr-open | `feature-sim-reward` | [#41](https://github.com/Prolead1/undertow/pull/41) | 34 passed; full 922 passed, 6 skipped | approved | normalize_reward at env boundary; ablation flags gate but pnl_net ungated |
+| S08 frictions | pr-open | `feature-sim-frictions` | [#45](https://github.com/Prolead1/undertow/pull/45) | 30 passed; full 954 passed, 6 skipped | approved | Stacked on #43; ADR-012 slippage units (pips/1e6 + bps/1e4); gas per ADR-005/006 |
+| S09 reward | merged | `feature-sim-reward` | [#41](https://github.com/Prolead1/undertow/pull/41) | 34 passed; full 922 passed, 6 skipped | approved | normalize_reward at env boundary; ablation flags gate but pnl_net ungated |
 | S10 baselines | todo | | | | | |
 | S11 backtester | todo | | | | | |
 | S12 gym env | todo | | | | | |

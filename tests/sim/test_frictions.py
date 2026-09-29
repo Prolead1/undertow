@@ -252,10 +252,11 @@ def test_spike_rejects_bad_probability() -> None:
 
 def test_slippage_exact_formula() -> None:
     model = ProportionalSlippageModel()
-    # 100_000 * (3000 + 5) / 10_000 == 30_050 (CONTRACTS §8 formula).
-    assert model.slippage_cost_usdc(100_000.0, 3000, 5.0) == pytest.approx(30_050.0)
+    # ADR-012: pool fee in pips (3000/1e6) + impact in bps (5/1e4).
+    # 100_000 * (3000/1_000_000 + 5/10_000) == 100_000 * 0.0035 == 350.
+    assert model.slippage_cost_usdc(100_000.0, 3000, 5.0) == pytest.approx(350.0)
     assert model.slippage_cost_usdc(100_000.0, 3000, 5.0) == pytest.approx(
-        100_000.0 * (3000 + 5.0) / 10_000.0
+        100_000.0 * (3000 / 1_000_000.0 + 5.0 / 10_000.0)
     )
 
 
@@ -301,7 +302,7 @@ def test_fixtures_are_importable(
     assert mock_gas_model.gas_cost_usdc("hold", 0, 0, 0, 0.0) == 0.0
     assert mock_slippage_model.slippage_cost_usdc(
         100_000.0, 3000, 5.0
-    ) == pytest.approx(30_050.0)
+    ) == pytest.approx(350.0)
 
 
 def test_gas_cost_never_negative(tiny_market_view: MarketView) -> None:
