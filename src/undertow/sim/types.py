@@ -13,8 +13,8 @@ from typing import Literal, NewType
 # -- Domain aliases -----------------------------------------------------------
 Tick = NewType("Tick", int)
 TickSpacing = NewType("TickSpacing", int)
-SqrtPrice = float  # sqrt(P) in human units; P = s²
-Price = float  # token1 per token0 (USDC per WETH)
+SqrtPrice = float  # RAW uniswap sqrt price sqrt(1.0001**tick) = sqrt_price_x96/Q96 (ADR-009)
+Price = float  # human token1 per token0 (USDC per WETH), 10**(dec1-dec0)/sqrt_price**2
 Wealth = float  # USDC
 
 

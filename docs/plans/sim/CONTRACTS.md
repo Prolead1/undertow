@@ -15,6 +15,12 @@ orchestrator — do not unilaterally change it, because other agents are already
   converted at that block's reference ETH price. Prices follow the data module's orientation:
   **token1 per token0 = USDC per WETH** (~2000–4000 across the study window). See data
   `CONTRACTS.md` §3.0.
+- **Price orientation (ADR-009)**: `SqrtPrice` is the **raw** Uniswap sqrt price
+  `sqrt(1.0001**tick) = sqrt_price_x96 / Q96`, monotonically increasing in tick; only the `*_x96`
+  names are the exact integer Q64.96 form. `Price` is the **human** USDC-per-WETH price
+  `10**(dec1-dec0) / sqrt_price**2`, decreasing in tick. `tick` and `liquidity` are raw protocol
+  quantities. `amount0`/`amount1` and fee outputs are human token units: raw amount divided by
+  `10**dec0` / `10**dec1`.
 - **Timestamps**: `datetime` with `tzinfo=timezone.utc`. Sim time is indexed by `seq` (tape step
   index) or bar index; wall-clock never enters the state.
 - **Determinism**: every stochastic component takes an explicit `numpy.random.Generator`. No
@@ -45,8 +51,8 @@ from typing import NewType, Literal
 # -- Domain aliases --
 Tick = NewType("Tick", int)
 TickSpacing = NewType("TickSpacing", int)
-SqrtPrice = float                # sqrt(P) in human units; P = s^2
-Price = float                    # token1 per token0 (USDC per WETH)
+SqrtPrice = float                # RAW uniswap sqrt price sqrt(1.0001**tick) = sqrt_price_x96/Q96 (ADR-009)
+Price = float                    # human token1 per token0 = USDC per WETH, 10**(dec1-dec0)/sqrt_price**2
 Wealth = float                   # USDC
 
 # -- Regime labels (consumed from data module; never recomputed in sim) --
@@ -230,8 +236,8 @@ from undertow.data.fixedpoint import (
     price_to_tick, tick_to_price,
     # NOTE (ADR-008): this block is the **required subset** the sim consumes; the settled
     # `undertow.data.__all__` is a superset. ``tick_to_sqrt_price`` is not a data name:
-    # human-unit sqrt-price is S04's ``calc_sqrt_price_a``; the exact integer form is
-    # ``tick_to_sqrt_price_x96``.
+    # ``calc_sqrt_price_a`` is the **raw** sqrt price; human price comes from
+    # ``tick_to_price``; the exact integer form is ``tick_to_sqrt_price_x96`` (ADR-009).
 )
 
 # New exports (S02 writes these adapters in loader.py or directly in __init__.py):
@@ -365,6 +371,8 @@ class Position:
     tick_spacing: TickSpacing
     fee_growth_inside_last_0: float = 0.0   # snapshot for token0 fee accrual
     fee_growth_inside_last_1: float = 0.0   # snapshot for token1 fee accrual
+    dec0: int = 6                           # token0 (USDC) decimals (ADR-009)
+    dec1: int = 18                          # token1 (WETH) decimals (ADR-009)
 
     def __post_init__(self) -> None:
         if self.tick_lower >= self.tick_upper:
@@ -374,12 +382,12 @@ class Position:
 
     # -- Token amounts (eqs 8–9 of §5.3) --
     def amount0(self, sqrt_price: SqrtPrice) -> float:
-        """Token0 holdings at `sqrt_price`. Returns 0 if the position has no token0
-        at this price (out of range on the token0 side)."""
+        """Human token0 (USDC) holdings at raw `sqrt_price`. Returns 0 if the position
+        has no token0 at this price (out of range on the token0 side)."""
         ...
 
     def amount1(self, sqrt_price: SqrtPrice) -> float:
-        """Token1 holdings at `sqrt_price`."""
+        """Human token1 (WETH) holdings at raw `sqrt_price`."""
         ...
 
     # -- Value (eq 11 of §5.3.4) --
@@ -408,7 +416,8 @@ class Position:
     # -- Fee accrual (§10.2.4 of roadmap) --
     def uncollected_fees(self, fee_growth_inside_0: float,
                          fee_growth_inside_1: float) -> tuple[float, float]:
-        """Uncollected fees = L * (current_fee_growth_inside - last_snapshot).
+        """Uncollected fees = L * (current_fee_growth_inside - last_snapshot), then
+        divided by 10**dec0 / 10**dec1 for human token units (ADR-009).
         Returns (fees_token0, fees_token1). Token0 fees are in USDC units."""
         ...
 
@@ -423,7 +432,7 @@ class Position:
     def above_range(self, sqrt_price: SqrtPrice) -> bool: ...
 
 def calc_sqrt_price_a(tick: Tick) -> SqrtPrice:
-    """sqrt(1.0001^tick) — the sqrt price at a tick."""
+    """sqrt(1.0001^tick) — the RAW sqrt price at a tick (sqrt_price_x96 / Q96)."""
     ...
 
 def calc_sqrt_price_b(tick: Tick) -> SqrtPrice:
@@ -432,7 +441,8 @@ def calc_sqrt_price_b(tick: Tick) -> SqrtPrice:
 
 def initial_deposit(sqrt_price: SqrtPrice, price: Price,
                     tick_lower: Tick, tick_upper: Tick,
-                    capital: Wealth, tick_spacing: TickSpacing) -> Position:
+                    capital: Wealth, tick_spacing: TickSpacing,
+                    *, dec0: int = 6, dec1: int = 18) -> Position:
     """Given a capital budget and a range, compute the Position (i.e. solve for L)
     such that V(sqrt_price_current, price_current) == capital.
 
@@ -443,8 +453,9 @@ def initial_deposit(sqrt_price: SqrtPrice, price: Price,
 def position_from_amounts(tick_lower: Tick, tick_upper: Tick,
                           amount0: float, amount1: float,
                           sqrt_price: SqrtPrice,
-                          tick_spacing: TickSpacing) -> Position:
-    """Given raw token amounts and a range, compute L (eqs 8–9 inverted).
+                          tick_spacing: TickSpacing,
+                          *, dec0: int = 6, dec1: int = 18) -> Position:
+    """Given human token amounts and a range, compute L (eqs 8–9 inverted).
     Useful for reconstructing a position from on-chain data."""
     ...
 ```
@@ -558,8 +569,11 @@ class PriceProcess(Protocol):
         ...
 
     def step(self, rng: np.random.Generator) -> tuple[Price, SqrtPrice, Tick]:
-        """Advance one step. Returns (price, sqrt_price, tick).
-        All three are consistent: price = sqrt_price^2, tick = floor(log(price)/log(1.0001))."""
+        """Advance one step. Returns (price_human, sqrt_price_raw, tick).
+        All three are consistent (ADR-009):
+        sqrt_price_raw = 10**((dec1-dec0)/2) / sqrt(price_human);
+        price_human = 10**(dec1-dec0) / sqrt_price_raw**2;
+        tick = price_to_tick(price_human, dec0, dec1) (floor semantics)."""
         ...
 
     @property
@@ -759,7 +773,7 @@ class Observation:
     reads from MarketView + PoolEngine at the current step index — never beyond."""
     # -- Market --
     price: Price                              # current reference price
-    sqrt_price: SqrtPrice                     # current sqrt(reference price)
+    sqrt_price: SqrtPrice                     # raw sqrt price (ADR-009)
     tick: Tick                                # current tick
     price_returns_1h: float                   # log return over last 6*10min bars
     price_returns_24h: float                  # log return over last 144*10min bars
@@ -1093,7 +1107,7 @@ quantities must include a golden test that reproduces at least one of these valu
 
 | Quantity | Expected value | Source | Used by |
 |---|---|---|---|
-| V2 IL at r=1.2 | −0.00454 (−0.45%) | §5.6.1 table | S04 |
+| V2 IL at r=1.2 | −0.004141 (−0.41%) | §5.6.1 table (ADR-009 corrects the slip) | S04 |
 | V2 IL at r=0.5 | −0.0572 (−5.7%) | §5.6.1 table | S04 |
 | Concentrated ±10% IL at r=1.2 | −0.066 (−6.6%) | §5.6.1 table | S04 |
 | Concentrated ±10% IL at r=0.5 | −0.325 (−32.5%) | §5.6.1 table | S04 |

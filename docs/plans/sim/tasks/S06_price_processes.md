@@ -39,8 +39,11 @@ tests/sim/test_price_processes.py
 - `__init__(self, market_view: MarketView, start_seq: int, end_seq: int)`: extracts the reference
   bars covering the episode window from the market view. Stores them internally.
 - `reset(rng)`: reset the bar index to 0
-- `step(rng)`: return the next bar's (price, sqrt_price, tick). All three must be consistent:
-  `price = reference_close`, `sqrt_price = sqrt(price)`, `tick = floor(log(price)/log(1.0001))`.
+- `step(rng)`: return the next bar's `(price_human, sqrt_price_raw, tick)`. All three must be
+  consistent per ADR-009: `price = reference_close` (human USDC/WETH),
+  `sqrt_price = 10**((dec1-dec0)/2) / sqrt(price)` (raw Uniswap sqrt price, `sqrt_price_x96 / Q96`),
+  and `tick = price_to_tick(price, dec0, dec1)` (floor semantics) — **never**
+  `log(price)/log(1.0001)`. The pinned pools are `dec0=6` (USDC), `dec1=18` (WETH).
   Raise `StopIteration` if past the last bar (the env wraps this as `truncated=True`).
 - `mode` → `"replay"`
 
@@ -75,7 +78,9 @@ all tuples have the same length, σ > 0 for all states, df > 2 for finite varian
      dlogP = μ * dt + σ * sqrt(dt) * ε  +  sum(jump_sizes)
      ```
      where ε ~ N(0,1) and jump sizes ~ StudentT(df, loc, scale) if a jump occurs
-  4. Update log-price, convert to price, sqrt_price, tick (consistent)
+  4. Update log-price, convert to `(price_human, sqrt_price_raw, tick)` per ADR-009:
+     `sqrt_price = 10**((dec1-dec0)/2) / sqrt(price)`,
+     `tick = price_to_tick(price, dec0, dec1)` (floor; never `log(price)/log(1.0001)`)
   5. Return (price, sqrt_price, tick)
 - `mode` → `"calibrated"`
 

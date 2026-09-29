@@ -15,6 +15,12 @@ simulator's float64 fast path — the backtester (S11) uses the data module's ex
 This is a large task because the tick-crossing logic is subtle and must match Uniswap V3's
 specification.
 
+**Orientation note (ADR-009).** The tick lattice and all of `PoolState`/`TickState` are in **raw**
+protocol units: raw sqrt price (`sqrt(1.0001**tick)`), raw integer ticks, and raw `liquidity`.
+`Position.liquidity` is likewise raw and is directly comparable to the tape's recorded active
+liquidity, so fee shares need no unit conversion. Only the reported token fees are humanised by
+`Position.uncollected_fees`'s `10**dec0`/`10**dec1` scaling.
+
 ## Files you own
 
 ```
@@ -134,7 +140,8 @@ direction.
 ### 3. `tests/sim/conftest.py` — `tiny_pool_engine` fixture
 
 Append a `tiny_pool_engine` fixture:
-- A `PoolEngine` initialized at `sqrt_price = sqrt(3000)`, tick ≈ 196242
+- A `PoolEngine` initialized at the **raw** `sqrt_price = calc_sqrt_price_a(196242) ≈ 18244.33`
+  (ADR-009), tick 196242
 - ~20 ticks initialized spanning tick −600 to +600 (≈ ±6% around entry)
 - One position open at tick_lower = −120, tick_upper = +120 with L from `entry_position`
 - Fee tier 3000 (30 bps), tick spacing 60
