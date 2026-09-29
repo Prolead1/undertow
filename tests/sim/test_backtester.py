@@ -41,14 +41,38 @@ CAPITAL = 100_000.0
 _ENTRY_SQRT = tick_to_sqrt_price_x96(ENTRY_TICK) / (1 << 96)
 _ENTRY_PRICE = float(tick_to_price(ENTRY_TICK, DEC0, DEC1))
 
+# The engine's initial +-120-tick position, snapped to the 60-spacing grid.
+_DEFAULT_LOWER = (ENTRY_TICK - 120) // TICK_SPACING * TICK_SPACING
+_DEFAULT_UPPER = -((-(ENTRY_TICK + 120)) // TICK_SPACING) * TICK_SPACING
+#: Uniswap fee pips for the 0.30% USDC/WETH pool (ADR-012).
+_FEE_PIPS = 3000
+
+
+def _initial_position() -> object:
+    """The exact position ``run_backtest`` deploys at ``ENTRY_TICK``."""
+    return initial_deposit(
+        _ENTRY_SQRT,
+        _ENTRY_PRICE,
+        Tick(_DEFAULT_LOWER),
+        Tick(_DEFAULT_UPPER),
+        CAPITAL,
+        TickSpacing(TICK_SPACING),
+    )
+
 
 def _market_view(
     *,
     minutes: list[int],
     prices: list[float],
     ticks: list[int | None] | None = None,
-    fg0: list[int] | None = None,
-    fg1: list[int] | None = None,
+    event_types: list[str] | None = None,
+    amount0: list[object] | None = None,
+    amount1: list[object] | None = None,
+    tick_lowers: list[int | None] | None = None,
+    tick_uppers: list[int | None] | None = None,
+    liquidity_amounts: list[object] | None = None,
+    fg0: list[int | None] | None = None,
+    fg1: list[int | None] | None = None,
     base_fee: int = 20 * 10**9,
     priority_fee: int = 10**9,
     liquidity: int = 2**80,
@@ -57,12 +81,45 @@ def _market_view(
 
     Reference closes and pool sqrts are consistent with ``ENTRY_TICK`` so the
     initial deposit and the HODL benchmark are reproducible by hand.
+
+    The tape carries the raw event payload the ADR-013 exact fee-growth replay
+    consumes (``event_type``, ``amount0``/``amount1``, the mint/burn bounds, and
+    ``liquidity_amount``).  When ``amount0``/``amount1`` are omitted the helper
+    synthesizes one-unit swaps in the direction of the tick move, so a tape with
+    no injected fee growth accrues no fees (the integer fee rounds to zero).
+    ``fg0``/``fg1`` remain as the derived-global cross-check columns.
     """
     n = len(minutes)
     start = datetime(2022, 1, 1, tzinfo=UTC)
     times = [start + timedelta(minutes=m) for m in minutes]
     if ticks is None:
         ticks = [ENTRY_TICK] * n
+    if event_types is None:
+        event_types = ["swap"] * n
+    if amount0 is None or amount1 is None:
+        auto0: list[object] = []
+        auto1: list[object] = []
+        previous = ENTRY_TICK
+        for tick_value in ticks:
+            if tick_value is None:
+                auto0.append(None)
+                auto1.append(None)
+                continue
+            if tick_value > previous:
+                auto0.append("-1")
+                auto1.append("1")
+            else:
+                auto0.append("1")
+                auto1.append("-1")
+            previous = tick_value
+        amount0 = auto0 if amount0 is None else amount0
+        amount1 = auto1 if amount1 is None else amount1
+    if tick_lowers is None:
+        tick_lowers = [None] * n
+    if tick_uppers is None:
+        tick_uppers = [None] * n
+    if liquidity_amounts is None:
+        liquidity_amounts = [None] * n
     if fg0 is None:
         fg0 = [0] * n
     if fg1 is None:
@@ -74,11 +131,18 @@ def _market_view(
             "seq": list(range(n)),
             "block_number": list(range(n)),
             "block_timestamp": times,
-            "event_type": ["swap"] * n,
+            "event_type": event_types,
+            "amount0": [None if v is None else str(v) for v in amount0],
+            "amount1": [None if v is None else str(v) for v in amount1],
             "price_reference": [float(p) for p in prices],
             "price_pool": [float(p) for p in prices],
             "sqrt_price_x96": [str(s) if s is not None else None for s in sqrt_x96],
             "tick": ticks,
+            "tick_lower": tick_lowers,
+            "tick_upper": tick_uppers,
+            "liquidity_amount": [
+                None if v is None else str(v) for v in liquidity_amounts
+            ],
             "liquidity": [str(liquidity)] * n,
             "base_fee_per_gas": [str(base_fee)] * n,
             "priority_fee_p50_wei": [str(priority_fee)] * n,
@@ -306,37 +370,82 @@ def test_decomposition_net_equals_excess_for_rebalancing_policy() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _tape_columns_cumulative_fees(
+    fg0: list[int | None],
+    fg1: list[int | None],
+    ticks: list[int | None],
+    position_liquidity: int,
+    price: float,
+) -> list[float]:
+    """The ADR-013 tape-columns apportionment the exact replay replaced.
+
+    Reproduces the superseded path in the tests so the exact replay can be
+    cross-checked against the derived ``fee_growth_global_*`` columns: it seeds
+    the baseline at the first non-null snapshot (crediting nothing), gates on
+    the *post-event* tick being in range, and computes ``(L * ΔG) >> 128``.
+    """
+    last0: int | None = None
+    last1: int | None = None
+    accrued0 = 0
+    accrued1 = 0
+    mask = (1 << 256) - 1
+    out: list[float] = []
+    for i, tick in enumerate(ticks):
+        g0, g1 = fg0[i], fg1[i]
+        if g0 is not None and g1 is not None:
+            if last0 is None or last1 is None:
+                last0, last1 = g0, g1
+            else:
+                if tick is not None and _DEFAULT_LOWER <= tick < _DEFAULT_UPPER:
+                    accrued0 += (position_liquidity * ((g0 - last0) & mask)) >> 128
+                    accrued1 += (position_liquidity * ((g1 - last1) & mask)) >> 128
+                last0, last1 = g0, g1
+        out.append(accrued0 / 10**DEC0 + accrued1 / 10**DEC1 * price)
+    return out
+
+
 def test_fee_accrual_is_exact_integer_q128() -> None:
-    # Global fee growth jumps by a known Q128 amount at the third event; the
-    # position is in range for the whole tape.
-    delta = 1 << 96
-    fg0 = [0, 0, delta, delta]
+    # A mint funds the pool liquidity; a token0-in swap that stays in range then
+    # accrues exactly ``(L_pos * Δgrowth) >> 128`` on the Q128 integers.  For an
+    # in-range, no-crossing swap the exact path must agree with the derived
+    # tape-columns path (ADR-013's cross-check).
+    lp = 10**18
+    gross = 10**12
+    fee = gross * _FEE_PIPS // 1_000_000
+    inc = (fee << 128) // lp
     view = _market_view(
         minutes=[0, 10, 20, 30],
         prices=[_ENTRY_PRICE] * 4,
-        fg0=fg0,
+        ticks=[ENTRY_TICK, ENTRY_TICK, ENTRY_TICK - 1, ENTRY_TICK - 1],
+        event_types=["swap", "mint", "swap", "swap"],
+        amount0=["1", None, str(gross), "1"],
+        amount1=["-1", None, "-1", "-1"],
+        tick_lowers=[None, _DEFAULT_LOWER, None, None],
+        tick_uppers=[None, _DEFAULT_UPPER, None, None],
+        liquidity_amounts=[None, lp, None, None],
+        fg0=[0, 0, inc, inc],
+        fg1=[0, 0, 0, 0],
     )
     ledger = run_backtest(HODLPolicy(), view, SimConfig())
-
-    lower = (ENTRY_TICK - 120) // TICK_SPACING * TICK_SPACING
-    upper = -((-(ENTRY_TICK + 120)) // TICK_SPACING) * TICK_SPACING
-    position = initial_deposit(
-        _ENTRY_SQRT,
-        _ENTRY_PRICE,
-        Tick(lower),
-        Tick(upper),
-        CAPITAL,
-        TickSpacing(TICK_SPACING),
-    )
-    liquidity = int(round(position.liquidity))
-    expected_raw = (liquidity * delta) >> 128
+    position_liquidity = int(round(_initial_position().liquidity))
+    expected_raw = (position_liquidity * inc) >> 128
     expected_fee = expected_raw / 10**DEC0
 
     fees = ledger.equity_curve["fees"].to_list()
     assert fees[0] == 0.0 and fees[1] == 0.0
     assert fees[2] == pytest.approx(expected_fee, rel=1e-12)
     assert fees[3] == 0.0
-    assert sum(fees) == pytest.approx(expected_fee, rel=1e-12)
+    assert ledger.fee_growth_exact is True
+
+    # cross-check: the derived Q128 global columns give the same total.
+    tape_columns = _tape_columns_cumulative_fees(
+        [0, 0, inc, inc],
+        [0, 0, 0, 0],
+        [ENTRY_TICK, ENTRY_TICK, ENTRY_TICK - 1, ENTRY_TICK - 1],
+        position_liquidity,
+        _ENTRY_PRICE,
+    )
+    assert tape_columns[-1] == pytest.approx(sum(fees), rel=1e-12)
 
 
 def test_fees_only_accrue_while_in_range() -> None:
@@ -353,36 +462,109 @@ def test_fees_only_accrue_while_in_range() -> None:
     assert ledger.equity_curve["fees"].sum() == pytest.approx(0.0)
 
 
-def test_leading_null_fee_growth_does_not_windfall() -> None:
-    # The tape's global accumulators are nullable before the first snapshot; a
-    # leading null must seed the baseline without crediting the unobservable gap.
-    delta = 1 << 96
+def test_exact_path_handles_a_crossed_boundary() -> None:
+    # A token1-in swap drives the pool tick from inside the position's range
+    # through its upper boundary.  The exact replay splits the event at the
+    # boundary and credits only the in-range segment's fee; the ADR-013
+    # tape-columns apportionment sees the post-event tick out of range and
+    # credits nothing.  This is exactly the case the old path could not handle.
+    lp = 10**18
+    gross = 10**15
+    fee = gross * _FEE_PIPS // 1_000_000
+    inc = (fee << 128) // lp
+    cross_tick = _DEFAULT_UPPER + 1
+    view = _market_view(
+        minutes=[0, 10, 20],
+        prices=[_ENTRY_PRICE] * 3,
+        ticks=[ENTRY_TICK, ENTRY_TICK, cross_tick],
+        event_types=["swap", "mint", "swap"],
+        amount0=["1", None, "-1"],
+        amount1=["-1", None, str(gross)],
+        tick_lowers=[None, _DEFAULT_LOWER, None],
+        tick_uppers=[None, _DEFAULT_UPPER, None],
+        liquidity_amounts=[None, lp, None],
+        fg1=[0, 0, inc],
+    )
+    ledger = run_backtest(HODLPolicy(), view, SimConfig())
+    position_liquidity = int(round(_initial_position().liquidity))
+    expected_raw = (position_liquidity * inc) >> 128
+    expected_fee = expected_raw / 10**DEC1 * _ENTRY_PRICE  # token1 (WETH) fees
+
+    fees = ledger.equity_curve["fees"].to_list()
+    assert fees[0] == 0.0 and fees[1] == 0.0
+    assert fees[2] == pytest.approx(expected_fee, rel=1e-12)
+    assert fees[2] > 0.0
+    assert ledger.fee_growth_exact is True
+
+    # The superseded tape-columns path credits nothing for the crossing event
+    # because the post-event tick is out of range; the exact path does not.
+    tape_columns = _tape_columns_cumulative_fees(
+        [0, 0, 0],
+        [0, 0, inc],
+        [ENTRY_TICK, ENTRY_TICK, cross_tick],
+        position_liquidity,
+        _ENTRY_PRICE,
+    )
+    assert tape_columns[-1] == 0.0
+    assert sum(fees) > tape_columns[-1]
+
+
+def test_exact_path_ignores_null_derived_global_columns() -> None:
+    # The derived fee_growth_global_* columns are nullable; the exact replay
+    # reads the raw swap payload, so a null column must not change the accrual
+    # (the columns are a cross-check anchor, not the accrual source).
+    lp = 10**18
+    gross = 10**12
+    fee = gross * _FEE_PIPS // 1_000_000
+    inc = (fee << 128) // lp
+    view = _market_view(
+        minutes=[0, 10, 20],
+        prices=[_ENTRY_PRICE] * 3,
+        ticks=[ENTRY_TICK, ENTRY_TICK, ENTRY_TICK - 1],
+        event_types=["swap", "mint", "swap"],
+        amount0=["1", None, str(gross)],
+        amount1=["-1", None, "-1"],
+        tick_lowers=[None, _DEFAULT_LOWER, None],
+        tick_uppers=[None, _DEFAULT_UPPER, None],
+        liquidity_amounts=[None, lp, None],
+        fg0=[None, None, None],
+        fg1=[None, None, None],
+    )
+    ledger = run_backtest(HODLPolicy(), view, SimConfig())
+    position_liquidity = int(round(_initial_position().liquidity))
+    expected = ((position_liquidity * inc) >> 128) / 10**DEC0
+    assert ledger.equity_curve["fees"][2] == pytest.approx(expected, rel=1e-12)
+
+
+def test_mint_initializing_a_synthetic_boundary_does_not_windfall() -> None:
+    # Reviewer regression: a real mint at the marginal position's own boundary,
+    # arriving after growth has accrued, must not re-seed ``feeGrowthOutside``
+    # and make the position's inside delta wrap negative (a ~2**256 windfall).
+    lp = 10**18
+    gross = 10**12
     view = _market_view(
         minutes=[0, 10, 20, 30],
         prices=[_ENTRY_PRICE] * 4,
-        fg0=[None, None, delta, 2 * delta],
-        fg1=[None, None, delta, 2 * delta],
+        ticks=[ENTRY_TICK, ENTRY_TICK, ENTRY_TICK - 1, ENTRY_TICK - 1],
+        event_types=["swap", "mint", "swap", "mint"],
+        amount0=["1", None, str(gross), None],
+        amount1=["-1", None, "-1", None],
+        tick_lowers=[None, ENTRY_TICK - 60, None, _DEFAULT_LOWER],
+        tick_uppers=[None, ENTRY_TICK + 60, None, _DEFAULT_UPPER],
+        liquidity_amounts=[None, lp, None, lp],
     )
     ledger = run_backtest(HODLPolicy(), view, SimConfig())
     fees = ledger.equity_curve["fees"].to_list()
-    assert fees[:3] == [0.0, 0.0, 0.0]
-
-    lower = (ENTRY_TICK - 120) // TICK_SPACING * TICK_SPACING
-    upper = -((-(ENTRY_TICK + 120)) // TICK_SPACING) * TICK_SPACING
-    position = initial_deposit(
-        _ENTRY_SQRT,
-        _ENTRY_PRICE,
-        Tick(lower),
-        Tick(upper),
-        CAPITAL,
-        TickSpacing(TICK_SPACING),
-    )
-    expected_raw = (int(round(position.liquidity)) * delta) >> 128
-    expected = expected_raw / 10**DEC0 + expected_raw / 10**DEC1 * _ENTRY_PRICE
-    assert fees[3] == pytest.approx(expected, rel=1e-12)
+    # The boundary-initialising mint adds no growth, so it credits nothing and
+    # never produces the wrapped-negative windfall.
+    assert fees[3] == pytest.approx(0.0)
+    assert max(fees) < 1e6
+    assert ledger.fee_growth_exact is True
 
 
 def test_all_null_fee_growth_accrues_nothing() -> None:
+    # With no liquidity provided by the tape, no swap can grow the accumulator,
+    # so a null-column tape accrues nothing regardless of the exact path.
     view = _market_view(
         minutes=[0, 10, 20],
         prices=[_ENTRY_PRICE] * 3,
@@ -449,24 +631,28 @@ def test_equity_change_reconciles_with_decomposition_each_step() -> None:
 
 
 def test_fee_revaluation_keeps_net_equals_excess() -> None:
-    # Token1 (WETH) fees accrued at row 1 are marked-to-market by the +5% move at
-    # row 2; the `fees` term must include that revaluation or `net` would diverge
-    # from `excess_vs_hodl`.
-    delta = 1 << 100
-    prices = [_ENTRY_PRICE, _ENTRY_PRICE, _ENTRY_PRICE * 1.05]
-    ticks = [int(price_to_tick(Decimal(str(p)), DEC0, DEC1)) for p in prices]
+    # Token1 (WETH) fees accrue at row 2 from a real token1-in swap; the +5%
+    # reference-price move at row 3 marks them to market.  The `fees` term must
+    # include that revaluation or `net` would diverge from `excess_vs_hodl`.
+    lp = 10**18
+    gross = 10**15
+    prices = [_ENTRY_PRICE, _ENTRY_PRICE, _ENTRY_PRICE, _ENTRY_PRICE * 1.05]
     view = _market_view(
-        minutes=[0, 10, 20],
+        minutes=[0, 10, 20, 30],
         prices=prices,
-        ticks=ticks,
-        fg0=[0, 0, 0],
-        fg1=[0, delta, delta],
+        ticks=[ENTRY_TICK, ENTRY_TICK, ENTRY_TICK + 1, ENTRY_TICK + 1],
+        event_types=["swap", "mint", "swap", "swap"],
+        amount0=["1", None, "-1", "-1"],
+        amount1=["-1", None, str(gross), "1"],
+        tick_lowers=[None, _DEFAULT_LOWER, None, None],
+        tick_uppers=[None, _DEFAULT_UPPER, None, None],
+        liquidity_amounts=[None, lp, None, None],
     )
     ledger = run_backtest(HODLPolicy(), view, SimConfig())
     result = summarize_backtest(ledger)
     fees = ledger.equity_curve["fees"].to_list()
-    assert fees[1] > 0.0
-    assert fees[2] > 0.0  # revaluation of the WETH fee leg
+    assert fees[2] > 0.0  # real WETH fee accrual at row 2
+    assert fees[3] > 0.0  # revaluation of the WETH fee leg at row 3
     assert ledger.pnl_decomposition["net"] == pytest.approx(
         result.excess_vs_hodl, rel=1e-9, abs=1e-6
     )
@@ -571,17 +757,26 @@ def test_rebalance_carries_equity_forward() -> None:
 
 
 def test_rebalance_collects_accrued_fees() -> None:
-    delta = 1 << 96
+    # A mint funds the pool at row 0; a token0-in swap at row 1 accrues USDC fees,
+    # which the 60-minute decision cadence collects at the row-1 rebalance.
+    lp = 10**18
+    gross = 10**12
     view = _market_view(
         minutes=[0, 60, 120],
         prices=[_ENTRY_PRICE] * 3,
-        fg0=[0, delta, delta],
+        ticks=[ENTRY_TICK, ENTRY_TICK - 1, ENTRY_TICK - 1],
+        event_types=["mint", "swap", "swap"],
+        amount0=[None, str(gross), "1"],
+        amount1=[None, "-1", "-1"],
+        tick_lowers=[_DEFAULT_LOWER, None, None],
+        tick_uppers=[_DEFAULT_UPPER, None, None],
+        liquidity_amounts=[lp, None, None],
     )
     config = SimConfig(episode=EpisodeConfig(step_minutes=60))
     ledger = run_backtest(_RebalanceEveryStep(), view, config)
     collected = ledger.decision_log["fees_collected"].to_list()
     assert collected[0] == 0.0  # no growth at the first decision
-    assert collected[1] > 0.0  # growth from event 1 to 2 is collected at the rebalance
+    assert collected[1] > 0.0  # the row-1 swap's fee is collected at the rebalance
 
 
 # ---------------------------------------------------------------------------

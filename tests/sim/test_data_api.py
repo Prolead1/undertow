@@ -85,8 +85,16 @@ LOADER_NAMES = (
     "load_regime_labels",
 )
 
+# ADR-013: the exact fee-growth replay facade (additive public surface).
+FEEGROWTH_NAMES = ("FeeGrowthReplay",)
+
 CONTRACT_NAMES = (
-    TYPES_NAMES + CONFIG_NAMES + SCHEMA_NAMES + FIXEDPOINT_NAMES + LOADER_NAMES
+    TYPES_NAMES
+    + CONFIG_NAMES
+    + SCHEMA_NAMES
+    + FIXEDPOINT_NAMES
+    + LOADER_NAMES
+    + FEEGROWTH_NAMES
 )
 
 # The data internals that must NEVER leak into the sim-facing ``__all__``.

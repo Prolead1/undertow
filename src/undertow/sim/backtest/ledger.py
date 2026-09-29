@@ -125,6 +125,13 @@ class BacktestLedger:
     periods_per_year: int = DEFAULT_PERIODS_PER_YEAR
     #: Number of recorded tape events.
     n_steps: int = 0
+    #: ADR-013 provenance: ``False`` if the exact fee-growth replay had to
+    #: approximate any crossing swap (unknown pre-swap price).  ``True`` when
+    #: every replayed swap was apportioned exactly.  ``True`` is not by itself a
+    #: claim that the replay matches chain: the tracker's lattice is built from
+    #: the events present in the tape window, and a boundary initialised before
+    #: the window is a named ADR-013 residual that this flag does not detect.
+    fee_growth_exact: bool = True
 
 
 @dataclass(frozen=True, slots=True)
