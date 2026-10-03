@@ -12,11 +12,13 @@ dependencies = [
     "tomli-w>=1.0",
     "platformdirs>=4.0",
     "eth-utils>=4.0",
+    # Core: ``undertow.sim.env`` imports gymnasium at import time (CONTRACTS §12).
+    "gymnasium>=1.0",
 ]
 
 [project.optional-dependencies]
+# Training-only stack (S13). The env itself is core; only PPO/SB3 is optional.
 sim = [
-    "gymnasium>=1.0",
     "stable-baselines3>=2.9",
 ]
 

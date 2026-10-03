@@ -19,8 +19,8 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | S08 frictions | merged | `feature-sim-frictions` | [#45](https://github.com/Prolead1/undertow/pull/45) | 30 passed; full 954 passed, 6 skipped | approved | ADR-012 slippage units (pips/1e6 + bps/1e4); gas per ADR-005/006 |
 | S09 reward | merged | `feature-sim-reward` | [#41](https://github.com/Prolead1/undertow/pull/41) | 34 passed; full 922 passed, 6 skipped | approved | normalize_reward at env boundary; ablation flags gate but pnl_net ungated |
 | S10 baselines | merged | `feature-sim-baselines` | [#42](https://github.com/Prolead1/undertow/pull/42) | 33 passed; full 921 passed, 6 skipped | approved | ADR-011 baseline action encoding; Observation typed via TYPE_CHECKING (S12) |
-| S11 backtester | pr-open | `feature-sim-backtester` | pending | 38 passed; full 1100 passed, 6 skipped | approved | CONTRACTS §13; exact tape Q128 fee path; `net == excess_vs_hodl` accounting identity; explicit look-ahead probe; ADR-013; local `BacktestObservation` until S12 |
-| S12 gym env | todo | | | | | |
+| S11 backtester | merged | `feature-sim-backtester` | [#46](https://github.com/Prolead1/undertow/pull/46) | 38 passed; full 1100 passed, 6 skipped | approved | CONTRACTS §13; exact tape Q128 fee path; ADR-013; local `BacktestObservation` until S12 |
+| S12 gym env | pr-open | `feature-sim-gym-env` | [#47](https://github.com/Prolead1/undertow/pull/47) | 42 passed; full 1104 passed, 6 skipped | approved | CONTRACTS §§11–12; event-granularity replay + look-ahead wall |
 | S13 training harness | todo | | | | | |
 | S14 parity/look-ahead | todo | | | | | |
 | S15 evaluation runner | todo | | | | | |
