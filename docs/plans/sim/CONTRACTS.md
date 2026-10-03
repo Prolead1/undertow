@@ -248,6 +248,10 @@ from undertow.data.loader import (
     load_gas_feed,                    # DataConfig → pyarrow.Table of GAS_SCHEMA, sorted
     load_regime_labels,               # DataConfig → pyarrow.Table of REGIME_SCHEMA, sorted
 )
+
+# ADR-013 extension (accepted): the backtester reaches the exact integer
+# fee-growth engine through this facade, never through undertow.data.transforms.*.
+from undertow.data import FeeGrowthReplay
 ```
 
 The sim **never** imports from `undertow.data.fetchers.*`, `undertow.data.transforms.*`,
@@ -879,9 +883,11 @@ def run_backtest(policy: Policy, market_view: MarketView,
                  config: SimConfig) -> BacktestLedger:
     """Replay a frozen policy over the real event tape.
 
-    Uses the data module's fee-growth engine for exact fee accrual (S11 wires
-    FeeGrowthTracker through S02's exports). The policy is never updated inside the
-    backtester."""
+    Uses the data module's fee-growth engine for exact fee accrual through the
+    top-level ``FeeGrowthReplay`` facade (ADR-013): boundary-crossing swaps and
+    pre-existing ``feeGrowthOutside`` are handled exactly, and the replay's
+    provenance is recorded on ``BacktestLedger.fee_growth_exact``. The policy is
+    never updated inside the backtester."""
     ...
 
 def summarize_backtest(ledger: BacktestLedger) -> BacktestResult: ...

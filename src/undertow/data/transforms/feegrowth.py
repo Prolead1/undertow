@@ -214,7 +214,9 @@ class FeeGrowthState:
     before a checkpoint is not silently forgotten after it), and
     ``fee_protocol`` (the packed uint8 from slot0: bits 0-3 = fp0, bits 4-7 =
     fp1; 0 when protocol fees are off, so T10's original behaviour is the
-    default).
+    default). A fourth extension, ``fee_pips``, overrides the pool's fee tier
+    for the ADR-013 public facade: ``None`` (the default) means "read
+    ``pool.fee_tier.value``", so existing callers are unchanged.
     """
 
     block_number: BlockNumber
@@ -227,6 +229,8 @@ class FeeGrowthState:
     current_sqrt_price_x96: int | None = field(default=None, kw_only=True)
     exact: bool = field(default=True, kw_only=True)
     fee_protocol: int = field(default=0, kw_only=True)
+    # --- ADR-013 extension (defaulted, keyword-only) ---
+    fee_pips: int | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,6 +296,7 @@ class FeeGrowthTracker:
         self._current_sqrt_price_x96: int | None = initial.current_sqrt_price_x96
         self._exact = initial.exact
         self._fee_protocol: int = initial.fee_protocol
+        self._fee_pips: int | None = initial.fee_pips
 
     # -- event application --------------------------------------------------
 
@@ -376,7 +381,7 @@ class FeeGrowthTracker:
         net_total = sum(nets)
 
         if net_total > 0:
-            fee_pips = self.pool.fee_tier.value
+            fee_pips = self._fee_pips if self._fee_pips is not None else self.pool.fee_tier.value
             allocated = 0
             for i, ((_a, _b, L), net) in enumerate(zip(segments, nets, strict=True)):
                 if i == len(segments) - 1:
@@ -496,6 +501,15 @@ class FeeGrowthTracker:
         self.ticks[tick] = TickState(outside_0, outside_1, state.liquidity_gross, net, True)
         self.current_liquidity = liq
 
+    @property
+    def exact(self) -> bool:
+        """Replay provenance: ``False`` once any swap was approximated.
+
+        The ADR-013 public facade exposes this so the backtester can record
+        whether the fee-growth replay is exact (mirrors ``snapshot().exact``).
+        """
+        return self._exact
+
     # -- accrual ------------------------------------------------------------
 
     def accrue(
@@ -558,6 +572,7 @@ class FeeGrowthTracker:
             current_sqrt_price_x96=self._current_sqrt_price_x96,
             exact=self._exact,
             fee_protocol=self._fee_protocol,
+            fee_pips=self._fee_pips,
         )
 
     def restore(self, state: FeeGrowthState) -> None:
@@ -571,6 +586,7 @@ class FeeGrowthTracker:
         self._current_sqrt_price_x96 = state.current_sqrt_price_x96
         self._exact = state.exact
         self._fee_protocol = state.fee_protocol
+        self._fee_pips = state.fee_pips
 
     # -- reconciliation -----------------------------------------------------
 

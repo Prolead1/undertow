@@ -9,21 +9,23 @@ no learning method, so "the policy updated during the backtest" is unrepresentab
 Exactness discipline
 --------------------
 The fee path stays in the data module's currency: Q128 integer accumulators.  The
-per-step accrual is ``(L_int * ΔfeeGrowthGlobal) >> 128`` on Python integers and
-the result is divided by ``10**dec`` only when it is marked to USDC.  No
-accumulator is ever round-tripped through ``float`` (PLAN.md §4, "Two numeric
-worlds").
+position's fees are accrued by ``undertow.data``'s exact fee-growth engine, reached
+through the top-level ``FeeGrowthReplay`` facade (ADR-013).  Each tape event is
+replayed in order (swaps through the tracker's tick lattice, mints/burns through
+its liquidity bookkeeping) and the position's ``ΔfeeGrowthInside`` is evaluated on
+Python integers; the result is divided by ``10**dec`` only when it is marked to
+USDC.  No accumulator is ever round-tripped through ``float`` (PLAN.md §4, "Two
+numeric worlds").
 
-The tape exposes the *global* Q128 accumulators (``fee_growth_global_0_x128`` /
-``..._1_x128``) but not the per-tick ``feeGrowthOutside`` values.  For a position
-that is in range and whose boundaries are not crossed, ``ΔfeeGrowthInside ==
-ΔfeeGrowthGlobal`` and the accrual above is exact.  A swap that crosses a boundary
-inside a single event, or a position opened before the tape with pre-existing
-outside values, is not exactly recoverable from the global columns alone; that
-residual is documented in ``docs/decisions/013-backtester-fee-growth-api.md`` and
-the deliberate public-API extension it proposes.  The shipped path is the
-tape-columns path, which reproduces the data module's collect accounting for the
-in-range case.
+This handles boundary-crossing swaps and pre-existing ``feeGrowthOutside`` exactly
+(the exact segment split the data module already reconciles), superseding the
+earlier tape-columns apportionment, which was exact only for an in-range position
+whose boundaries were not crossed.  The tape's ``fee_growth_global_*_x128``
+columns are retained as a cross-check in the tests, not as the accrual source.
+Residuals that remain are the tracker's own, documented in ADR-013: a swap that
+crosses a tick before its price is known is flagged ``exact=False`` and is recorded
+on the ledger (``fee_growth_exact``); flash fees are out of scope; and the tick
+lattice is built from the events present in the tape window.
 
 Observation
 -----------
@@ -55,7 +57,13 @@ from typing import TYPE_CHECKING
 import numpy as np
 import polars as pl
 
-from undertow.data import Q96, price_to_tick
+from undertow.data import (
+    Q96,
+    FeeGrowthReplay,
+    PoolConfig,
+    default_pools,
+    price_to_tick,
+)
 from undertow.sim.backtest.ledger import (
     BacktestLedger,
     config_hash,
@@ -79,12 +87,6 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger("undertow.sim.backtest.engine")
 
 __all__ = ["DEFAULT_INITIAL_HALF_WIDTH_TICKS", "BacktestObservation", "run_backtest"]
-
-#: Q128 accumulator scale (``2**128``).
-_Q128: int = 1 << 128
-
-#: 2**256 mask for Solidity ``unchecked`` wrapping subtraction.
-_MASK256: int = (1 << 256) - 1
 
 #: Annualization basis when the tape has fewer than two events (matches S05).
 _DEFAULT_PERIODS_PER_YEAR: int = 365 * 24 * 6
@@ -112,6 +114,14 @@ _REQUIRED_TAPE_COLUMNS: tuple[str, ...] = (
     "fee_growth_global_0_x128",
     "fee_growth_global_1_x128",
     "regime",
+    # ADR-013: the exact replay reads the raw event payload, not the derived
+    # global columns (which stay validated as a cross-check anchor).
+    "event_type",
+    "amount0",
+    "amount1",
+    "tick_lower",
+    "tick_upper",
+    "liquidity_amount",
 )
 
 
@@ -201,9 +211,30 @@ class _TapeBuffer:
             tape["fee_growth_global_1_x128"].to_list()
         )
         self.regime = list(tape["regime"].to_list())
+        # Raw event payload consumed by the ADR-013 exact fee-growth replay.
+        self.event_type: list[object] = list(tape["event_type"].to_list())
+        self.amount0: list[object] = list(tape["amount0"].to_list())
+        self.amount1: list[object] = list(tape["amount1"].to_list())
+        self.tick_lower: list[object] = list(tape["tick_lower"].to_list())
+        self.tick_upper: list[object] = list(tape["tick_upper"].to_list())
+        self.liquidity_amount: list[object] = list(tape["liquidity_amount"].to_list())
 
     def __len__(self) -> int:
         return len(self.seq)
+
+    def row(self, i: int) -> dict[str, object]:
+        """The event payload for row ``i`` in the shape ``FeeGrowthReplay`` expects."""
+        return {
+            "event_type": self.event_type[i],
+            "block_number": self.block[i],
+            "amount0": self.amount0[i],
+            "amount1": self.amount1[i],
+            "sqrt_price_x96": self.sqrt_price_x96[i],
+            "tick": self.tick[i],
+            "tick_lower": self.tick_lower[i],
+            "tick_upper": self.tick_upper[i],
+            "liquidity_amount": self.liquidity_amount[i],
+        }
 
 
 def _as_int(value: object, default: int = 0) -> int:
@@ -251,9 +282,28 @@ def _default_initial_bounds(
     return lower, upper
 
 
-def _wrapping_sub(a: int, b: int) -> int:
-    """Solidity ``unchecked`` subtraction on the 256-bit accumulator ring."""
-    return (a - b) & _MASK256
+def _resolve_pool(market_view: MarketView, config: SimConfig) -> PoolConfig:
+    """The pool the exact fee-growth replay runs against (ADR-013).
+
+    Prefers the ``PoolConfig`` the tape was pulled from (``MarketView.pool``,
+    populated by :func:`~undertow.sim.marketview.build_market_view` from its
+    ``DataConfig``).  Hand-built views leave it ``None``; the fallback matches
+    the sim's configured fee tier / tick spacing against the pinned pool
+    registry, and otherwise uses the 0.30% USDC/WETH pool as the canonical
+    identity (the engine always passes the sim's own ``fee_tier_bps`` to
+    ``FeeGrowthReplay`` as ``fee_pips``, so an ablation fee tier of 0 is still
+    honoured exactly).
+    """
+    if market_view.pool is not None:
+        return market_view.pool
+    pools = default_pools()
+    for pool in pools.values():
+        if (
+            pool.fee_tier.value == config.episode.fee_tier_bps
+            and pool.tick_spacing == config.episode.tick_spacing
+        ):
+            return pool
+    return pools["USDC_WETH_3000"]
 
 
 def _periods_per_year(times: list[datetime]) -> int:
@@ -302,10 +352,13 @@ class _Replay:
         self.pool_liquidity = 0.0
         self.price_history: list[float] = []
 
-        # Position + fee-accrual state.  ``fee_growth_last_*`` is ``None`` until
-        # the first non-null tape snapshot is observed: the accumulator gap
-        # before that snapshot is unobservable and must never be credited.
+        # Position + exact fee-growth state.  ``replay`` (ADR-013) is set by
+        # ``run_backtest`` once the pool and the tape's opening tick are known.
+        # ``fee_growth_last_*`` is ``None`` until the first event has been
+        # replayed: the position is seeded there without crediting the
+        # pre-deployment gap, so it earns fees only from the next event onward.
         self.position: Position | None = None
+        self.replay: FeeGrowthReplay | None = None
         self.fee_growth_last_0: int | None = None
         self.fee_growth_last_1: int | None = None
         self.accrued_raw_0: int = 0
@@ -394,46 +447,41 @@ class _Replay:
         return price, sqrt, tick
 
     # -- fees --------------------------------------------------------------
-    def _accrue_fees(
-        self, i: int, tick: int, price: float
-    ) -> tuple[float, float, int | None, int | None]:
-        """Accrue this step's fees; return ``(fees_value, step_fees_value, g0, g1)``.
+    def _accrue_fees(self, price: float) -> tuple[float, float]:
+        """Accrue this step's fees through the exact replay (ADR-013).
 
-        The Q128 global delta is subtracted as integers and multiplied by the raw
-        liquidity integer; the human division happens once, here.
+        The step's event has already been fed to ``self.replay``.  The position's
+        ``ΔfeeGrowthInside`` is evaluated by the data module's tracker on Q128
+        integers; the human division happens once, here.
 
-        The tape's global columns are nullable (a row before the first recorded
-        fee-growth snapshot has no accumulator).  A ``None`` cell leaves the
-        baseline untouched and credits nothing; the first non-null cell *seeds*
-        the baseline without crediting the unobservable pre-snapshot gap, so a
-        leading null can never become a one-step fee windfall.
+        The first accrual after deployment (or after a rebalance) *seeds* the
+        position's inside snapshots and credits nothing, so the position never
+        earns fee growth from before it existed.
         """
-        raw_g0 = self.tape.fee_growth_0[i]
-        raw_g1 = self.tape.fee_growth_1[i]
-        g0 = None if raw_g0 is None else _as_int(raw_g0)
-        g1 = None if raw_g1 is None else _as_int(raw_g1)
-        step_raw_0 = 0
-        step_raw_1 = 0
+        replay = self.replay
         position = self.position
-        if g0 is not None and g1 is not None:
-            if self.fee_growth_last_0 is None or self.fee_growth_last_1 is None:
-                # First observed snapshot: seed, credit nothing.
-                self.fee_growth_last_0 = g0
-                self.fee_growth_last_1 = g1
-            else:
-                if (
-                    position is not None
-                    and position.tick_lower <= tick < position.tick_upper
-                ):
-                    liquidity = int(round(position.liquidity))
-                    d0 = _wrapping_sub(g0, self.fee_growth_last_0)
-                    d1 = _wrapping_sub(g1, self.fee_growth_last_1)
-                    step_raw_0 = (liquidity * d0) >> 128
-                    step_raw_1 = (liquidity * d1) >> 128
-                    self.accrued_raw_0 += step_raw_0
-                    self.accrued_raw_1 += step_raw_1
-                self.fee_growth_last_0 = g0
-                self.fee_growth_last_1 = g1
+        assert replay is not None and position is not None
+        liquidity = int(round(position.liquidity))
+        if self.fee_growth_last_0 is None or self.fee_growth_last_1 is None:
+            _f0, _f1, g0, g1 = replay.accrue(
+                tick_lower=position.tick_lower,
+                tick_upper=position.tick_upper,
+                liquidity=liquidity,
+                g_inside_last_0=0,
+                g_inside_last_1=0,
+            )
+        else:
+            fees0, fees1, g0, g1 = replay.accrue(
+                tick_lower=position.tick_lower,
+                tick_upper=position.tick_upper,
+                liquidity=liquidity,
+                g_inside_last_0=self.fee_growth_last_0,
+                g_inside_last_1=self.fee_growth_last_1,
+            )
+            self.accrued_raw_0 += fees0
+            self.accrued_raw_1 += fees1
+        self.fee_growth_last_0 = g0
+        self.fee_growth_last_1 = g1
 
         fees_value = (
             self.accrued_raw_0 / 10.0**self.dec0
@@ -444,7 +492,7 @@ class _Replay:
         # Without the revaluation term the equity change would not reconcile with
         # the decomposition after any hold-then-price-move.
         step_fees_value = fees_value - self.fees_value_prev
-        return fees_value, step_fees_value, g0, g1
+        return fees_value, step_fees_value
 
     # -- observation -------------------------------------------------------
     def _build_observation(
@@ -521,8 +569,6 @@ class _Replay:
         position_value: float,
         fees_value: float,
         i: int,
-        g0: int | None,
-        g1: int | None,
     ) -> tuple[float, float, float, int, int]:
         """Close + reopen at the action's range; return the new equity and costs.
 
@@ -565,10 +611,24 @@ class _Replay:
             raise BacktestError("new position is not valvable at the rebalance price")
 
         # Collect: realise fee income into the redeployed capital and rebase the
-        # fee-growth snapshot so the new position only earns future growth.
+        # exact inside snapshots for the new range so the new position only earns
+        # future growth (the fees returned by this accrue call are discarded; it
+        # exists only to read the new range's current inside values).
         self.position = new_position
         self.accrued_raw_0 = 0
         self.accrued_raw_1 = 0
+        assert self.replay is not None
+        self.replay.register_position(
+            tick_lower=new_position.tick_lower,
+            tick_upper=new_position.tick_upper,
+        )
+        _f0, _f1, g0, g1 = self.replay.accrue(
+            tick_lower=new_position.tick_lower,
+            tick_upper=new_position.tick_upper,
+            liquidity=int(round(new_position.liquidity)),
+            g_inside_last_0=0,
+            g_inside_last_1=0,
+        )
         self.fee_growth_last_0 = g0
         self.fee_growth_last_1 = g1
         self.equity = new_capital
@@ -602,6 +662,23 @@ def run_backtest(
 
     tape = _TapeBuffer(tape_frame)
     run = _Replay(policy, market_view, config, tape)
+
+    # Construct the exact fee-growth replay (ADR-013) once.  The opening tick is
+    # the first tick the tape observes, used only to place the tracker on the
+    # real grid; the first swap's pre-price is legitimately unknown (the
+    # tracker flags an approximation if that swap crosses).  An empty tick
+    # lattice is built by the tape's own mint/burn events.
+    seed_tick = 0
+    for tick_value in tape.tick:
+        if tick_value is not None:
+            seed_tick = _as_int(tick_value)
+            break
+    run.replay = FeeGrowthReplay(
+        _resolve_pool(market_view, config),
+        fee_pips=int(config.episode.fee_tier_bps),
+        block_number=tape.block[0] if tape.block else 0,
+        current_tick=seed_tick,
+    )
 
     total_events = len(tape)
     periods_per_year = run.periods_per_year
@@ -644,8 +721,17 @@ def run_backtest(
             run.initial_entry_sqrt = sqrt
             run.initial_entry_price = price
             run.equity = run.capital
+            # Register the synthetic position's boundaries so a later real mint
+            # at the same tick cannot re-seed feeGrowthOutside (ADR-013).
+            run.replay.register_position(
+                tick_lower=initial_position.tick_lower,
+                tick_upper=initial_position.tick_upper,
+            )
 
-        fees_value, step_fees_value, g0, g1 = run._accrue_fees(i, tick, price)
+        # Replay this event through the exact tracker, then accrue the position's
+        # inside growth from the updated state (ADR-013).
+        run.replay.apply_event(tape.row(i))
+        fees_value, step_fees_value = run._accrue_fees(price)
 
         position = run.position
         assert position is not None  # always deployed before the loop
@@ -700,8 +786,6 @@ def run_backtest(
                     position_value,
                     fees_value,
                     i,
-                    g0,
-                    g1,
                 )
                 run.equity = new_equity
                 step_gas = -gas_cost
@@ -803,4 +887,5 @@ def run_backtest(
         initial_capital=run.capital,
         periods_per_year=periods_per_year,
         n_steps=total_events,
+        fee_growth_exact=run.replay.exact,
     )

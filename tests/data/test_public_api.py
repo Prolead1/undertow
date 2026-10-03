@@ -80,6 +80,8 @@ EXPECTED_SURFACE: frozenset[str] = frozenset(
         "sqrt_price_x96_to_tick",
         "liquidity_for_amounts",
         "amounts_for_liquidity",
+        # -- ADR-013 extension: exact fee-growth replay facade --
+        "FeeGrowthReplay",
     }
 )
 

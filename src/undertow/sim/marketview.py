@@ -23,6 +23,7 @@ import polars as pl
 
 from undertow.data import (
     DataConfig,
+    PoolConfig,
     load_gas_feed,
     load_reference_feed,
     load_regime_labels,
@@ -93,6 +94,11 @@ class MarketView:
     #: Episode length driver for :meth:`build_episode`. Kept out of the frozen
     #: CONTRACTS signature, which only passes ``seed``/``max_steps``.
     episode_config: EpisodeConfig | None = None
+    #: The ``PoolConfig`` the active tape was pulled from (ADR-013 additive
+    #: extension). ``build_market_view`` populates it from ``DataConfig.pool``;
+    #: hand-built views may leave it ``None`` and the backtester falls back to
+    #: a pool derived from ``SimConfig.episode``.
+    pool: PoolConfig | None = None
 
     # ------------------------------------------------------------------
     # Invariants (CONTRACTS §4.1)
@@ -207,6 +213,7 @@ class MarketView:
                 eval_end_utc=self.eval_end_utc,
                 is_train=True,
                 episode_config=self.episode_config,
+                pool=self.pool,
             )
         return MarketView(
             train=None,
@@ -220,6 +227,7 @@ class MarketView:
             eval_end_utc=sub_end,
             is_train=False,
             episode_config=self.episode_config,
+            pool=self.pool,
         )
 
     def tape_at(self, seq: int) -> dict[str, object]:
@@ -385,6 +393,7 @@ def build_market_view(
             eval_end_utc=split_config.eval_end_utc,
             is_train=True,
             episode_config=episode_config,
+            pool=data_config.pool,
         )
 
     start, end = split_config.eval_start_utc, split_config.eval_end_utc
@@ -403,4 +412,5 @@ def build_market_view(
         eval_end_utc=split_config.eval_end_utc,
         is_train=False,
         episode_config=episode_config,
+        pool=data_config.pool,
     )
