@@ -21,7 +21,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | S10 baselines | merged | `feature-sim-baselines` | [#42](https://github.com/Prolead1/undertow/pull/42) | 33 passed; full 921 passed, 6 skipped | approved | ADR-011 baseline action encoding; Observation typed via TYPE_CHECKING (S12) |
 | S11 backtester | merged | `feature-sim-backtester` | [#46](https://github.com/Prolead1/undertow/pull/46) | 38 passed; full 1100 passed, 6 skipped | approved | CONTRACTS §13; `net == excess_vs_hodl` identity; ADR-013 extension implemented (`FeeGrowthReplay`, PR #48): exact boundary-crossing replay; tape-columns kept as test cross-check |
 | S12 gym env | merged | `feature-sim-gym-env` | [#47](https://github.com/Prolead1/undertow/pull/47) | 42 passed; full 1104 passed, 6 skipped | approved | CONTRACTS §§11–12; event-granularity replay + look-ahead wall; `gymnasium` now a core dep |
-| S13 training harness | todo | | | | | |
+| S13 training harness | pr-open | `feature-sim-training` | [#49](https://github.com/Prolead1/undertow/pull/49) | 73 passed; full 1229 passed, 6 skipped | approved | CONTRACTS §15; SB3 PPO (ADR-004), multi-seed, checkpoints, run manifest/provenance; `env_fn` once per seed; SB3 moved into dev group so plain `uv run pytest` imports it |
 | S14 parity/look-ahead | todo | | | | | |
 | S15 evaluation runner | todo | | | | | |
 | S16 CLI + public API | todo | | | | | |
