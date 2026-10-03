@@ -24,7 +24,23 @@ uv sync
 ## Status
 
 - [x] Data pipeline scaffolding (T00)
-- [ ] AMM simulator scaffolding
+- [x] AMM simulator scaffolding
+
+## `undertow.sim` — Simulator, Backtester & RL Environment
+
+| Artifact | Status |
+|---|---|
+| Simulator (Gymnasium env) | ✅ |
+| Backtester (on-chain replay) | ✅ |
+| PPO training harness | ✅ |
+| Baseline ladder (6 policies) | ✅ |
+| Parity validation | ✅ |
+| RQ1 ablation runner | ✅ |
+| RQ2 regime evaluation | ✅ |
+| RQ3 gap analysis | ✅ |
+
+**Quickstart:** `uv sync && uv run undertow-sim info`
+**Full guide:** [`docs/running_experiments.md`](docs/running_experiments.md)
 
 ## Running network-flavoured tests
 
