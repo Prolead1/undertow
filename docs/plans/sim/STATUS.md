@@ -23,7 +23,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | S12 gym env | merged | `feature-sim-gym-env` | [#47](https://github.com/Prolead1/undertow/pull/47) | 42 passed; full 1104 passed, 6 skipped | approved | CONTRACTS §§11–12; event-granularity replay + look-ahead wall; `gymnasium` now a core dep |
 | S13 training harness | merged | `feature-sim-training` | [#49](https://github.com/Prolead1/undertow/pull/49) | 73 passed; full 1229 passed, 6 skipped | approved | CONTRACTS §15; SB3 PPO (ADR-004), multi-seed, checkpoints, run manifest/provenance; SB3 moved into dev group |
 | S14 parity/look-ahead | pr-open | `feature-sim-parity` | [#50](https://github.com/Prolead1/undertow/pull/50) | 30 passed; full 1186 passed, 6 skipped | approved | CONTRACTS §16; exact-int `FeeGrowthReplay` vs float64 tolerance 1e-3, measured drift ~7.5e-7 USDC/step; 13-probe look-ahead suite |
-| S15 evaluation runner | todo | | | | | |
+| S15 evaluation runner | pr-open | `feature-sim-evaluation` | [#51](https://github.com/Prolead1/undertow/pull/51) | 35 passed; full 1294 passed, 6 skipped | approved | CONTRACTS §17; RQ1 ablation (ledger-gating + RL `train_fn` guard), RQ2 regime matrix, RQ3 gap (same-window); markdown/CSV artifacts |
 | S16 CLI + public API | todo | | | | | |
 
 ## ADRs raised
