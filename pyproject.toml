@@ -30,6 +30,10 @@ dev = [
     "responses>=0.25",
     "ruff>=0.6",
     "mypy>=1.11",
+    # S13: keep the training stack importable under the documented
+    # plain ``uv run pytest`` (the optional ``sim`` extra stays for runtime
+    # installs). Mirrors the ``sim`` extra pin chosen by ADR-004.
+    "stable-baselines3>=2.9",
 ]
 
 [project.scripts]
