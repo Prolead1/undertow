@@ -24,7 +24,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | S13 training harness | merged | `feature-sim-training` | [#49](https://github.com/Prolead1/undertow/pull/49) | 73 passed; full 1229 passed, 6 skipped | approved | CONTRACTS §15; SB3 PPO (ADR-004), multi-seed, checkpoints, run manifest/provenance; SB3 moved into dev group |
 | S14 parity/look-ahead | pr-open | `feature-sim-parity` | [#50](https://github.com/Prolead1/undertow/pull/50) | 30 passed; full 1186 passed, 6 skipped | approved | CONTRACTS §16; exact-int `FeeGrowthReplay` vs float64 tolerance 1e-3, measured drift ~7.5e-7 USDC/step; 13-probe look-ahead suite |
 | S15 evaluation runner | pr-open | `feature-sim-evaluation` | [#51](https://github.com/Prolead1/undertow/pull/51) | 35 passed; full 1294 passed, 6 skipped | approved | CONTRACTS §17; RQ1 ablation (ledger-gating + RL `train_fn` guard), RQ2 regime matrix, RQ3 gap (same-window); markdown/CSV artifacts |
-| S16 CLI + public API | todo | | | | | |
+| S16 CLI + public API | pr-open | `feature-sim-cli` | | 40 passed; full 1334 passed, 6 skipped | approved | CONTRACTS §2/§12/§13/§15/§17; `undertow-sim train\|backtest\|evaluate\|ablate\|info` (argparse); public API surface + `__all__`; docs/running_experiments.md; `ablate` is RQ1-only (baselines are outside the agent action grid, so no fabricated RQ3 gap) |
 
 ## ADRs raised
 

@@ -38,6 +38,7 @@ dev = [
 
 [project.scripts]
 undertow-data = "undertow.data.cli:main"
+undertow-sim = "undertow.sim.cli:main"
 
 [build-system]
 requires = ["hatchling"]
