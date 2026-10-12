@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import replace
+from datetime import timedelta
 
 import numpy as np
 import polars as pl
@@ -516,6 +517,43 @@ class TestEpisodesAndModes:
         assert steps == tiny_env.episode_length
         assert truncated is True
         assert terminated is False
+
+    def test_replay_env_applies_decision_cadence_on_1min_feed(
+        self,
+        minute_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """The replay env must decide every ``step_minutes``, not every bar.
+
+        Exercises the wiring in ``LpEnvironment.reset`` (the price process gets
+        ``step_minutes`` and the window is sampled at the env's cadence) — the
+        default fixture's hour-spaced bars cannot catch a regression here.
+        """
+        config = SimConfig(episode=EpisodeConfig(duration_days=1, step_minutes=10))
+        env = LpEnvironment(
+            minute_market_view,
+            _fresh_pool_engine(),
+            ReplayPriceProcess(minute_market_view, 0, minute_market_view.step_count()),
+            mock_gas_model,
+            mock_slippage_model,
+            config,
+        )
+        env.reset(seed=0)
+        # ~144 decisions for a 1-day window (a few either way: the tape's last row
+        # can fall short of the window end); never the ~1440 raw 1-minute bars.
+        assert 139 <= len(env._bar_close_times) <= 146
+        assert env.episode_length == min(144, len(env._bar_close_times))
+        assert env.episode_length >= 139
+        assert env.price_process.n_bars == len(env._bar_close_times)
+        # Consecutive decision bars are step_minutes apart, not one minute.
+        deltas = [
+            b - a
+            for a, b in zip(env._bar_close_times, env._bar_close_times[1:], strict=False)
+        ]
+        assert deltas and all(
+            timedelta(minutes=9) < delta < timedelta(minutes=11) for delta in deltas
+        )
 
     def test_episode_length_matches_config(
         self,

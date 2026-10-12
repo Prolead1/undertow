@@ -342,6 +342,7 @@ def build_replay_env(
         market_view,
         int(tape["seq"][0]),
         int(tape["seq"][-1]) + 1,
+        step_minutes=int(config.episode.step_minutes),
     )
     gas = gas_model if gas_model is not None else ReplayGasModel(market_view, config.gas)
     slippage = (

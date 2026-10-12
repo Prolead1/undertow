@@ -22,6 +22,7 @@ import polars as pl
 import pytest
 
 from undertow.data import Q96, price_to_tick, tick_to_price, tick_to_sqrt_price_x96
+from undertow.sim.config import EpisodeConfig
 from undertow.sim.core.position import calc_sqrt_price_a
 from undertow.sim.marketview import MarketView
 from undertow.sim.prices import (
@@ -32,6 +33,7 @@ from undertow.sim.prices import (
 )
 from undertow.sim.prices.base import human_price_to_triplet
 from undertow.sim.prices.regime_jump import DEFAULT_DT, _decision_dt_years
+from undertow.sim.prices.replay import _resample_decision_bars
 from undertow.sim.types import LookAheadError, MarketViewError, Tick
 
 _TRAIN_START = datetime(2022, 1, 1, tzinfo=UTC)
@@ -241,6 +243,73 @@ class TestReplayPriceProcess:
     def test_rejects_inverted_window(self, tiny_market_view: MarketView) -> None:
         with pytest.raises(MarketViewError, match="start_seq"):
             ReplayPriceProcess(tiny_market_view, 500, 100)
+
+
+# ---------------------------------------------------------------------------
+# Decision-cadence resampling (ADR-010): 1-minute feed -> step_minutes bars
+# ---------------------------------------------------------------------------
+
+
+def _minute_bars(n: int) -> pl.DataFrame:
+    start = datetime(2022, 1, 1, tzinfo=UTC)
+    return pl.DataFrame(
+        {
+            "open_time": [start + timedelta(minutes=i) for i in range(n)],
+            "close_time": [start + timedelta(minutes=i, seconds=59) for i in range(n)],
+            "close": [float(i) for i in range(n)],
+        }
+    )
+
+
+class TestDecisionResample:
+    def test_groups_1min_bars_onto_decision_buckets(self) -> None:
+        out = _resample_decision_bars(_minute_bars(25), 10)
+        # Buckets [0,10), [10,20), [20,30): the last bar in each.
+        assert out.height == 3
+        assert out["close"].to_list() == [9.0, 19.0, 24.0]
+        assert out["close_time"].to_list() == [
+            datetime(2022, 1, 1, 0, 9, 59, tzinfo=UTC),
+            datetime(2022, 1, 1, 0, 19, 59, tzinfo=UTC),
+            datetime(2022, 1, 1, 0, 24, 59, tzinfo=UTC),
+        ]
+
+    def test_step_minutes_one_is_identity(self) -> None:
+        bars = _minute_bars(5)
+        assert _resample_decision_bars(bars, 1).equals(bars)
+
+    def test_preserves_columns(self) -> None:
+        bars = _minute_bars(25).with_columns(pl.lit("ETHUSDT").alias("symbol"))
+        out = _resample_decision_bars(bars, 10)
+        assert out.columns == bars.columns
+
+    def test_replay_decision_cadence_leaves_coarse_bars_alone(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        # The fixture's bars are hours apart: each is already its own 10-min bucket,
+        # so the resample must not merge them away.
+        one = ReplayPriceProcess(tiny_market_view, 0, 500, step_minutes=1)
+        ten = ReplayPriceProcess(tiny_market_view, 0, 500, step_minutes=10)
+        assert ten.n_bars == one.n_bars
+
+    def test_replay_rejects_non_positive_step_minutes(self, tiny_market_view: MarketView) -> None:
+        with pytest.raises(MarketViewError, match="step_minutes"):
+            ReplayPriceProcess(tiny_market_view, 0, 100, step_minutes=0)
+
+    def test_replay_aggregates_1min_feed_to_decision_cadence(
+        self, minute_market_view: MarketView
+    ) -> None:
+        view = minute_market_view
+        ep = EpisodeConfig(duration_days=1, step_minutes=10)
+        start, end = view.build_episode(0, episode_config=ep)
+        proc = ReplayPriceProcess(view, start, end, step_minutes=10)
+        # ~144 decisions for a 1-day window (the tape's last row can fall short of
+        # the wall by up to one row spacing, so allow a few); crucially nowhere
+        # near the ~1440 raw 1-minute bars.
+        assert 139 <= proc.n_bars <= 145
+        deltas = [b - a for a, b in zip(proc.close_times, proc.close_times[1:], strict=False)]
+        assert deltas and all(
+            timedelta(minutes=9) < delta < timedelta(minutes=11) for delta in deltas
+        )
 
 
 # ---------------------------------------------------------------------------
