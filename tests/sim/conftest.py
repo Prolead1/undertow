@@ -80,6 +80,9 @@ def tiny_data_config() -> DataConfig:
         ),
         cache_dir=Path("data/cache/tiny"),
         output_dir=Path("data/datasets/tiny"),
+        # The fixture's reference/regime feeds carry the cross-check symbol; the
+        # config must name it so ``build_market_view`` selects (not rejects) it.
+        reference_symbol=_TINY_SYMBOL,
     )
 
 

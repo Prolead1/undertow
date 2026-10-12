@@ -34,6 +34,12 @@ vol_threshold = 0.80
 drift_threshold = 0.05
 periods_per_year = 525600  # 365 * 1440 minute bars
 
+[reference]
+# Primary Binance symbol for the price_reference join and the sim's replay/valuation
+# series. The fetch keeps ETHUSDC as the cross-check, but consumers must select one
+# series (data PLAN.md §7: ETHUSDT is the deepest, longest 1m history).
+symbol = "ETHUSDT"
+
 [endpoints]
 # The Graph: official Uniswap v3 (Ethereum mainnet) subgraph on the decentralized network.
 # T05 owns the queries; this is the GraphQL endpoint it posts to. The gateway base URL includes the

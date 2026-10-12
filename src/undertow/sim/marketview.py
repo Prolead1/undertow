@@ -353,6 +353,35 @@ class MarketView:
         return start_seq, end_seq
 
 
+def _select_primary_symbol(frame: pl.DataFrame, configured: str, stream: str) -> pl.DataFrame:
+    """Restrict a reference/regime feed to the configured primary symbol.
+
+    The reference and regime streams deliberately carry both the primary Binance
+    symbol and its cross-check (data ``PLAN.md`` §7: ``ETHUSDT`` primary,
+    ``ETHUSDC`` as cross-check). Every sim consumer needs a *single* series — the
+    raw multi-symbol feed has two bars per minute, so ``reference_bars`` would
+    otherwise yield duplicate ``close_time`` rows that alternate symbols (and
+    diverge wildly where one symbol was gap-filled). Select
+    ``DataConfig.reference_symbol`` here, at the one door to history.
+
+    A feed that does **not** contain the configured symbol raises rather than
+    silently falling back to another series — including a single-symbol feed whose
+    symbol is not the configured primary, because valuing the sim against the
+    cross-check while the tape's ``price_reference`` uses the primary would produce
+    two reference prices in one run. Frames without a ``symbol`` column (a bare
+    hand-built series) and empty frames are passed through.
+    """
+    if frame.height == 0 or "symbol" not in frame.columns:
+        return frame
+    symbols = frame["symbol"].unique().to_list()
+    if configured not in symbols:
+        raise MarketViewError(
+            f"MarketView: {stream} feed carries symbols {sorted(symbols)} but the "
+            f"configured reference_symbol {configured!r} is not among them"
+        )
+    return frame.filter(pl.col("symbol") == configured)
+
+
 def build_market_view(
     data_config: DataConfig,
     split_config: SplitConfig,
@@ -373,6 +402,9 @@ def build_market_view(
     reference = _sort(_to_polars(load_reference_feed(data_config)), ["open_time"])
     gas = _sort(_to_polars(load_gas_feed(data_config)), ["block_number"])
     regimes = _sort(_to_polars(load_regime_labels(data_config)), ["timestamp"])
+    # One series, always: the feed carries the primary + cross-check symbols.
+    reference = _select_primary_symbol(reference, data_config.reference_symbol, "reference")
+    regimes = _select_primary_symbol(regimes, data_config.reference_symbol, "regime")
 
     if split == "train":
         start, end = split_config.train_start_utc, split_config.train_end_utc

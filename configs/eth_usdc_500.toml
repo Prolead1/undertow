@@ -31,6 +31,11 @@ vol_threshold = 0.80
 drift_threshold = 0.05
 periods_per_year = 525600  # 365 * 1440 minute bars
 
+[reference]
+# Primary Binance symbol for the price_reference join and the sim's replay/valuation
+# series (data PLAN.md §7: ETHUSDT is the deepest, longest 1m history).
+symbol = "ETHUSDT"
+
 [endpoints]
 # The gateway base URL includes the ${GRAPH_API_KEY}; the subgraph deployment id lives in code
 # (``SUBGRAPH_ID``, appended by ``TheGraphFetcher._endpoint()``) — never here, so the id is never

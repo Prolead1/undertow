@@ -6,6 +6,7 @@ fixture values, and the ``build_episode`` invariants from ``CONTRACTS.md`` §4.1
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
@@ -61,6 +62,30 @@ def _train_view_with_bounds(view: MarketView, start: datetime, end: datetime) ->
         eval_end_utc=_TINY_EVAL_END,
         is_train=True,
     )
+
+
+def _two_symbol_view(
+    view: MarketView, *, primary: str = "ETHUSDT", delta: float = 100.0
+) -> MarketView:
+    """Copy ``view`` with reference/regime feeds carrying a second symbol.
+
+    The fixture feed is the cross-check (``ETHUSDC``); the added ``primary``
+    series has a clearly different close (``+delta``) so a test can prove the
+    primary was selected rather than the two being mixed.
+    """
+    reference = pl.concat(
+        [
+            view.reference.with_columns(
+                pl.lit(primary).alias("symbol"),
+                (pl.col("close") + delta).alias("close"),
+            ),
+            view.reference,
+        ]
+    ).sort("open_time")
+    regimes = pl.concat(
+        [view.regimes.with_columns(pl.lit(primary).alias("symbol")), view.regimes]
+    ).sort("timestamp")
+    return replace(view, reference=reference, regimes=regimes)
 
 
 def _eval_view_from_halves(view: MarketView, bound: datetime) -> MarketView:
@@ -493,6 +518,99 @@ class TestBuildMarketView:
         monkeypatch.setattr(mv, "load_tape", _boom)
         with pytest.raises(NotImplementedError, match="pending T16"):
             build_market_view(tiny_data_config, _TINY_SPLIT)
+
+
+class TestReferenceSymbolSelection:
+    """The reference/regime feeds carry two symbols; MarketView must pick one."""
+
+    def test_multi_symbol_feed_is_restricted_to_configured_primary(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tiny_data_config: DataConfig,
+        tiny_market_view: MarketView,
+    ) -> None:
+        cfg = replace(tiny_data_config, reference_symbol="ETHUSDT")
+        _patch_loaders(monkeypatch, _two_symbol_view(tiny_market_view))
+        view = build_market_view(cfg, _TINY_SPLIT)
+        assert view.reference["symbol"].unique().to_list() == ["ETHUSDT"]
+        assert view.regimes["symbol"].unique().to_list() == ["ETHUSDT"]
+
+    def test_selected_series_is_one_bar_per_minute(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tiny_data_config: DataConfig,
+        tiny_market_view: MarketView,
+    ) -> None:
+        cfg = replace(tiny_data_config, reference_symbol="ETHUSDT")
+        two = _two_symbol_view(tiny_market_view)
+        _patch_loaders(monkeypatch, two)
+        view = build_market_view(cfg, _TINY_SPLIT)
+        # Both symbols share close_time; mixing them doubles the bar count. After
+        # selection there is exactly one bar per timestamp.
+        assert view.reference.height == tiny_market_view.reference.height
+        assert view.reference["close_time"].n_unique() == view.reference.height
+        primary = two.reference.filter(pl.col("symbol") == "ETHUSDT").sort("open_time")
+        assert view.reference["close"].to_list() == primary["close"].to_list()
+
+    def test_reference_close_uses_primary_not_cross_check(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tiny_data_config: DataConfig,
+        tiny_market_view: MarketView,
+    ) -> None:
+        cfg = replace(tiny_data_config, reference_symbol="ETHUSDT")
+        two = _two_symbol_view(tiny_market_view)
+        _patch_loaders(monkeypatch, two)
+        view = build_market_view(cfg, _TINY_SPLIT)
+        at = two.reference["close_time"].min() + timedelta(seconds=1)
+        expected = float(
+            two.reference.filter(
+                (pl.col("symbol") == "ETHUSDT") & (pl.col("close_time") <= at)
+            ).sort("close_time")["close"][-1]
+        )
+        cross = float(
+            two.reference.filter(
+                (pl.col("symbol") == "ETHUSDC") & (pl.col("close_time") <= at)
+            ).sort("close_time")["close"][-1]
+        )
+        assert expected != cross  # the synthetic delta makes the series distinguishable
+        assert view.reference_close(at) == pytest.approx(expected)
+
+    def test_single_symbol_feed_is_selected(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tiny_data_config: DataConfig,
+        tiny_market_view: MarketView,
+    ) -> None:
+        # The fixture's config names its single ETHUSDC series, so it is selected.
+        _patch_loaders(monkeypatch, tiny_market_view)
+        view = build_market_view(tiny_data_config, _TINY_SPLIT)
+        assert view.reference["symbol"].unique().to_list() == ["ETHUSDC"]
+        assert view.regimes["symbol"].unique().to_list() == ["ETHUSDC"]
+
+    def test_single_symbol_feed_missing_configured_symbol_raises(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tiny_data_config: DataConfig,
+        tiny_market_view: MarketView,
+    ) -> None:
+        # A single-symbol feed is not a licence to use whatever series is present:
+        # the configured primary must be the one actually in the feed.
+        cfg = replace(tiny_data_config, reference_symbol="ETHUSDT")
+        _patch_loaders(monkeypatch, tiny_market_view)
+        with pytest.raises(MarketViewError, match="reference_symbol"):
+            build_market_view(cfg, _TINY_SPLIT)
+
+    def test_multi_symbol_feed_missing_configured_symbol_raises(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tiny_data_config: DataConfig,
+        tiny_market_view: MarketView,
+    ) -> None:
+        _patch_loaders(monkeypatch, _two_symbol_view(tiny_market_view))
+        cfg = replace(tiny_data_config, reference_symbol="ETHBTC")
+        with pytest.raises(MarketViewError, match="reference_symbol"):
+            build_market_view(cfg, _TINY_SPLIT)
 
 
 # ---------------------------------------------------------------------------

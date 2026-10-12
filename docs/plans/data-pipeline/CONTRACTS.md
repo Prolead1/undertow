@@ -146,6 +146,10 @@ class DataConfig:
     endpoints: EndpointConfig
     cache_dir: Path
     output_dir: Path
+    # ADDITIVE (ADR-014): primary Binance symbol. The reference/regime streams store the
+    # primary plus its cross-check; the tape joins and the sim must select exactly ONE series.
+    # Overridable via the optional `[reference] symbol` TOML section. Default "ETHUSDT".
+    reference_symbol: str = "ETHUSDT"
 
 def load_config(path: str | Path) -> DataConfig: ...   # TOML; env-var expansion for secrets only
 def default_pools() -> dict[str, PoolConfig]: ...      # keyed "USDC_WETH_3000", "USDC_WETH_500"
@@ -714,7 +718,8 @@ class Dataset:
 
 def build_event_tape(streams: Mapping[str, pa.Table], *, pool: PoolConfig,
                      gas: pa.Table, reference: pa.Table, regime: pa.Table,
-                     fee_growth: pa.Table) -> pa.Table: ...
+                     fee_growth: pa.Table,
+                     reference_symbol: str = "ETHUSDT") -> pa.Table: ...  # ADDITIVE (ADR-014)
 
 def assert_no_lookahead(table: pa.Table, time_col: str = "block_timestamp") -> None:
     """Raise ValidationError if any as-of-joined column could only be known from a later row."""

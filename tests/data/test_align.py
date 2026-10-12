@@ -226,6 +226,79 @@ def test_reference_join_is_backward_only() -> None:
     assert tape2.column("price_reference")[later2].as_py() == 99999.5
 
 
+def test_reference_join_selects_configured_symbol() -> None:
+    """The feed carries the primary plus a cross-check; the tape uses exactly one."""
+    data = build_tiny_dataset()
+    cross_rows = []
+    for row in data.reference.to_pylist():
+        shifted = dict(row)
+        shifted["symbol"] = "ETHUSDC"
+        for field in ("open", "high", "low", "close"):
+            shifted[field] = shifted[field] + 1000.0
+        cross_rows.append(shifted)
+    cross = pa.Table.from_pylist(cross_rows, schema=REFERENCE_SCHEMA)
+    multi = pa.concat_tables([data.reference, cross])
+
+    tape = build_event_tape(
+        data.streams,
+        pool=data.pool,
+        gas=data.gas,
+        reference=multi,
+        regime=data.regime,
+        fee_growth=data.fee_growth,
+        reference_symbol="ETHUSDT",
+    )
+    primary_closes = {
+        row["close"] for row in data.reference.to_pylist() if row["symbol"] == "ETHUSDT"
+    }
+    cross_closes = {value + 1000.0 for value in primary_closes}
+    observed = [
+        p for p in tape.column("price_reference").to_pylist() if p is not None
+    ]
+    assert observed, "the fixture tape must carry at least one reference price"
+    assert all(p in primary_closes for p in observed)
+    assert all(p not in cross_closes for p in observed)
+
+    # A configured symbol absent from a multi-symbol feed is an error, not a fallback.
+    with pytest.raises(ValidationError, match="reference_symbol"):
+        build_event_tape(
+            data.streams,
+            pool=data.pool,
+            gas=data.gas,
+            reference=multi,
+            regime=data.regime,
+            fee_growth=data.fee_growth,
+            reference_symbol="ETHBTC",
+        )
+
+
+def test_regime_join_selects_configured_symbol() -> None:
+    """The regime feed carries the primary plus a cross-check; the tape uses one."""
+    data = build_tiny_dataset()
+    cross_rows = []
+    for row in data.regime.to_pylist():
+        shifted = dict(row)
+        shifted["symbol"] = "ETHUSDC"
+        shifted["regime"] = "cross"
+        cross_rows.append(shifted)
+    cross = pa.Table.from_pylist(cross_rows, schema=REGIME_SCHEMA)
+    multi = pa.concat_tables([data.regime, cross])
+
+    tape = build_event_tape(
+        data.streams,
+        pool=data.pool,
+        gas=data.gas,
+        reference=data.reference,
+        regime=multi,
+        fee_growth=data.fee_growth,
+        reference_symbol="ETHUSDT",
+    )
+    labels = set(tape.column("regime").to_pylist())
+    # The cross-check label must never leak onto the ETHUSDT tape.
+    assert "cross" not in labels
+    assert labels <= set(data.regime.column("regime").to_pylist()) | {"unknown"}
+
+
 def test_regime_join_is_backward_only() -> None:
     """A regime label whose timestamp is after a tape row must not be used by it."""
     data = build_tiny_dataset()

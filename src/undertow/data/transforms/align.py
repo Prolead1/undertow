@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 import polars as pl
 import pyarrow as pa
 
-from undertow.data.config import PoolConfig
+from undertow.data.config import DEFAULT_REFERENCE_SYMBOL, PoolConfig
 from undertow.data.fixedpoint import sqrt_price_x96_to_price
 from undertow.data.schemas import (
     EVENT_TAPE_SCHEMA,
@@ -313,6 +313,42 @@ def _join_fee_growth_globals(
 # ---------------------------------------------------------------------------
 
 
+def _select_symbol_frame(
+    frame: pl.DataFrame, reference_symbol: str, stream: str
+) -> pl.DataFrame:
+    """Restrict a multi-symbol reference/regime frame to the configured symbol.
+
+    Both feeds deliberately store the primary symbol **and** its cross-check (data
+    ``PLAN.md`` §7: ``ETHUSDT`` primary, ``ETHUSDC`` as cross-check). The tape's
+    backward as-of joins must see exactly one series, otherwise ``join_asof``
+    silently keeps whichever duplicate-key row sorts last. A feed that does not
+    contain the configured symbol is an error rather than a silent fallback: the
+    tape's ``price_reference``/``regime`` and the sim's
+    ``MarketView.reference``/``regimes`` must name the same series, or one run
+    would carry two different reference prices and regime labels.
+    """
+    if frame.height == 0 or "symbol" not in frame.columns:
+        return frame
+    symbols = frame["symbol"].unique().to_list()
+    if reference_symbol not in symbols:
+        raise ValidationError(
+            f"build_event_tape: {stream} feed carries symbols {sorted(symbols)} "
+            f"but the configured reference_symbol {reference_symbol!r} is not among them"
+        )
+    return frame.filter(pl.col("symbol") == reference_symbol)
+
+
+def _reference_join_frame(reference: pa.Table, reference_symbol: str) -> pl.DataFrame:
+    """One-symbol ``(close_time, close)`` frame for the backward reference join."""
+    columns = ["close_time", "close"]
+    if "symbol" in reference.column_names:
+        columns = ["symbol", *columns]
+    frame = _select_symbol_frame(
+        pl.from_arrow(reference.select(columns)), reference_symbol, "reference"
+    )
+    return frame.select(["close_time", "close"]).sort("close_time")
+
+
 def build_event_tape(
     streams: Mapping[str, pa.Table],
     *,
@@ -321,6 +357,7 @@ def build_event_tape(
     reference: pa.Table,
     regime: pa.Table,
     fee_growth: pa.Table,
+    reference_symbol: str = DEFAULT_REFERENCE_SYMBOL,
 ) -> pa.Table:
     """Build the block-ordered, look-ahead-free event tape (``EVENT_TAPE_SCHEMA``).
 
@@ -337,6 +374,8 @@ def build_event_tape(
     - ``reference``/``regime`` — as-of **backward** on ``close_time <=
       block_timestamp`` / ``timestamp <= block_timestamp`` (``polars.join_asof(
       strategy="backward")``). A ``"nearest"`` or ``"forward"`` strategy is look-ahead.
+      The reference feed is first restricted to ``reference_symbol`` (the stream
+      carries the primary plus its cross-check; see :func:`_reference_join_frame`).
     - ``fee_growth`` globals — as-of **backward** on ``block_number``, forward-filled
       from the nearest *prior* snapshot with ``fee_growth_source`` marking it.
 
@@ -391,7 +430,7 @@ def build_event_tape(
         )
 
     # --- price_reference: as-of BACKWARD on close_time <= block_timestamp ---
-    ref_join = pl.from_arrow(reference.select(["close_time", "close"])).sort("close_time")
+    ref_join = _reference_join_frame(reference, reference_symbol)
     if ref_join.height > 0:
         frame = (
             frame.sort("block_timestamp")
@@ -412,7 +451,12 @@ def build_event_tape(
         )
 
     # --- regime: as-of BACKWARD on timestamp <= block_timestamp; pre-history = unknown ---
-    regime_join = pl.from_arrow(regime.select(["timestamp", "regime"])).sort("timestamp")
+    regime_columns = ["timestamp", "regime"]
+    if "symbol" in regime.column_names:
+        regime_columns = ["symbol", *regime_columns]
+    regime_join = _select_symbol_frame(
+        pl.from_arrow(regime.select(regime_columns)), reference_symbol, "regime"
+    ).select(["timestamp", "regime"]).sort("timestamp")
     if regime_join.height > 0:
         frame = (
             frame.sort("block_timestamp")
