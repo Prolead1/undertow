@@ -34,16 +34,20 @@ streams (`gas`, `reference`, `regime`) have their own sort keys (`SORT_KEYS`) an
 carry no `log_index`; `reference`/`regime` have no block columns at all. There are no
 sentinel values — an absent value is `null`, never `""` and never `0`.
 
-## Why reference-price gaps are forward-filled and flagged
+## Why reference-price gaps are filled and flagged
 
 The reference feed (Binance klines, T08) can have missing minutes — exchange outages,
 thin pairs, or a kline that never printed. The pipeline does not silently fabricate a
-price: a gap is carried forward from the last observed close (backward-looking only, so
-no look-ahead) and a flag column records that the value is carried, not observed. This
-keeps downstream consumers (regime labels in T12, IL/LVR in the simulator) on a
-contiguous time grid while making the provenance of every carried value explicit and
-auditable. The flag is what lets T13's validation distinguish "genuinely flat" from
-"missing data we papered over".
+price: a gap is filled (backward-looking only, so no look-ahead) and a flag column
+records that the value was filled, not observed. A **secondary** symbol's gap is
+**cross-filled** from the densest symbol's effective close — median-ratio scaled, and
+only when that close was observed at least as recently as the secondary's own last bar
+(ADR-017) — so a thin pair tracks the market through a multi-month outage instead of
+freezing at a stale close; otherwise the prior observed close is carried forward. The
+*densest* symbol is never cross-filled. This keeps downstream consumers (regime labels
+in T12, IL/LVR in the simulator) on a contiguous time grid while making the provenance
+of every filled value explicit and auditable. The flag is what lets T13's validation
+distinguish "genuinely flat" from "missing data we filled".
 
 ## Nullability
 

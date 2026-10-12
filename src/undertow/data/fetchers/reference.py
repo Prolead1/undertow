@@ -47,19 +47,27 @@ REST API, whose ``endTime`` parameter is exclusive.
 Gap policy
 ----------
 Exchange outages and maintenance windows leave genuine holes in the minute
-series. The fetcher forward-fills and flags — it **never interpolates and never
-drops**:
+series. The fetcher fills and flags — it **never interpolates and never drops**:
 
 * The requested window is reindexed to the complete 1-minute grid.
-* A missing bar after at least one observed bar is forward-filled: ``open``,
-  ``high``, ``low``, ``close`` = the last observed ``close``, volumes and
-  ``trades`` = 0, ``is_gap_filled = True``.
-* A missing **leading edge** (no prior observed bar) is left *null* at the grid
+* A missing bar **in a secondary symbol** is cross-filled from the densest
+  symbol's effective close (its observed close, else its forward-filled close),
+  scaled by the median observed close ratio between the two symbols, **provided
+  that close was observed at least as recently as the secondary's own last bar**.
+  A thin pair's multi-month outage is therefore approximated by the deepest
+  pair's contemporaneous price instead of a stale frozen close. The densest
+  symbol itself is never cross-filled (it is the source).
+* Otherwise a missing bar after at least one observed bar is forward-filled:
+  ``open``, ``high``, ``low``, ``close`` = the last observed ``close``, volumes
+  and ``trades`` = 0, ``is_gap_filled = True``.
+* A missing **leading edge** with no prior observed bar is left *null* at the grid
   level (see :func:`forward_fill_klines`) and reported via ``FetchResult.warnings``
-  — it is never back-filled, because back-filling would be look-ahead. Because
-  ``REFERENCE_SCHEMA`` declares the OHLC columns non-nullable, such bars cannot
-  be represented in the returned table and are therefore *absent* from it; "null"
-  equals "no bar" in the artifact, and the warning carries the count.
+  — it is never back-filled, because back-filling would be look-ahead. A
+  secondary's leading edge *is* cross-filled when a sibling already has data
+  (contemporaneous, so not look-ahead). Because ``REFERENCE_SCHEMA`` declares the
+  OHLC columns non-nullable, null bars cannot be represented in the returned
+  table and are therefore *absent* from it; "null" equals "no bar" in the
+  artifact, and the warning carries the count.
 * Gap statistics (filled-bar count and longest run) are reported in
   ``FetchResult.warnings`` — T13's ``check_reference_coverage`` consumes them.
 
@@ -105,6 +113,7 @@ import json
 import logging
 import os
 import random
+import statistics
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -333,9 +342,67 @@ class GapStats:
 
     n_observed: int  # observed (non-filled) bars in the window
     n_filled: int  # bars forward-filled from a prior close
+    n_cross_filled: int  # bars filled from a sibling symbol's effective close
     longest_run: int  # longest consecutive run of forward-filled bars
     leading_missing: int  # minutes before the first observed bar (null, not filled)
     first_observed_ms: int | None = None  # open_time (ms) of the earliest observed bar
+
+
+def _cross_fill_source(
+    observed_by_symbol: Mapping[str, Mapping[int, Mapping[str, object]]],
+) -> tuple[str | None, Mapping[int, Mapping[str, object]] | None]:
+    """The densest observed symbol (most bars) as the cross-fill source.
+
+    Requires at least two populated symbols; ties break on the symbol name so the
+    choice is deterministic.
+    """
+    populated = sorted(
+        ((sym, obs) for sym, obs in observed_by_symbol.items() if obs),
+        key=lambda pair: (-len(pair[1]), pair[0]),
+    )
+    if len(populated) < 2:
+        return None, None
+    return populated[0][0], populated[0][1]
+
+
+def _effective_closes(
+    observed: Mapping[int, Mapping[str, object]], *, start_ms: int, end_ms: int
+) -> dict[int, tuple[float, int]]:
+    """Forward-filled close (and the minute it was observed) for every grid minute.
+
+    The origin minute lets a caller prefer whichever series was observed *more
+    recently* when filling a gap.
+    """
+    out: dict[int, tuple[float, int]] = {}
+    last: tuple[float, int] | None = None
+    t = _floor_minute(start_ms)
+    while t < end_ms:
+        obs = observed.get(t)
+        if obs is not None:
+            last = (cast(float, obs["close"]), t)
+        if last is not None:
+            out[t] = last
+        t += INTERVAL_MS
+    return out
+
+
+def _cross_scale(
+    observed: Mapping[int, Mapping[str, object]],
+    source: Mapping[int, Mapping[str, object]],
+) -> float:
+    """Median observed close ratio (own / source) over shared minutes; 1.0 if few.
+
+    Handles a persistent basis between the two series (e.g. a stablecoin pair's
+    few-bps spread) so the cross-filled level is right, not just its shape.
+    """
+    ratios = [
+        cast(float, row["close"]) / cast(float, source[t]["close"])
+        for t, row in observed.items()
+        if t in source and cast(float, source[t]["close"]) != 0.0
+    ]
+    if len(ratios) < 2:
+        return 1.0
+    return float(statistics.median(ratios))
 
 
 def forward_fill_klines(
@@ -343,6 +410,7 @@ def forward_fill_klines(
     *,
     start_utc: datetime,
     end_utc: datetime,
+    cross_fill: bool = True,
 ) -> tuple[list[dict], dict[str, GapStats]]:
     """Reindex observed kline rows onto the complete 1-minute grid for a window.
 
@@ -353,13 +421,22 @@ def forward_fill_klines(
     (right-exclusive — a day-long window yields exactly 1440 bars):
 
     * observed bar  -> emitted unchanged (``is_gap_filled=False``);
-    * missing with a prior close -> **forward-filled** from the last observed
-      close (OHLC = close, volumes/trades = 0, ``is_gap_filled=True``);
-    * missing **leading edge** (no prior close) -> emitted with ``None`` OHLC
-      and ``is_gap_filled=False`` — a placeholder "no bar" that callers must
-      not back-fill (that would be look-ahead). The table-building path drops
-      these rows because ``REFERENCE_SCHEMA`` prices are non-nullable, and
-      warns via the returned :class:`GapStats`.
+    * missing, and a **densest sibling** has an effective close observed at
+      least as recently as this symbol's own last observed bar ->
+      **cross-filled** from that close (median-ratio scaled; ADR-017), so a thin
+      pair tracks the market through a long outage instead of freezing;
+    * otherwise missing with a prior close -> **forward-filled** from the last
+      observed close (OHLC = close, volumes/trades = 0, ``is_gap_filled=True``);
+    * missing **leading edge** with no prior close and no usable sibling ->
+      emitted with ``None`` OHLC and ``is_gap_filled=False`` — a placeholder "no
+      bar" that callers must not back-fill (that would be look-ahead). A
+      secondary's leading edge *is* cross-filled when a sibling is available
+      (contemporaneous, so not look-ahead). The table-building path drops the
+      null placeholders because ``REFERENCE_SCHEMA`` prices are non-nullable,
+      and warns via the returned :class:`GapStats`.
+
+    All filled bars (forward- or cross-filled) carry ``is_gap_filled=True``; the
+    counts are separated in :class:`GapStats`.
 
     Returns ``(grid_rows, {symbol: GapStats})``.
     """
@@ -377,13 +454,25 @@ def forward_fill_klines(
             symbols.append(sym)
         bucket.setdefault(open_ms, row)  # first occurrence wins (deterministic)
 
+    # Cross-fill secondary symbols from the densest series (see module docstring).
+    source_symbol: str | None = None
+    source_closes: dict[int, tuple[float, int]] = {}
+    if cross_fill:
+        source_symbol, source_observed = _cross_fill_source(observed_by_symbol)
+        if source_observed is not None:
+            source_closes = _effective_closes(source_observed, start_ms=start_ms, end_ms=end_ms)
+
     grid_all: list[dict] = []
     stats: dict[str, GapStats] = {}
     for sym in sorted(symbols):
         observed = observed_by_symbol[sym]
+        cross = source_symbol is not None and sym != source_symbol and bool(source_closes)
+        scale = _cross_scale(observed, observed_by_symbol[source_symbol]) if cross else 1.0
         grid: list[dict] = []
         last_close: float | None = None
+        last_observed_ms: int | None = None
         n_filled = 0
+        n_cross_filled = 0
         longest_run = 0
         cur_run = 0
         leading = 0
@@ -408,6 +497,32 @@ def forward_fill_klines(
                     }
                 )
                 last_close = close
+                last_observed_ms = t
+                cur_run = 0
+            elif (
+                cross
+                and t in source_closes
+                and (
+                    last_observed_ms is None
+                    or source_closes[t][1] >= last_observed_ms  # prefer the fresher series
+                )
+            ):
+                value = source_closes[t][0] * scale
+                grid.append(
+                    {
+                        "symbol": sym,
+                        "open_time_ms": t,
+                        "open": value,
+                        "high": value,
+                        "low": value,
+                        "close": value,
+                        "volume_base": 0.0,
+                        "quote_volume": 0.0,
+                        "trades": 0,
+                        "is_gap_filled": True,
+                    }
+                )
+                n_cross_filled += 1
                 cur_run = 0
             elif last_close is not None:
                 grid.append(
@@ -451,6 +566,7 @@ def forward_fill_klines(
         stats[sym] = GapStats(
             n_observed=len(observed),
             n_filled=n_filled,
+            n_cross_filled=n_cross_filled,
             longest_run=longest_run,
             leading_missing=leading,
             first_observed_ms=first_observed_ms,
@@ -680,6 +796,11 @@ class ReferenceFetcher(BaseHttpFetcher):
                     warnings.append(
                         f"{symbol}: gap-fill: filled {st.n_filled} minute bar(s), "
                         f"longest run {st.longest_run}"
+                    )
+                if st.n_cross_filled > 0:
+                    warnings.append(
+                        f"{symbol}: cross-fill: filled {st.n_cross_filled} minute "
+                        "bar(s) from the densest sibling series"
                     )
         return FetchResult(
             table=table,

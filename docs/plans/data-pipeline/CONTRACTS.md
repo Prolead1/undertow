@@ -424,11 +424,12 @@ not hardcoded in transforms.
 | `quote_volume` | `float64` | |
 | `trades` | `int64` | |
 | `symbol` | `string` | `"ETHUSDT"` / `"ETHUSDC"` |
-| `is_gap_filled` | `bool` | true if the bar was forward-filled over an exchange outage |
+| `is_gap_filled` | `bool` | true if the bar was filled (forward-filled or cross-filled, ADR-017) over an exchange outage |
 
 No block columns at all — an exchange bar has no block. Sort key `(symbol, open_time)`; **global**, not
-pool-partitioned. Rule: gaps are **forward-filled and flagged**, never interpolated, never dropped
-silently.
+pool-partitioned. Rule: gaps are **filled and flagged**, never interpolated, never dropped silently. A
+secondary symbol's gap is **cross-filled** from the densest symbol's effective close (scaled by the
+median observed ratio, ADR-017); the densest symbol is only forward-filled.
 
 ### 4.7 `regime` (T12) — complete column list
 

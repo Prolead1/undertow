@@ -166,7 +166,10 @@ _REFERENCE_UNITS: dict[str, str] = {
     "quote_volume": "quote volume (float64)",
     "trades": "number of trades (int64)",
     "symbol": "'ETHUSDT' / 'ETHUSDC'",
-    "is_gap_filled": "true if the bar was forward-filled over an exchange outage (bool)",
+    "is_gap_filled": (
+        "true if the bar was filled (forward- or cross-filled, ADR-017) over an "
+        "exchange outage (bool)"
+    ),
 }
 
 _REGIME_UNITS: dict[str, str] = {
