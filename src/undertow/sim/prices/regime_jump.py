@@ -10,13 +10,16 @@ Model (per 10-minute step, annualised parameters):
     dlogP = mu_s * dt + sigma_s * sqrt(dt) * eps + sum(jump sizes)
     jumps ~ StudentT(df_s, loc_s, scale_s), count ~ Poisson(lambda_s * dt)
 
-``s`` is a 4-state latent regime matched post-hoc to the data module's regime
-labels (``bull``, ``bear``, ``sideways``, ``high_vol``). The transition matrix
-is row-stochastic; the stationary distribution seeds the initial regime.
+``s`` is one of the data module's regime labels (``bull``, ``bear``,
+``sideways``, ``high_vol``); the four-state model is anchored to those labels
+(ADR-015). The transition matrix is row-stochastic; the stationary distribution
+seeds the initial regime.
 
-The Gaussian-emission HMM is fitted with a small, pure-numpy Baum-Welch EM
-(the plan explicitly prefers clarity over SOTA; ``hmmlearn`` is not installed
-on the Python 3.14 project venv).
+Calibration conditions 10-minute log returns on the data module's regime labels
+(:func:`CalibratedPriceProcess.fit`). A small pure-numpy Baum-Welch Gaussian HMM
+remains as a fallback for label-less or too-sparse views (the plan explicitly
+prefers clarity over SOTA; ``hmmlearn`` is not installed on the Python 3.14
+project venv).
 
 Orientation (ADR-009)
 ---------------------
@@ -37,11 +40,14 @@ pure-jump limit. All fitted values are strictly positive.
 
 from __future__ import annotations
 
+import logging
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
 import numpy as np
+import polars as pl
 
 from undertow.sim.marketview import MarketView
 from undertow.sim.prices.base import human_price_to_triplet
@@ -53,6 +59,8 @@ from undertow.sim.types import (
 )
 
 __all__ = ["CalibratedPriceProcess", "MRSJDParams"]
+
+LOGGER = logging.getLogger("undertow.sim.prices.regime_jump")
 
 #: Default decision cadence: 10 minutes expressed in years (6 per hour × 24 h).
 #:
@@ -69,6 +77,13 @@ _REFERENCE_STEP_MINUTES: int = 1
 _DECISION_STEP_MINUTES: int = 10
 _DOWNSAMPLE_STRIDE: int = _DECISION_STEP_MINUTES // _REFERENCE_STEP_MINUTES
 
+#: State order for the regime-anchored fit (ADR-015): the data module's labels.
+_REGIME_ORDER: tuple[str, ...] = ("bull", "bear", "sideways", "high_vol")
+
+#: Minimum labelled 10-minute returns per state before the regime-anchored fit is
+#: used; below this the unsupervised HMM fallback runs instead (ADR-015).
+_MIN_LABELLED_RETURNS_PER_STATE: int = 30
+
 _LOG_2PI = math.log(2.0 * math.pi)
 
 
@@ -76,8 +91,10 @@ _LOG_2PI = math.log(2.0 * math.pi)
 class MRSJDParams:
     """Parameters of a Markov-regime-switching jump-diffusion.
 
-    Fitted on the train split only (no look-ahead). Four latent states matching
-    the regime labels, Student-t jump sizes. See module docstring for units.
+    Fitted on the train split only (no look-ahead). The four states are the data
+    module's regime labels (ADR-015), latent only on the unsupervised-HMM
+    fallback used for label-less views. Student-t jump sizes. See the module
+    docstring for units.
     """
 
     state_names: tuple[str, ...]
@@ -320,6 +337,172 @@ def _fit_student_t(sample: np.ndarray) -> tuple[float, float, float]:
     return loc, max(scale, 1e-8), dof
 
 
+def _asof_regime_labels(at_times: Sequence[datetime], regimes: pl.DataFrame) -> list[str]:
+    """Vectorised as-of (backward) regime labels for sorted ``at_times``.
+
+    One ``join_asof`` replaces a per-sample :meth:`MarketView.regime_at`, which
+    re-filters and re-sorts the whole regime frame each call — ~100 s for the
+    ~105 k 10-minute samples on the real split. The result is identical to
+    ``[regime_at(t) for t in at_times]`` for in-split times and is leakage-free
+    (a label only ever comes from a timestamp at or before its sample).
+    """
+    if not at_times:
+        return []
+    if regimes.height == 0 or "timestamp" not in regimes.columns:
+        return ["unknown"] * len(at_times)
+    query = pl.DataFrame({"timestamp": list(at_times)})
+    right = regimes.select(["timestamp", "regime"]).sort("timestamp")
+    joined = query.join_asof(right, on="timestamp", strategy="backward")
+    return [
+        str(value) if value is not None else "unknown"
+        for value in joined["regime"].to_list()
+    ]
+
+
+def _empirical_transition(labels: Sequence[str], *, smoothing: float = 0.5) -> np.ndarray:
+    """Row-stochastic transition matrix from consecutive known regime labels.
+
+    ``unknown`` (the warmup sentinel) breaks the chain rather than contributing a
+    transition. A small pseudo-count smooths every row so an unseen outgoing
+    transition cannot produce a zero row.
+    """
+    n = len(_REGIME_ORDER)
+    index = {name: i for i, name in enumerate(_REGIME_ORDER)}
+    counts = np.full((n, n), float(smoothing))
+    previous: int | None = None
+    for label in labels:
+        current = index.get(str(label))
+        if current is None:
+            previous = None
+            continue
+        if previous is not None:
+            counts[previous, current] += 1.0
+        previous = current
+    return counts / counts.sum(axis=1, keepdims=True)
+
+
+def _fit_from_regime_labels(
+    returns: np.ndarray, labels: Sequence[str], dt: float
+) -> MRSJDParams | None:
+    """Regime-anchored MRSJD fit (ADR-015).
+
+    Conditions each 10-minute return on the data module's regime label at the
+    interval's **start** (the only leakage-free choice: a trailing-window label at
+    the interval end contains that return). Per-state drift/volatility are the
+    labelled mean/std annualised by ``dt``, jumps are the Student-t fit of each
+    state's residuals beyond 3 sigma, and the transition matrix is estimated from
+    consecutive label transitions. Returns ``None`` when any state has fewer than
+    :data:`_MIN_LABELLED_RETURNS_PER_STATE` returns, so the caller can fall back to
+    the unsupervised HMM for label-less/tiny views.
+    """
+    values = np.asarray(returns, dtype=float)
+    label_arr = np.asarray(list(labels))
+    if values.shape[0] != label_arr.shape[0]:
+        raise ValueError(
+            f"returns and labels must have the same length, got {values.shape[0]} "
+            f"and {label_arr.shape[0]}"
+        )
+    index = {name: i for i, name in enumerate(_REGIME_ORDER)}
+    known = np.array([str(name) in index for name in label_arr])
+    if values.size == 0 or not bool(known.any()):
+        return None
+    known_values = values[known]
+    known_labels = label_arr[known]
+    counts = np.array([int((known_labels == name).sum()) for name in _REGIME_ORDER])
+    if int(counts.min()) < _MIN_LABELLED_RETURNS_PER_STATE:
+        return None
+
+    means = np.array([float(known_values[known_labels == name].mean()) for name in _REGIME_ORDER])
+    global_std = float(np.std(known_values)) or 1e-4
+    var_floor = (global_std * 1e-3) ** 2
+    sigmas = np.array(
+        [
+            float(np.sqrt(max(float(known_values[known_labels == name].var(ddof=1)), var_floor)))
+            for name in _REGIME_ORDER
+        ]
+    )
+
+    assignments = np.array([index[str(name)] for name in known_labels])
+    residuals = known_values - means[assignments]
+    jump_loc: list[float] = []
+    jump_scale: list[float] = []
+    jump_dof: list[float] = []
+    jump_intensity: list[float] = []
+    for state in range(len(_REGIME_ORDER)):
+        mask = assignments == state
+        state_residuals = residuals[mask]
+        tail = state_residuals[np.abs(state_residuals) > 3.0 * sigmas[state]]
+        sample = tail if tail.size >= 4 else state_residuals
+        loc, scale, dof = _fit_student_t(sample)
+        jump_loc.append(loc)
+        jump_scale.append(scale)
+        jump_dof.append(dof)
+        years = max(int(mask.sum()) * dt, dt)
+        jump_intensity.append(float(tail.size) / years if tail.size >= 4 else 0.0)
+
+    return MRSJDParams(
+        state_names=_REGIME_ORDER,
+        transition_matrix=_empirical_transition(label_arr),
+        drift=tuple(float(means[i] / dt) for i in range(len(_REGIME_ORDER))),
+        diffusion=tuple(float(sigmas[i] / math.sqrt(dt)) for i in range(len(_REGIME_ORDER))),
+        jump_intensity=tuple(jump_intensity),
+        jump_loc=tuple(jump_loc),
+        jump_scale=tuple(jump_scale),
+        jump_dof=tuple(jump_dof),
+    )
+
+
+def _fit_unsupervised(returns: np.ndarray, dt: float) -> MRSJDParams:
+    """Unsupervised Gaussian-HMM fallback with post-hoc label ordering (ADR-015)."""
+    _, transition, means, sigmas, gamma = _fit_gaussian_hmm(returns, n_states=4)
+
+    order = np.argsort(means)[::-1]
+    bull = int(order[0])
+    bear = int(order[-1])
+    middle = [i for i in range(4) if i not in (bull, bear)]
+    if sigmas[middle[0]] <= sigmas[middle[1]]:
+        sideways, high_vol = int(middle[0]), int(middle[1])
+    else:
+        sideways, high_vol = int(middle[1]), int(middle[0])
+    perm = [bull, bear, sideways, high_vol]
+
+    assignments = np.argmax(gamma, axis=1)
+    residuals = returns - means[assignments]
+    jump_loc: list[float] = []
+    jump_scale: list[float] = []
+    jump_dof: list[float] = []
+    jump_intensity: list[float] = []
+    for state in range(4):
+        mask = assignments == state
+        count = int(mask.sum())
+        state_residuals = residuals[mask]
+        tail = state_residuals[np.abs(state_residuals) > 3.0 * float(sigmas[state])]
+        sample = tail if tail.size >= 4 else state_residuals
+        loc, scale, dof = _fit_student_t(sample)
+        jump_loc.append(loc)
+        jump_scale.append(scale)
+        jump_dof.append(dof)
+        years = max(count * dt, dt)
+        jump_intensity.append(float(tail.size) / years if tail.size >= 4 else 0.0)
+
+    drift = tuple(float(means[i] / dt) for i in perm)
+    diffusion = tuple(float(sigmas[i] / math.sqrt(dt)) for i in perm)
+    reordered = np.asarray(transition, dtype=float)[np.ix_(perm, perm)]
+    row_totals = reordered.sum(axis=1, keepdims=True)
+    reordered = reordered / np.maximum(row_totals, 1e-300)
+
+    return MRSJDParams(
+        state_names=_REGIME_ORDER,
+        transition_matrix=reordered,
+        drift=drift,
+        diffusion=diffusion,
+        jump_intensity=tuple(jump_intensity[i] for i in perm),
+        jump_loc=tuple(jump_loc[i] for i in perm),
+        jump_scale=tuple(jump_scale[i] for i in perm),
+        jump_dof=tuple(jump_dof[i] for i in perm),
+    )
+
+
 class CalibratedPriceProcess:
     """A calibrated MRSJD. :meth:`step` advances ``dt`` and may switch/jump."""
 
@@ -377,15 +560,18 @@ class CalibratedPriceProcess:
         self._state = int(rng.choice(self._stationary.size, p=self._stationary))
 
     def step(self, rng: np.random.Generator) -> tuple[Price, SqrtPrice, Tick]:
-        """Advance one ``dt`` step and return the ADR-009 triplet."""
+        """Advance one ``dt`` step and return the ADR-009 triplet.
+
+        The regime *entering* the step generates the return; the state then
+        transitions for the next step. This matches the calibration, which
+        conditions each interval's return on the label observed at the interval's
+        **start** — the only leakage-free choice, since a trailing-window label
+        at the interval end already contains the return (ADR-015).
+        """
         params = self._params
         n_states = params.n_states
 
-        row = np.asarray(params.transition_matrix[self._state], dtype=float)
-        row = row / row.sum()
-        self._state = int(rng.choice(n_states, p=row))
         state = self._state
-
         dlog = params.drift[state] * self._dt
         sigma = params.diffusion[state]
         if sigma > 0.0:
@@ -401,6 +587,11 @@ class CalibratedPriceProcess:
                 dlog += float(np.sum(jumps))
 
         self._log_price += dlog
+
+        row = np.asarray(params.transition_matrix[state], dtype=float)
+        row = row / row.sum()
+        self._state = int(rng.choice(n_states, p=row))
+
         price = math.exp(self._log_price)
         return human_price_to_triplet(price, self._dec0, self._dec1)
 
@@ -414,11 +605,14 @@ class CalibratedPriceProcess:
     def fit(market_view: MarketView) -> MRSJDParams:
         """Fit the MRSJD on the train split only (no look-ahead).
 
+        Prefers the **regime-anchored** fit (ADR-015): 10-minute log returns are
+        conditioned on the data module's regime labels (``MarketView.regime_at``),
+        whose rolling window is backward-looking, so this is not look-ahead. When
+        the labels are absent or too sparse (hand-built views, tiny fixtures) it
+        falls back to the unsupervised Gaussian HMM with post-hoc label ordering.
+
         Raises ``ValueError`` when ``market_view.is_train`` is False: fitting on
-        evaluation data would leak the future. The fitted HMM discovers the four
-        regimes unsupervised; states are labelled post-hoc by mean (``bull``
-        highest, ``bear`` lowest) and volatility (``sideways`` lower,
-        ``high_vol`` higher).
+        evaluation data would leak the future.
         """
         if not market_view.is_train:
             raise ValueError(
@@ -433,64 +627,32 @@ class CalibratedPriceProcess:
         if closes.size < 2:
             raise ValueError("need at least 2 reference bars to fit the MRSJD")
 
+        close_times: list[datetime] = bars["close_time"].to_list()
         stride = max(_DOWNSAMPLE_STRIDE, 1)
+        sampled_closes = closes[::stride]
+        sampled_times = close_times[::stride]
+        if sampled_closes.size < 2:  # very short feed: keep every bar
+            stride = 1
+            sampled_closes = closes
+            sampled_times = close_times
         # Annualise against the feed's actual cadence rather than assuming a
         # 1-minute bar. On the pinned 1-minute feed this equals DEFAULT_DT.
-        dt = _decision_dt_years(bars["close_time"].to_list(), stride)
-
-        sampled = closes[::stride]
-        if sampled.size < 2:
-            sampled = closes
-        returns = np.diff(np.log(np.clip(sampled, 1e-12, None)))
+        dt = _decision_dt_years(close_times, stride)
+        returns = np.diff(np.log(np.clip(sampled_closes, 1e-12, None)))
         if returns.size < 2:
             raise ValueError("need at least 2 reference log-returns to fit the MRSJD")
 
-        _, transition, means, sigmas, gamma = _fit_gaussian_hmm(returns, n_states=4)
-
-        order = np.argsort(means)[::-1]
-        bull = int(order[0])
-        bear = int(order[-1])
-        middle = [i for i in range(4) if i not in (bull, bear)]
-        if sigmas[middle[0]] <= sigmas[middle[1]]:
-            sideways, high_vol = int(middle[0]), int(middle[1])
-        else:
-            sideways, high_vol = int(middle[1]), int(middle[0])
-        perm = [bull, bear, sideways, high_vol]
-
-        # Per-state Student-t jump parameters from residuals beyond 3 sigma.
-        assignments = np.argmax(gamma, axis=1)
-        residuals = returns - means[assignments]
-        jump_loc: list[float] = []
-        jump_scale: list[float] = []
-        jump_dof: list[float] = []
-        jump_intensity: list[float] = []
-        for state in range(4):
-            mask = assignments == state
-            count = int(mask.sum())
-            state_residuals = residuals[mask]
-            threshold = 3.0 * float(sigmas[state])
-            tail = state_residuals[np.abs(state_residuals) > threshold]
-            sample = tail if tail.size >= 4 else state_residuals
-            loc, scale, dof = _fit_student_t(sample)
-            jump_loc.append(loc)
-            jump_scale.append(scale)
-            jump_dof.append(dof)
-            years = max(count * dt, dt)
-            jump_intensity.append(float(tail.size) / years if tail.size >= 4 else 0.0)
-
-        drift = tuple(float(means[i] / dt) for i in perm)
-        diffusion = tuple(float(sigmas[i] / math.sqrt(dt)) for i in perm)
-        reordered = np.asarray(transition, dtype=float)[np.ix_(perm, perm)]
-        row_totals = reordered.sum(axis=1, keepdims=True)
-        reordered = reordered / np.maximum(row_totals, 1e-300)
-
-        return MRSJDParams(
-            state_names=("bull", "bear", "sideways", "high_vol"),
-            transition_matrix=reordered,
-            drift=drift,
-            diffusion=diffusion,
-            jump_intensity=tuple(jump_intensity[i] for i in perm),
-            jump_loc=tuple(jump_loc[i] for i in perm),
-            jump_scale=tuple(jump_scale[i] for i in perm),
-            jump_dof=tuple(jump_dof[i] for i in perm),
+        # Anchor to the data module's labels (ADR-015). Label each return by the
+        # regime at the interval's START: a trailing-window label at the interval
+        # end already contains that return, so conditioning on it is leakage.
+        labels = _asof_regime_labels(sampled_times[:-1], market_view.regimes)
+        anchored = _fit_from_regime_labels(returns, labels, dt)
+        if anchored is not None:
+            return anchored
+        LOGGER.warning(
+            "CalibratedPriceProcess.fit: regime labels absent or too sparse "
+            "(< %d returns for some state); falling back to the unsupervised HMM, "
+            "which is known to be degenerate on real data (ADR-015).",
+            _MIN_LABELLED_RETURNS_PER_STATE,
         )
+        return _fit_unsupervised(returns, dt)

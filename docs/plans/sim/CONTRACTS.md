@@ -606,8 +606,9 @@ class ReplayPriceProcess:
 class MRSJDParams:
     """Parameters of a Markov-regime-switching jump-diffusion.
 
-    Fitted on the train split only (no look-ahead). 4 latent states matching
-    the regime labels. Student-t jump sizes."""
+    Fitted on the train split only (no look-ahead). The four states are the data
+    module's regime labels (ADR-015), latent only on the unsupervised-HMM
+    fallback used for label-less views. Student-t jump sizes."""
     state_names: tuple[str, ...]            # e.g. ("bull", "bear", "sideways", "high_vol")
     transition_matrix: np.ndarray           # 4x4, row-stochastic
     drift: tuple[float, ...]                # per-state μ
@@ -625,7 +626,9 @@ class CalibratedPriceProcess:
 
     @staticmethod
     def fit(market_view: MarketView) -> MRSJDParams:
-        """Fit on the train split only. market_view.is_train must be True."""
+        """Fit on the train split only. market_view.is_train must be True. Anchors the
+        four states to the data module's regime labels (ADR-015); falls back to an
+        unsupervised Gaussian HMM when the labels are absent or too sparse."""
         ...
 ```
 
