@@ -38,7 +38,10 @@ def load_dataset(
         config_or_path: Either a ``DataConfig``, a path to a TOML config file,
             or a path to a dataset output directory (containing ``manifest.json``).
             When a directory is given, a minimal config is inferred from the
-            manifest on disk.
+            manifest on disk; because the manifest does not record the reference
+            symbol, that path assumes the pinned primary
+            (:data:`~undertow.data.config.DEFAULT_REFERENCE_SYMBOL`, ``ETHUSDT``).
+            Pass a ``DataConfig`` / TOML config for any other primary (ADR-014).
         streams: Optional set of stream names to load a partial dataset.
             ``None`` loads everything. ``frozenset({"tape"})`` loads only the
             event tape + its required side-streams.

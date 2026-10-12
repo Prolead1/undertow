@@ -13,10 +13,12 @@ from unittest.mock import patch
 import pyarrow as pa
 import pytest
 
+from tests.data.conftest import TinyDataset
 from undertow.data.config import DataConfig
 from undertow.data.fetchers.base import FetchRequest, FetchResult
 from undertow.data.pipeline import (
     _DEFAULT_STREAMS,
+    _config_with_output_dir,
     build,
     info,
     pull,
@@ -445,6 +447,39 @@ def test_snapshot_fresh_output_dir_writes_manifest(tmp_path: Path, tiny_dataset)
 
     assert (output_dir / "manifest.json").exists()
     assert report.manifest_path.exists()
+
+
+def test_build_threads_reference_symbol(tmp_path: Path, tiny_dataset: TinyDataset) -> None:
+    """``build()`` must forward ``config.reference_symbol`` to the tape builder."""
+    from undertow.data.transforms.align import build_event_tape
+
+    out = tmp_path / "out"
+    cfg = _write_tiny_streams(tiny_dataset, out)
+    captured: dict[str, object] = {}
+
+    def spy(*args: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return build_event_tape(*args, **kwargs)  # type: ignore[arg-type]
+
+    with patch("undertow.data.pipeline.build_event_tape", spy):
+        build(cfg)
+    # The kwarg must be present (a deleted wiring line omits it) and equal the config.
+    assert captured.get("reference_symbol") == cfg.reference_symbol
+
+
+def test_config_with_output_dir_preserves_extensions(
+    tmp_path: Path, tiny_dataset: TinyDataset
+) -> None:
+    """``snapshot(out=...)`` must not drop defaulted config extensions (ADR-014)."""
+    base = _write_tiny_streams(tiny_dataset, tmp_path / "base")
+    cfg = replace(base, reference_symbol="ETHUSDC", tip_surcharge_pct=9)
+    new_out = tmp_path / "new"
+    got = _config_with_output_dir(cfg, new_out)
+    # Equality with dataclasses.replace pins that no field is omitted; a future
+    # extension added to DataConfig but not to the helper fails this test.
+    assert got == replace(cfg, output_dir=new_out)
+    assert got.reference_symbol == "ETHUSDC"
+    assert got.tip_surcharge_pct == 9
 
 
 def test_snapshot_critical_failure_removes_provisional_manifest(

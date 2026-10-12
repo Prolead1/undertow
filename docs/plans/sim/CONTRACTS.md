@@ -350,7 +350,9 @@ def build_market_view(data_config: DataConfig, split_config: SplitConfig, *,
 2. Every query method that takes a time or seq argument raises `LookAheadError` if the argument
    exceeds the active split's range.
 3. `build_episode` never produces a window that straddles the train/eval boundary.
-4. The `reference` feed is the *entire* feed (both train and eval windows); `reference_close` /
+4. The `reference` feed is the *entire* feed (both train and eval windows) **for the configured
+   primary reference symbol** (`DataConfig.reference_symbol`, ADR-014); the multi-symbol reference
+   stream is restricted to that one series at the `build_market_view` door. `reference_close` /
    `reference_bars` enforce the split wall for the calling split.
 
 ---

@@ -32,6 +32,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 - `adr/003-window-blocks-optional.md` — **accepted**: `WindowConfig.start_block/end_block` widened to `BlockNumber | None` with XOR validation.
 - `adr/005-gas-flat-tip-surcharge.md` — **accepted**: per-block priority-fee resolution replaced with `eth_feeHistory(no pctls)` + flat `tip_surcharge_pct` in `gas_cost_wei`. 2000× CU reduction; priority fees on Alchemy archive are undeliverable.
 - `adr/006-gas-timestamps-feehistory-only.md` — **accepted**: `GAS_SCHEMA` is base-fee only; per-block `block_timestamp`/`eth_usd_price` removed (~122M CU saved; the event tape already carries timestamps free from the event logs).
+- `adr/014-reference-symbol-selection.md` — **accepted**: `DataConfig.reference_symbol` (default `ETHUSDT`, optional `[reference] symbol`) and a keyword-only `build_event_tape(reference_symbol=...)` restrict the multi-symbol reference and regime streams to one series before the backward joins (the stream stores the primary plus its cross-check); the tape is derived at load time, so no re-snapshot is needed.
 
 ## All tasks complete — data module v1 merged 🎉
 

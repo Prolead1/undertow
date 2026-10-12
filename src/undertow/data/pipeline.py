@@ -376,6 +376,7 @@ def build(config: DataConfig) -> "Dataset":
         streams=streams,
         gas=gas, reference=reference, regime=regime, fee_growth=fee_growth,
         pool=pool,
+        reference_symbol=config.reference_symbol,
     )
     return Dataset(
         tape=tape,
@@ -440,6 +441,30 @@ def _build_manifest(
     )
 
 
+def _config_with_output_dir(config: DataConfig, output_dir: Path) -> DataConfig:
+    """Return ``config`` with only ``output_dir`` changed.
+
+    Every field is copied explicitly so that a new defaulted extension (``log_dir``,
+    ``gas_units``, ``tip_surcharge_pct``, ``reference_symbol``, …) cannot be
+    silently dropped on the ``snapshot(out=...)`` path — dropping ``reference_symbol``
+    would rebuild the tape from a different series than the config names. The
+    accompanying test pins equality with :func:`dataclasses.replace` so a future
+    field addition fails loudly if it is not threaded here.
+    """
+    return DataConfig(
+        pool=config.pool,
+        window=config.window,
+        regime=config.regime,
+        endpoints=config.endpoints,
+        cache_dir=config.cache_dir,
+        output_dir=output_dir,
+        log_dir=config.log_dir,
+        gas_units=config.gas_units,
+        tip_surcharge_pct=config.tip_surcharge_pct,
+        reference_symbol=config.reference_symbol,
+    )
+
+
 def snapshot(
     config: DataConfig,
     out: Path | None = None,
@@ -454,15 +479,7 @@ def snapshot(
     """
     output_dir = out if out is not None else config.output_dir
     if out is not None:
-        config = DataConfig(
-            pool=config.pool,
-            window=config.window,
-            regime=config.regime,
-            endpoints=config.endpoints,
-            cache_dir=config.cache_dir,
-            output_dir=output_dir,
-            gas_units=config.gas_units,
-        )
+        config = _config_with_output_dir(config, output_dir)
 
     pull_report = pull(config)
 

@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from undertow.data.config import (
+    DEFAULT_REFERENCE_SYMBOL,
     GAS_UNITS,
     GLOBAL_TICK_SENTINEL,
     MAX_TICK,
@@ -404,6 +405,62 @@ def test_data_config_constructs_with_only_contract_fields() -> None:
     assert cfg.tip_surcharge_pct == 3
     # Unspecified log_dir falls back to the module default for direct construction.
     assert cfg.log_dir == Path("logs")
+    # Unspecified reference_symbol falls back to the pinned primary (data PLAN.md §7).
+    assert cfg.reference_symbol == DEFAULT_REFERENCE_SYMBOL == "ETHUSDT"
+
+
+def test_load_config_reference_symbol_defaults_when_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_env(monkeypatch)
+    cfg = load_config(_write(tmp_path, GOOD_TOML))
+    assert cfg.reference_symbol == "ETHUSDT"
+
+
+def test_load_config_parses_and_normalizes_reference_symbol(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_env(monkeypatch)
+    body = GOOD_TOML + '\n[reference]\nsymbol = "  ethusdc  "\n'
+    cfg = load_config(_write(tmp_path, body))
+    assert cfg.reference_symbol == "ETHUSDC"
+
+
+def test_load_config_rejects_unknown_reference_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_env(monkeypatch)
+    body = GOOD_TOML + '\n[reference]\nsymbol = "ETHUSDT"\npair = "x"\n'
+    with pytest.raises(ConfigError, match=r"\[reference\]"):
+        load_config(_write(tmp_path, body))
+
+
+@pytest.mark.parametrize("symbol", ['"ETH-USDT"', '""', '"   "'])
+def test_load_config_rejects_invalid_reference_symbol(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, symbol: str
+) -> None:
+    _set_env(monkeypatch)
+    body = GOOD_TOML + f"\n[reference]\nsymbol = {symbol}\n"
+    with pytest.raises(ConfigError, match="symbol"):
+        load_config(_write(tmp_path, body))
+
+
+def test_load_config_rejects_non_table_reference_section(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_env(monkeypatch)
+    body = 'reference = "ETHUSDT"\n' + GOOD_TOML
+    with pytest.raises(ConfigError, match=r"\[reference\] must be a table"):
+        load_config(_write(tmp_path, body))
+
+
+def test_load_config_rejects_reference_section_without_symbol(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_env(monkeypatch)
+    body = GOOD_TOML + "\n[reference]\n"
+    with pytest.raises(ConfigError, match="symbol"):
+        load_config(_write(tmp_path, body))
 
 
 def test_pool_config_is_frozen() -> None:
@@ -488,6 +545,8 @@ def test_load_config_round_trip_real_configs(
     assert dict(cfg.gas_units) == dict(GAS_UNITS)
     # ADR-005: flat tip surcharge default of 3%.
     assert cfg.tip_surcharge_pct == 3
+    # [reference] pins the primary symbol used for price_reference and the sim series.
+    assert cfg.reference_symbol == "ETHUSDT"
 
 
 def test_real_configs_use_pinned_env_placeholders() -> None:

@@ -54,6 +54,12 @@ GAS_UNITS: Mapping[str, int] = MappingProxyType(
 DEFAULT_LOG_DIR: Path = Path("logs")
 """Default directory for auto-captured run logs (``[paths] log_dir``)."""
 
+DEFAULT_REFERENCE_SYMBOL: str = "ETHUSDT"
+"""Primary Binance reference symbol (data PLAN.md §7: ``ETHUSDT`` is the deepest,
+longest 1m history; the ``ETHUSDC`` pair is the thinner cross-check). It is the
+single series used to build the event tape's ``price_reference`` and to select the
+sim's reference/regime series when a feed carries more than one symbol."""
+
 
 @dataclass(frozen=True, slots=True)
 class PoolConfig:
@@ -280,6 +286,12 @@ class DataConfig:
     # Flat surcharge percentage on base fee to approximate priority fees (ADR-005).
     # 0 = no surcharge, 3 = 3% uplift (the post-EIP-1559 average ratio).
     tip_surcharge_pct: int = 3
+    # Primary reference symbol. The reference stream carries both ``ETHUSDT`` and
+    # ``ETHUSDC`` (the cross-check); consumers that need one series (the event
+    # tape's ``price_reference``, the sim's replay/valuation path, regime labels)
+    # must select the primary rather than mixing them. Overridable via the optional
+    # ``[reference] symbol`` TOML section; defaults to the pinned primary.
+    reference_symbol: str = DEFAULT_REFERENCE_SYMBOL
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +300,7 @@ class DataConfig:
 
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
-_TOP_KEYS = frozenset({"pool", "window", "regime", "endpoints", "paths", "gas"})
+_TOP_KEYS = frozenset({"pool", "window", "regime", "endpoints", "paths", "gas", "reference"})
 _POOL_KEYS = frozenset(
     {
         "address",
@@ -319,6 +331,7 @@ _ENDPOINT_KEYS = frozenset(
 _PATH_KEYS = frozenset({"cache_dir", "output_dir", "log_dir"})
 _GAS_KEYS = frozenset({"units", "tip_surcharge_pct"})
 _GAS_UNIT_KEYS = frozenset({"mint", "burn", "collect", "swap"})
+_REFERENCE_KEYS = frozenset({"symbol"})
 
 
 def _check_unknown(data: Mapping[str, object], allowed: frozenset[str], where: str) -> None:
@@ -513,6 +526,25 @@ def _parse_endpoints(section: Mapping[str, object], where: str) -> EndpointConfi
     )
 
 
+def _parse_reference(section: Mapping[str, object], where: str) -> str:
+    """Parse a present ``[reference]`` section: the primary Binance reference symbol.
+
+    The symbol is normalised to uppercase (Binance pairs are uppercase
+    alphanumeric) so ``ethusdt`` and ``ETHUSDT`` select the same series; an empty
+    or non-alphanumeric value is a :class:`ConfigError` rather than a
+    silently-missing series. The *absent* section is handled by :func:`load_config`;
+    a present-but-empty section is an error because ``symbol`` is required.
+    """
+    _check_unknown(section, _REFERENCE_KEYS, f"{where}[reference]")
+    symbol = _need_str(section, "symbol", f"{where}[reference]").strip().upper()
+    if not symbol or not symbol.isalnum():
+        raise ConfigError(
+            f"{where}[reference]: symbol must be a non-empty alphanumeric pair "
+            f"like 'ETHUSDT', got {section.get('symbol')!r}"
+        )
+    return symbol
+
+
 def _parse_gas(section: Mapping[str, object], where: str) -> tuple[Mapping[str, int], int]:
     """Optional `[gas]` section: `tip_surcharge_pct` + `[gas.units]` overriding GAS_UNITS.
 
@@ -592,6 +624,13 @@ def load_config(path: str | Path) -> DataConfig:
     gas_units, tip_surcharge_pct = _parse_gas(
         gas if isinstance(gas, dict) else {}, where
     )
+    reference = raw.get("reference")
+    if reference is None:
+        reference_symbol = DEFAULT_REFERENCE_SYMBOL
+    elif not isinstance(reference, dict):
+        raise ConfigError(f"{where}: section [reference] must be a table, got {reference!r}")
+    else:
+        reference_symbol = _parse_reference(reference, where)
     return DataConfig(
         pool=pool,
         window=window,
@@ -602,6 +641,7 @@ def load_config(path: str | Path) -> DataConfig:
         log_dir=log_dir,
         gas_units=gas_units,
         tip_surcharge_pct=tip_surcharge_pct,
+        reference_symbol=reference_symbol,
     )
 
 
