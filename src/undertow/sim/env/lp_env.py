@@ -276,8 +276,11 @@ class LpEnvironment(gym.Env):
                 f"{episode.duration_days}d / {episode.step_minutes}min"
             )
 
+        # Pin the window to the env's own cadence: the view may carry a different
+        # ``episode_config`` (or none), and the re-created price process below uses
+        # ``episode.step_minutes``. The +1 step is a buffer for the last decision.
         start_seq, end_seq = self.market_view.build_episode(
-            self._seed, max_steps=config_steps + 1
+            self._seed, max_steps=config_steps + 1, episode_config=episode
         )
         self._start_seq = int(start_seq)
         self._end_seq = int(end_seq)
@@ -286,7 +289,10 @@ class LpEnvironment(gym.Env):
             # The replay source's window is fixed at construction; re-create it
             # for the freshly sampled episode window so resets are independent.
             self.price_process = ReplayPriceProcess(
-                self.market_view, self._start_seq, self._end_seq
+                self.market_view,
+                self._start_seq,
+                self._end_seq,
+                step_minutes=int(episode.step_minutes),
             )
         self.price_process.reset(self._rng)
 

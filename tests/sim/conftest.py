@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -218,6 +219,29 @@ def tiny_market_view(rng: np.random.Generator) -> MarketView:
 
 
 @pytest.fixture
+def minute_market_view(tiny_market_view: MarketView) -> MarketView:
+    """``tiny_market_view`` with a genuine **1-minute** reference feed.
+
+    The default fixture's reference bars are hours apart, so the 10-minute
+    decision resample is a no-op on them. This view exercises the real cadence:
+    a 1-day window yields ~144 ten-minute decision bars, not ~1440 raw bars.
+    """
+    start = tiny_market_view.active_start_utc
+    # +1 so the final bar closes at/after the split wall (the span invariant).
+    n = int((tiny_market_view.active_end_utc - start).total_seconds() // 60) + 1
+    open_times = [start + timedelta(minutes=i) for i in range(n)]
+    reference = pl.DataFrame(
+        {
+            "open_time": open_times,
+            "close_time": [t + timedelta(seconds=59, milliseconds=999) for t in open_times],
+            "close": [3000.0 + 0.001 * i for i in range(n)],
+            "symbol": ["ETHUSDT"] * n,
+        }
+    )
+    return replace(tiny_market_view, reference=reference)
+
+
+@pytest.fixture
 def entry_position() -> Position:
     """S04: a ±120-tick position built via ``initial_deposit`` at tick 196242.
 
@@ -418,9 +442,11 @@ def tiny_env(
     ``tiny_pool_engine``'s ``1e15``: at ``1e18`` the ~3% agent fee share
     exercises the marginal-agent path instead of the agent dominating the pool.
     Replay prices come from the full
-    ``tiny_market_view`` train split; the 30-day episode config makes
-    ``build_episode`` span the whole split, yielding one decision per reference
-    bar (99 steps, the fixture's reference feed length).  Deterministic:
+    ``tiny_market_view`` train split; an episode window at least as long as the
+    split makes ``build_episode`` return the whole split, yielding one decision
+    per reference bar (99 steps, the fixture's reference feed length).  The
+    fixture's bars are hours apart, so the 10-minute decision resample is a
+    no-op on them (each bar is already its own bucket).  Deterministic:
     ``reset(seed=...)`` fixes the episode window and price stream.
     """
     from undertow.sim.config import EpisodeConfig, SimConfig
@@ -446,12 +472,10 @@ def tiny_env(
         },
     )
     config = SimConfig(
-        episode=EpisodeConfig(duration_days=30, step_minutes=10),
+        episode=EpisodeConfig(duration_days=31, step_minutes=10),
         seed=0,
     )
-    price_process = ReplayPriceProcess(
-        tiny_market_view, 0, tiny_market_view.step_count()
-    )
+    price_process = ReplayPriceProcess(tiny_market_view, 0, tiny_market_view.step_count())
     return LpEnvironment(
         tiny_market_view,
         engine,

@@ -51,10 +51,11 @@ Implement `MarketView` as a frozen dataclass with:
   - `gas_at_block(block_number)` → `dict[str, object] | None`
   - `active_split_data()` → `pl.DataFrame` (the non-None of `train`/`eval`)
   - `step_count()` → `int` (length of the active split's tape)
-  - `build_episode(seed, max_steps)` → `tuple[int, int]`. Sample a contiguous episode window. Uses a
-    `np.random.Generator(seed)` internally. Never crosses the split boundary. The window length is
-    config-driven (you take `EpisodeConfig` as a parameter). Returns `(start_seq, end_seq)` where
-    `end_seq` is exclusive
+  - `build_episode(seed, max_steps)` → `tuple[int, int]`. Sample a contiguous **wall-clock** episode
+    window spanning `desired_steps * step_minutes`, where `desired_steps` is `duration_days` at the
+    `step_minutes` cadence, overridden by `max_steps` (a count of decision steps, not tape rows). Uses
+    a `np.random.Generator(seed)` internally. Never crosses the split boundary. Returns
+    `(start_seq, end_seq)` where `end_seq` is exclusive
 
 - Standalone function `build_market_view(data_config, split_config, *, split)` → `MarketView`.
   Uses the S02 `load_*` functions. If a loader raises `NotImplementedError` (pending T16), this

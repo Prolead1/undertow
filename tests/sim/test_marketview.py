@@ -88,6 +88,14 @@ def _two_symbol_view(
     return replace(view, reference=reference, regimes=regimes)
 
 
+def _window_times(view: MarketView, start: int, end: int) -> list[datetime]:
+    """Block timestamps of the active-split rows in ``[start, end)``."""
+    sub = view.active_split_data().filter(
+        (pl.col("seq") >= start) & (pl.col("seq") < end)
+    ).sort("seq")
+    return sub["block_timestamp"].to_list()
+
+
 def _eval_view_from_halves(view: MarketView, bound: datetime) -> MarketView:
     """Build an eval view over ``[bound, Feb 1]`` from the fixture's tape."""
     tape = view.train.filter(pl.col("block_timestamp") >= bound)
@@ -362,9 +370,16 @@ class TestQueries:
 
 class TestBuildEpisode:
     def test_returns_valid_window(self, tiny_market_view: MarketView) -> None:
+        window = timedelta(minutes=137 * 10)  # max_steps is decision steps, not rows
         start, end = tiny_market_view.build_episode(seed=0, max_steps=137)
         assert 0 <= start < end <= tiny_market_view.step_count()
-        assert end - start == 137
+        times = _window_times(tiny_market_view, start, end)
+        assert times
+        assert times[-1] - times[0] < window
+        # Maximal: the next row starts at/after the requested window end.
+        after = tiny_market_view.active_split_data().filter(pl.col("seq") == end)
+        if after.height:
+            assert after["block_timestamp"][0] - times[0] >= window
 
     def test_deterministic_for_same_seed(self, tiny_market_view: MarketView) -> None:
         assert tiny_market_view.build_episode(3, max_steps=200) == tiny_market_view.build_episode(
@@ -386,9 +401,15 @@ class TestBuildEpisode:
             assert start >= 100
             assert end <= 500
 
-    def test_default_config_caps_to_available_rows(self, tiny_market_view: MarketView) -> None:
-        # Default EpisodeConfig is 30 days @ 10 min == 4320 steps > 1000 rows.
-        assert tiny_market_view.build_episode(0) == (0, 1000)
+    def test_default_config_samples_duration_days_window(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        # Default EpisodeConfig is 30 days @ 10 min; the split is 31 days, so a
+        # 30-day wall-clock window is sampled (not the whole split as before).
+        start, end = tiny_market_view.build_episode(0)
+        assert 0 <= start < end <= tiny_market_view.step_count()
+        times = _window_times(tiny_market_view, start, end)
+        assert timedelta(days=29) < times[-1] - times[0] < timedelta(days=30)
 
     def test_explicit_episode_config_is_used(self, tiny_market_view: MarketView) -> None:
         ep = EpisodeConfig(duration_days=0, step_minutes=10)
@@ -480,7 +501,9 @@ class TestBuildMarketView:
         view = build_market_view(tiny_data_config, _TINY_SPLIT, episode_config=ep)
         assert view.episode_config is ep
         start, end = view.build_episode(0)
-        assert end - start == 144  # 1 day @ 10 min
+        times = _window_times(view, start, end)
+        span = times[-1] - times[0]
+        assert timedelta(hours=23) < span < timedelta(days=1)  # 1 day @ 10 min
 
     def test_equal_boundary_splits_are_disjoint(
         self,

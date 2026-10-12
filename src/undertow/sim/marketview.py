@@ -14,8 +14,9 @@ only through the top-level ``undertow.data`` public API
 
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 
 import numpy as np
@@ -325,32 +326,51 @@ class MarketView:
         *,
         episode_config: EpisodeConfig | None = None,
     ) -> tuple[int, int]:
-        """Sample a contiguous episode window of the active split.
+        """Sample a contiguous wall-clock episode window of the active split.
 
         Returns ``(start_seq, end_seq)`` where ``end_seq`` is exclusive. The
-        window is config-driven (``EpisodeConfig.duration_days → steps`` at
-        ``step_minutes`` cadence), capped by ``max_steps`` when supplied and by
-        the active split's length. It never crosses the train/eval boundary.
-
-        ``seq`` is the dense canonical tape step index (EVENT_TAPE_SCHEMA), so
-        ``end_seq - start_seq`` equals the number of sampled rows.
+        window spans ``desired_steps * step_minutes`` of wall-clock time, where
+        ``desired_steps`` defaults to ``EpisodeConfig.duration_days`` at the
+        ``step_minutes`` cadence and is overridden by ``max_steps`` when supplied.
+        It is sampled uniformly from the active split and never crosses the
+        train/eval boundary; a window at least as long as the split is the whole
+        split. ``seq`` is the dense canonical tape index (EVENT_TAPE_SCHEMA), so
+        the returned range is contiguous in ``seq`` but its length is the number
+        of tape *events* in the window, not the number of decision steps.
         """
         ep = episode_config or self.episode_config or EpisodeConfig()
-        if ep.step_minutes <= 0:
+        step_minutes = int(ep.step_minutes)
+        if step_minutes <= 0:
             raise MarketViewError("build_episode: step_minutes must be > 0")
-        n = self.step_count()
-        config_steps = (ep.duration_days * 24 * 60) // ep.step_minutes
+        config_steps = (ep.duration_days * 24 * 60) // step_minutes
         desired = config_steps if max_steps is None else int(max_steps)
         if desired <= 0:
             raise MarketViewError(f"build_episode: desired window must be > 0, got {desired}")
-        window_len = min(desired, n)
+        window = timedelta(minutes=desired * step_minutes)
 
-        seqs = self.active_split_data()["seq"].to_numpy()
+        active = self.active_split_data().sort("seq")
+        times: list[datetime] = active["block_timestamp"].to_list()
+        seqs: list[int] = [int(s) for s in active["seq"].to_list()]
+        if not times:
+            raise MarketViewError("build_episode: the active split is empty")
+        split_start = times[0]
+        split_end = self.active_end_utc
+        if window >= split_end - split_start:
+            # The window cannot fit anywhere but at the start: return the split.
+            return seqs[0], seqs[-1] + 1
+
+        # Candidate starts = rows with room for the whole window before the wall.
+        limit = split_end - window
+        n_candidates = bisect.bisect_right(times, limit)
+        if n_candidates <= 0:  # pragma: no cover - guarded by the fit check above
+            return seqs[0], seqs[-1] + 1
         rng = np.random.default_rng(seed)
-        start_idx = int(rng.integers(0, n - window_len + 1))
-        start_seq = int(seqs[start_idx])
-        end_seq = int(seqs[start_idx + window_len - 1]) + 1
-        return start_seq, end_seq
+        start_idx = int(rng.integers(0, n_candidates))
+        start_time = times[start_idx]
+        end_idx = bisect.bisect_left(times, start_time + window)
+        if end_idx <= start_idx:  # pragma: no cover - window > 0 implies a row
+            end_idx = start_idx + 1
+        return seqs[start_idx], seqs[end_idx - 1] + 1
 
 
 def _select_primary_symbol(frame: pl.DataFrame, configured: str, stream: str) -> pl.DataFrame:

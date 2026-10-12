@@ -331,9 +331,12 @@ class MarketView:
         ...
 
     def build_episode(self, seed: int, max_steps: int | None = None) -> tuple[int, int]:
-        """Sample a contiguous episode window of the active split. Returns (start_seq,
-        end_seq). Never crosses the split boundary. Episode length is config-driven
-        (EpisodeConfig.duration_days → steps at step_minutes cadence)."""
+        """Sample a contiguous wall-clock episode window of the active split. Returns
+        (start_seq, end_seq), exclusive at the end; never crosses the split boundary.
+        The window spans `desired_steps * step_minutes` of wall clock, where
+        `desired_steps` defaults to duration_days at the step_minutes cadence and is
+        overridden by max_steps when supplied (a count of decision steps, NOT tape
+        rows); a window at least as long as the split is the whole split."""
         ...
 
 def build_market_view(data_config: DataConfig, split_config: SplitConfig, *,
@@ -591,8 +594,10 @@ class ReplayPriceProcess:
     """Replays reference-feed close prices. Deterministic given the feed slice.
 
     Constructed from a MarketView + a (start_seq, end_seq) episode window.
-    Each step advances one bar in the reference feed."""
-    def __init__(self, market_view: MarketView, start_seq: int, end_seq: int) -> None: ...
+    Each step advances one decision bar; when step_minutes > 1 the 1-minute feed
+    is aggregated onto step_minutes boundaries (ADR-010), default 1 = raw feed."""
+    def __init__(self, market_view: MarketView, start_seq: int, end_seq: int,
+                 *, step_minutes: int = 1) -> None: ...
     def reset(self, rng: np.random.Generator) -> None: ...
     def step(self, rng: np.random.Generator) -> tuple[Price, SqrtPrice, Tick]: ...
 
