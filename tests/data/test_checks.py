@@ -149,7 +149,7 @@ def test_check_severities_are_pinned() -> None:
         "check_monotonic_timestamps": "critical",
         "check_no_block_gaps": "critical",
         "check_no_future_data": "warning",
-        "check_swap_sign_convention": "critical",
+        "check_swap_sign_convention": "warning",  # downgraded (ADR-016)
         "check_tick_price_consistency": "critical",
         "check_ticks_on_spacing_grid": "critical",
         "check_liquidity_conservation": "warning",
@@ -246,14 +246,14 @@ def test_check_swap_sign_convention_passes_and_fails_same_sign() -> None:
     swaps = _table(SWAP_SCHEMA, rows)
     ok = check_swap_sign_convention(swaps)
     assert ok.passed
-    assert ok.severity == "critical"
+    assert ok.severity == "warning"  # ADR-016: non-blocking on real zero-amount swaps
 
     broken = _table(
         SWAP_SCHEMA, [dict(r, amount0="123456789", amount1="987654321") for r in rows[:2]]
     )
     res = check_swap_sign_convention(broken)
     assert not res.passed
-    assert res.severity == "critical"
+    assert res.severity == "warning"
     assert res.metrics["violations"] == 2
     assert "tx_hash" in res.detail
 
@@ -384,6 +384,74 @@ def test_check_reference_coverage_passes_and_fails_on_gap_share() -> None:
     assert res.severity == "warning"
     assert res.metrics["gap_filled"] == 2
     assert "gap-fill share" in res.detail
+
+
+def test_check_reference_coverage_filters_to_reference_symbol() -> None:
+    data = build_tiny_dataset()
+    primary = [dict(r, symbol="ETHUSDT", is_gap_filled=False) for r in _rows(data.reference)][:10]
+    cross = [dict(r, symbol="ETHUSDC", is_gap_filled=True) for r in _rows(data.reference)]
+    both = _table(REFERENCE_SCHEMA, primary + cross)
+
+    primary_only = check_reference_coverage(both, WINDOW, reference_symbol="ETHUSDT")
+    assert primary_only.passed
+    assert primary_only.metrics["symbol"] == "ETHUSDT"
+    assert primary_only.metrics["gap_filled"] == 0
+    # The fully filled cross-check fails on its own series, not the pooled one.
+    cross_only = check_reference_coverage(both, WINDOW, reference_symbol="ETHUSDC")
+    assert not cross_only.passed
+    assert cross_only.metrics["gap_filled"] == len(cross)
+
+
+def test_check_regime_labels_complete_filters_to_reference_symbol() -> None:
+    data = build_tiny_dataset()
+    primary = [dict(r, symbol="ETHUSDT") for r in _rows(data.regime)]
+    cross = [
+        dict(r, symbol="ETHUSDC", regime="unknown", window_complete=True)
+        for r in _rows(data.regime)
+    ]
+    both = _table(REGIME_SCHEMA, primary + cross)
+
+    primary_only = check_regime_labels_complete(both, reference_symbol="ETHUSDT")
+    assert primary_only.passed
+    assert primary_only.metrics["symbol"] == "ETHUSDT"
+    # The cross-check's bogus all-unknown labels fail on its own series.
+    cross_only = check_regime_labels_complete(both, reference_symbol="ETHUSDC")
+    assert not cross_only.passed
+
+
+def test_check_reference_coverage_absent_symbol_reports_mismatch() -> None:
+    data = build_tiny_dataset()
+    only_cross = _table(
+        REFERENCE_SCHEMA, [dict(r, symbol="ETHUSDC") for r in _rows(data.reference)]
+    )
+    res = check_reference_coverage(only_cross, WINDOW, reference_symbol="ETHUSDT")
+    assert not res.passed
+    assert res.metrics["symbol"] == "ETHUSDT"
+    assert "no reference bars" in res.detail
+
+
+def test_check_reference_coverage_without_symbol_column_passes_through() -> None:
+    data = build_tiny_dataset()
+    no_symbol = pa.table(
+        {
+            "close_time": data.reference.column("close_time"),
+            "is_gap_filled": data.reference.column("is_gap_filled"),
+        }
+    )
+    assert "symbol" not in no_symbol.column_names
+    # The symbol column is optional: same verdict as the symbol-bearing table.
+    assert check_reference_coverage(no_symbol, WINDOW).passed == (
+        check_reference_coverage(data.reference, WINDOW).passed
+    )
+
+
+def test_check_regime_labels_complete_absent_symbol_reports_mismatch() -> None:
+    data = build_tiny_dataset()
+    only_cross = _table(REGIME_SCHEMA, [dict(r, symbol="ETHUSDC") for r in _rows(data.regime)])
+    res = check_regime_labels_complete(only_cross, reference_symbol="ETHUSDT")
+    assert not res.passed
+    assert res.metrics["symbol"] == "ETHUSDT"
+    assert "no regime rows" in res.detail
 
 
 def test_check_regime_labels_complete_passes_and_fails() -> None:

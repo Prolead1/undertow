@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pyarrow as pa  # type: ignore[import-untyped]
 
+from undertow.data.config import DEFAULT_REFERENCE_SYMBOL
 from undertow.data.storage.manifest import DatasetManifest
 from undertow.data.transforms.align import Dataset
 from undertow.data.types import CheckResult
@@ -118,7 +119,9 @@ def _window_start_block(dataset: Dataset) -> int:
     return 0
 
 
-def run_all_checks(dataset: Dataset) -> list[CheckResult]:
+def run_all_checks(
+    dataset: Dataset, *, reference_symbol: str = DEFAULT_REFERENCE_SYMBOL
+) -> list[CheckResult]:
     """Run every check the dataset has inputs for, in a fixed order.
 
     Checks whose inputs are absent (no tape, no gas, no route samples, Dune
@@ -184,12 +187,16 @@ def run_all_checks(dataset: Dataset) -> list[CheckResult]:
     if dataset.reference is None:
         results.append(_skipped("check_reference_coverage", "reference stream absent"))
     else:
-        results.append(check_reference_coverage(dataset.reference, window))
+        results.append(
+            check_reference_coverage(dataset.reference, window, reference_symbol=reference_symbol)
+        )
 
     if dataset.regime is None:
         results.append(_skipped("check_regime_labels_complete", "regime stream absent"))
     else:
-        results.append(check_regime_labels_complete(dataset.regime))
+        results.append(
+            check_regime_labels_complete(dataset.regime, reference_symbol=reference_symbol)
+        )
 
     # route agreement: both routes must be present for a stream to be comparable
     by_stream: dict[str, dict[str, pa.Table]] = {}

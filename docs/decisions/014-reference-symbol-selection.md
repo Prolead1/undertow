@@ -76,8 +76,7 @@ place to record it.
 - The reference-fetch symbol set (`ReferenceFetcher`, independent of `DataConfig`) is unchanged, so
   `[reference] symbol = "ETHBTC"` fails at `build`/`build_market_view` time rather than at
   `load_config`. The data validation checks (`check_reference_coverage`, `check_regime_labels_complete`)
-  still evaluate the multi-symbol feed, which dilutes the per-symbol gap statistics; filtering them to
-  `reference_symbol` is a follow-up. Deriving the pull's symbols from the config is likewise a
+  now filter to `reference_symbol` — see ADR-016. Deriving the pull's symbols from the config remains a
   follow-up.
 - Consumers must not assume the stored reference/regime streams are single-symbol. `MarketView`
   is the enforced seam.

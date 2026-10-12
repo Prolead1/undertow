@@ -95,10 +95,10 @@ _SEMANTICS: tuple[str, ...] = (
     "",
     "`swap.amount0` / `swap.amount1` are **signed** `int256` values in raw token "
     "units.",
-    "**Sign rule:** positive = flowed into the pool; negative = flowed out. A real "
-    "swap has",
-    "opposite signs and neither amount is zero (T13's `check_swap_sign_convention`). "
-    "The fee is",
+    "**Sign rule:** positive = flowed into the pool; negative = flowed out. A swap "
+    "normally has",
+    "opposite signs and non-zero amounts; a few real swaps round one side to zero "
+    "(T13's `check_swap_sign_convention`, now a warning). The fee is",
     "taken on the **input** (positive) side: `fee_paid = amount_in * fee_tier / "
     "1_000_000`, in the",
     "input token. Never assume which token is the input — read the sign. On the "
