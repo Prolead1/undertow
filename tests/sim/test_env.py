@@ -11,12 +11,22 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import numpy as np
 import polars as pl
+import pyarrow as pa
 import pytest
 
+from undertow.data import (
+    EVENT_TAPE_SCHEMA,
+    FEE_GROWTH_SCHEMA,
+    GAS_SCHEMA,
+    REFERENCE_SCHEMA,
+    REGIME_SCHEMA,
+    tick_to_price,
+    tick_to_sqrt_price_x96,
+)
 from undertow.sim.config import EpisodeConfig, SimConfig
 from undertow.sim.core.pool import PoolEngine, PoolState, TickState
 from undertow.sim.core.position import calc_sqrt_price_a
@@ -436,9 +446,13 @@ class TestStep:
         position = tiny_env.pool_engine.positions[position_id]
         assert position.tick_lower == lower
         assert position.tick_upper == upper
+        # The fixture's tape holds a constant pool sqrt price, so the exact
+        # piecewise engine (ADR-019) credits no fee; the nominal gross fee is
+        # still reported.  Fee accrual is pinned in test_pool_exact_parity.py.
         assert tiny_env.pool_engine.state.sqrt_price != sqrt_before
-        assert tiny_env.pool_engine.position_fees(position_id)[0] > 0.0
-        assert info["reward_breakdown_raw"]["fees"] > 0.0
+        assert info["pool_fee_earned_0"] > 0.0
+        assert tiny_env.pool_engine.position_fees(position_id) == (0.0, 0.0)
+        assert info["reward_breakdown_raw"]["fees"] == 0.0
 
     def test_hold_step_has_zero_gas_and_slippage(
         self, tiny_env: LpEnvironment
@@ -453,19 +467,20 @@ class TestStep:
             raw["fees"] + raw["il_change"]
         )
 
-    def test_hodl_fees_equal_pool_share(self, tiny_env: LpEnvironment) -> None:
+    def test_hodl_pool_fee_is_reported_but_not_accrued_on_flat_tape(
+        self, tiny_env: LpEnvironment
+    ) -> None:
+        # The shared ``tiny_market_view`` tape holds a constant pool sqrt price
+        # (its reference feed moves, its pool does not), so the exact piecewise
+        # engine (ADR-019) correctly accrues nothing even though the nominal
+        # gross fee is reported.  The genuine fee-share identity is exercised in
+        # ``test_pool_exact_parity.py`` and the ``_parity_env`` fixture.
         tiny_env.reset(seed=42)
         _, _, _, _, info = tiny_env.step(0)
-        pool_fee = info["pool_fee_earned_0"]
-        assert pool_fee > 0.0
-        share = info["position_liquidity"] / info["active_liquidity"]
-        expected_raw = pool_fee * share
-        actual_raw, _ = tiny_env.pool_engine.position_fees(tiny_env.position_id)
-        assert actual_raw == pytest.approx(expected_raw, rel=1e-9)
-        # Human token0 fee (USDC), the value the reward consumes.
-        assert info["reward_breakdown_raw"]["fees"] == pytest.approx(
-            expected_raw / 10.0**6, rel=1e-6
-        )
+        assert info["pool_fee_earned_0"] > 0.0
+        raw, _ = tiny_env.pool_engine.position_fees(tiny_env.position_id)
+        assert raw == 0.0
+        assert info["reward_breakdown_raw"]["fees"] == 0.0
 
     def test_rebalance_changes_position_range(
         self, tiny_env: LpEnvironment
@@ -710,13 +725,11 @@ class TestReplayEventGranularity:
     ) -> None:
         tiny_env.reset(seed=42)
         _, _, _, _, info = tiny_env.step(0)
+        # The reported gross fee is the sum over the interval's swaps; the
+        # constant-price tape means the agent accrues none of it (ADR-019).
         assert info["pool_fee_earned_0"] > 0.0
-        # Fee share still holds against the aggregated interval fee.
-        share = info["position_liquidity"] / info["active_liquidity"]
         actual_raw, _ = tiny_env.pool_engine.position_fees(tiny_env.position_id)
-        assert actual_raw == pytest.approx(
-            info["pool_fee_earned_0"] * share, rel=1e-6
-        )
+        assert actual_raw == 0.0
 
     def test_non_swap_events_are_not_charged(
         self, tiny_env: LpEnvironment
@@ -776,9 +789,13 @@ class TestEquityContinuity:
         assert rebalance_info["equity"] == pytest.approx(
             equity_before + raw["pnl_net"], abs=1e-6
         )
-        # The old position's collected fees are not silently dropped.
+        # The old position's collected fees are not silently dropped: they are
+        # the fees accrued on every prior step (ADR-019: a step with no price
+        # movement has no segment and accrues nothing, so the constant-price
+        # rebalance step contributes zero on top of the hold step).
+        hold_fees = hold_info["reward_breakdown_raw"]["fees"]
         assert rebalance_info["collected_fees_usdc"] == pytest.approx(
-            raw["fees"] * 2.0, rel=1e-6, abs=1e-9
+            hold_fees + raw["fees"], rel=1e-6, abs=1e-9
         )
 
 
@@ -851,3 +868,378 @@ class TestValidationAndExhaustion:
         # A terminated episode rejects further steps.
         with pytest.raises(EnvError):
             env.step(0)
+
+
+# ---------------------------------------------------------------------------
+# External pool seeding + warmup (ADR-018/ADR-019, reviewer finding 3)
+# ---------------------------------------------------------------------------
+_SEEDED_T = 196242
+_SEEDED_STEP = timedelta(minutes=10)
+_SEEDED_START = datetime(2024, 6, 1, tzinfo=UTC)
+_SEEDED_BASE_L = 5.0e6
+_SEEDED_NEW_L = 2.0e6
+_SEEDED_POOL = "0x" + "aa" * 20
+_SEEDED_GLOBAL_SENTINEL = -(2**31)
+
+
+def _seeded_tape_row(
+    *,
+    seq: int,
+    block: int,
+    when: datetime,
+    event_type: str,
+    tick: int | None = None,
+    amount0: str | None = None,
+    amount1: str | None = None,
+    tick_lower: int | None = None,
+    tick_upper: int | None = None,
+    liquidity_amount: str | None = None,
+) -> dict[str, object]:
+    price = (
+        float(tick_to_price(tick, 6, 18)) if tick is not None else float(
+            tick_to_price(_SEEDED_T, 6, 18)
+        )
+    )
+    return {
+        "block_number": block,
+        "log_index": 0,
+        "block_timestamp": when,
+        "tx_hash": f"0x{seq:064x}",
+        "pool_address": _SEEDED_POOL,
+        "event_type": event_type,
+        "amount0": amount0,
+        "amount1": amount1,
+        "sqrt_price_x96": str(tick_to_sqrt_price_x96(tick)) if tick is not None else None,
+        "liquidity": str(int(_SEEDED_BASE_L)) if event_type == "swap" else None,
+        "tick": tick,
+        "sender": "0x" + "bb" * 20,
+        "recipient": "0x" + "dd" * 20 if event_type == "swap" else None,
+        "owner": "0x" + "cc" * 20 if event_type in ("mint", "burn") else None,
+        "tick_lower": tick_lower,
+        "tick_upper": tick_upper,
+        "liquidity_amount": liquidity_amount,
+        "seq": seq,
+        # The as-of reference close is the exact human price of the swap's x96.
+        "price_pool": price,
+        "price_reference": price,
+        "regime": "sideways",
+        "base_fee_per_gas": str(20 * 10**9),
+        "priority_fee_p50_wei": str(10**9),
+        "fee_growth_global_0_x128": "0",
+        "fee_growth_global_1_x128": "0",
+        "fee_growth_source": "exact",
+    }
+
+
+def _seeded_market_view() -> MarketView:
+    """A synthetic lane with a real ``pool_state`` snapshot + warmup rows.
+
+    The lane starts at tick ``T`` with ``5e6`` external liquidity in
+    ``[T-600, T+600]``.  Three warmup rows then move the pool to tick ``T+300``,
+    mint a second ``2e6`` position ``[T+240, T+6000]`` and cross its lower bound,
+    so the warmed window-start state has ``7e6`` active liquidity and a non-zero
+    token1 global accumulator.  The window rows are direction-consistent swaps
+    (token1 in => tick up, token0 in => tick down) that move within the agent's
+    initial range.
+    """
+    t = _SEEDED_T
+    warm0 = _SEEDED_START - 3 * _SEEDED_STEP
+    warm1 = _SEEDED_START - 2 * _SEEDED_STEP
+    warm2 = _SEEDED_START - _SEEDED_STEP
+    warm_rows = [
+        _seeded_tape_row(
+            seq=0, block=0, when=warm0, event_type="swap", tick=t + 120,
+            amount0="-1", amount1="1000000000",
+        ),
+        _seeded_tape_row(
+            seq=1, block=1, when=warm1, event_type="mint",
+            tick_lower=t + 240, tick_upper=t + 6000,
+            liquidity_amount=str(int(_SEEDED_NEW_L)),
+        ),
+        _seeded_tape_row(
+            seq=2, block=2, when=warm2, event_type="swap", tick=t + 300,
+            amount0="-1", amount1="500000000",
+        ),
+    ]
+    # (from_tick, to_tick, direction); ``token1 in => tick up``, ``token0 in =>
+    # tick down`` (CONTRACTS.md §4.1).
+    window_moves = [
+        (t + 300, t + 300, "up"),
+        (t + 300, t + 240, "down"),
+        (t + 240, t + 360, "up"),
+        (t + 360, t + 290, "down"),
+        (t + 290, t + 390, "up"),
+    ]
+    window_rows = [
+        _seeded_tape_row(
+            seq=3 + i,
+            block=3 + i,
+            when=_SEEDED_START + i * _SEEDED_STEP,
+            event_type="swap",
+            tick=to_tick,
+            amount0="-1" if direction == "up" else "1000000000",
+            amount1="1000000000" if direction == "up" else "-1",
+        )
+        for i, (_from_tick, to_tick, direction) in enumerate(window_moves)
+    ]
+    window_ticks = [to_tick for _from, to_tick, _dir in window_moves]
+    tape = pl.from_arrow(
+        pa.table(
+            {k: [r[k] for r in window_rows] for k in window_rows[0]},
+            schema=EVENT_TAPE_SCHEMA,
+        )
+    )
+    warmup = pl.from_arrow(
+        pa.table(
+            {k: [r[k] for r in warm_rows] for k in warm_rows[0]},
+            schema=EVENT_TAPE_SCHEMA,
+        )
+    )
+
+    pool_rows: list[dict[str, object]] = [
+        {
+            "block_number": 0,
+            "tick": _SEEDED_GLOBAL_SENTINEL,
+            "fee_growth_outside_0_x128": "0",
+            "fee_growth_outside_1_x128": "0",
+            "liquidity_gross": "0",
+            "liquidity_net": "0",
+            "initialized": False,
+            "fee_growth_global_0_x128": "0",
+            "fee_growth_global_1_x128": "0",
+            "current_tick": t,
+            "current_liquidity": str(int(_SEEDED_BASE_L)),
+            "source": "onchain",
+            "pool_address": _SEEDED_POOL,
+            "fee_protocol": 0,
+        },
+        {
+            "block_number": 0,
+            "tick": t - 600,
+            "fee_growth_outside_0_x128": "0",
+            "fee_growth_outside_1_x128": "0",
+            "liquidity_gross": str(int(_SEEDED_BASE_L)),
+            "liquidity_net": str(int(_SEEDED_BASE_L)),
+            "initialized": True,
+            "fee_growth_global_0_x128": "0",
+            "fee_growth_global_1_x128": "0",
+            "current_tick": t,
+            "current_liquidity": str(int(_SEEDED_BASE_L)),
+            "source": "onchain",
+            "pool_address": _SEEDED_POOL,
+            "fee_protocol": 0,
+        },
+        {
+            "block_number": 0,
+            "tick": t + 600,
+            "fee_growth_outside_0_x128": "0",
+            "fee_growth_outside_1_x128": "0",
+            "liquidity_gross": str(int(_SEEDED_BASE_L)),
+            "liquidity_net": str(-int(_SEEDED_BASE_L)),
+            "initialized": True,
+            "fee_growth_global_0_x128": "0",
+            "fee_growth_global_1_x128": "0",
+            "current_tick": t,
+            "current_liquidity": str(int(_SEEDED_BASE_L)),
+            "source": "onchain",
+            "pool_address": _SEEDED_POOL,
+            "fee_protocol": 0,
+        },
+    ]
+    pool_state = pl.from_arrow(
+        pa.table(
+            {k: [r[k] for r in pool_rows] for k in pool_rows[0]},
+            schema=FEE_GROWTH_SCHEMA,
+        )
+    )
+
+    window_times = [_SEEDED_START + i * _SEEDED_STEP for i in range(len(window_rows))]
+    reference = pl.from_arrow(
+        pa.table(
+            {
+                "open_time": [wt - timedelta(seconds=1) for wt in window_times],
+                "close_time": window_times,
+                "open": [float(tick_to_price(tk, 6, 18)) for tk in window_ticks],
+                "high": [float(tick_to_price(tk, 6, 18)) * 1.0001 for tk in window_ticks],
+                "low": [float(tick_to_price(tk, 6, 18)) * 0.9999 for tk in window_ticks],
+                "close": [float(tick_to_price(tk, 6, 18)) for tk in window_ticks],
+                "volume_base": [1.0] * len(window_rows),
+                "quote_volume": [3000.0] * len(window_rows),
+                "trades": [1] * len(window_rows),
+                "symbol": ["ETHUSDC"] * len(window_rows),
+                "is_gap_filled": [False] * len(window_rows),
+            },
+            schema=REFERENCE_SCHEMA,
+        )
+    )
+    regimes = pl.from_arrow(
+        pa.table(
+            {
+                "timestamp": window_times,
+                "sigma_rv": [0.5] * len(window_rows),
+                "mu": [0.0] * len(window_rows),
+                "regime": ["sideways"] * len(window_rows),
+                "window_complete": [True] * len(window_rows),
+                "symbol": ["ETHUSDC"] * len(window_rows),
+            },
+            schema=REGIME_SCHEMA,
+        )
+    )
+    gas = pl.from_arrow(
+        pa.table(
+            {
+                "block_number": list(range(len(window_rows))),
+                "base_fee_per_gas": [str(20 * 10**9)] * len(window_rows),
+                "gas_used": [15_000_000] * len(window_rows),
+                "gas_limit": [30_000_000] * len(window_rows),
+                "priority_fee_p50_wei": [str(10**9)] * len(window_rows),
+                "priority_fee_p90_wei": [str(3 * 10**9)] * len(window_rows),
+            },
+            schema=GAS_SCHEMA,
+        )
+    )
+    return MarketView(
+        train=tape,
+        eval=None,
+        reference=reference,
+        regimes=regimes,
+        gas=gas,
+        train_start_utc=window_times[0],
+        train_end_utc=window_times[-1],
+        eval_start_utc=window_times[-1] + timedelta(minutes=1),
+        eval_end_utc=window_times[-1] + timedelta(days=1),
+        is_train=True,
+        episode_config=EpisodeConfig(duration_days=1, step_minutes=10),
+        pool=None,
+        pool_state=pool_state,
+        warmup=warmup,
+    )
+
+
+def _seeded_env(view: MarketView) -> LpEnvironment:
+    from undertow.sim.evaluate.protocol import build_replay_env
+
+    config = SimConfig(
+        episode=EpisodeConfig(duration_days=1, step_minutes=10), seed=0
+    )
+    return build_replay_env(view, config)
+
+
+def _pool_fingerprint(env: LpEnvironment) -> tuple[object, ...]:
+    state = env.pool_engine.state
+    ticks = tuple(
+        sorted(
+            (
+                int(tick),
+                ts.fee_growth_outside_0,
+                ts.fee_growth_outside_1,
+                ts.liquidity_gross,
+                ts.liquidity_net,
+                ts.initialized,
+            )
+            for tick, ts in env.pool_engine.ticks.items()
+        )
+    )
+    return (
+        env._start_seq,
+        env._end_seq,
+        state.sqrt_price,
+        state.tick,
+        state.sqrt_price_x96,
+        state.liquidity,
+        state.fee_growth_global_0,
+        state.fee_growth_global_1,
+        state.fee_protocol,
+        ticks,
+    )
+
+
+class TestExternalPoolSeeding:
+    """ADR-018/019: reset seeds from the snapshot and replays warmup to the window."""
+
+    def test_reset_seeds_and_warms_to_window_start(self) -> None:
+        env = _seeded_env(_seeded_market_view())
+        env.reset(seed=11)
+
+        assert env._external_seeded is True
+        state = env.pool_engine.state
+        # The warmup moved T -> T+300 and crossed the new 2e6 mint's lower bound.
+        assert state.tick == Tick(_SEEDED_T + 300)
+        assert state.liquidity == pytest.approx(_SEEDED_BASE_L + _SEEDED_NEW_L)
+        assert state.fee_growth_global_1 > 0.0
+        minted_tick = Tick(_SEEDED_T + 240)
+        assert minted_tick in env.pool_engine.ticks
+        assert env.pool_engine.ticks[minted_tick].liquidity_net == pytest.approx(
+            _SEEDED_NEW_L
+        )
+        # The per-episode base captured at reset is the warmed state, not the raw
+        # snapshot (5e6 at tick T).
+        assert env._base_state.liquidity == pytest.approx(
+            _SEEDED_BASE_L + _SEEDED_NEW_L
+        )
+        assert env._base_state.tick == Tick(_SEEDED_T + 300)
+
+    def test_reset_is_reproducible_and_rebuilds_from_snapshot(self) -> None:
+        env = _seeded_env(_seeded_market_view())
+        env.reset(seed=7)
+        first = _pool_fingerprint(env)
+
+        # Advance the episode, then reset the SAME env: it must rebuild the
+        # external pool from the snapshot + warmup, not accumulate on the live
+        # engine.
+        env.step(0)
+        env.step(1)
+        env.reset(seed=7)
+
+        assert _pool_fingerprint(env) == first
+
+    def test_alignment_gate_skips_zero_volume_step_for_seeded_views(
+        self, tiny_env: LpEnvironment
+    ) -> None:
+        # A seeded view is tape-driven: the engine's exact x96 survives the
+        # step (the alignment step would reset it to None).
+        seeded = _seeded_env(_seeded_market_view())
+        seeded.reset(seed=3)
+        seeded.step(0)
+        assert seeded.pool_engine.state.sqrt_price_x96 is not None
+        assert seeded.pool_engine.state.sqrt_price_x96 == int(
+            seeded._last_tape_row["sqrt_price_x96"]
+        )
+
+        # A fixture view (no snapshot) still aligns onto the reference bar, which
+        # clears the exact x96.
+        tiny_env.reset(seed=42)
+        tiny_env.step(0)
+        assert tiny_env.pool_engine.state.sqrt_price_x96 is None
+
+    def test_seeded_mark_price_uses_last_tape_event(self) -> None:
+        # ADR-019: for a snapshot-seeded view the position is marked at the last
+        # processed tape event's own reference close (paired with that event's
+        # raw sqrt), not the decision bar's close — a bar-close/event-sqrt mix
+        # would inject a one-bar mark-to-market error into IL/PnL parity.
+        env = _seeded_env(_seeded_market_view())
+        env.reset(seed=5)
+        mark_price, _sqrt, _at_time, row, done = env._advance_replay()
+        assert done is False
+        assert mark_price == pytest.approx(float(row["price_reference"]))
+
+    def test_moving_tape_accrues_fees_and_carries_them_across_rebalance(self) -> None:
+        env = _seeded_env(_seeded_market_view())
+        env.reset(seed=5)
+
+        fees_total = 0.0
+        for _ in range(2):
+            _, _, _, _, info = env.step(0)
+            fees_total += float(info["reward_breakdown_raw"]["fees"])
+        assert fees_total > 0.0
+        raw_before, _ = env.pool_engine.position_fees(env.position_id)
+        assert raw_before > 0.0
+
+        # A rebalance collects every uncollected fee (prior steps + this step's)
+        # and redeploys a fresh position with zero uncollected fees.
+        _, _, _, _, rebalance_info = env.step(1)
+        collected = float(rebalance_info["collected_fees_usdc"])
+        this_step = float(rebalance_info["reward_breakdown_raw"]["fees"])
+        assert collected == pytest.approx(fees_total + this_step, rel=1e-9, abs=1e-9)
+        raw_after, _ = env.pool_engine.position_fees(env.position_id)
+        assert raw_after == 0.0

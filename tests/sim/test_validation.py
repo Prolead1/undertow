@@ -229,11 +229,15 @@ def _parity_env(
             Decimal(str(_PARITY_ENTRY_PRICE)), DEFAULT_DEC0, DEFAULT_DEC1
         )
     )
+    # The view's opening row is the ``mint`` that establishes the external
+    # liquidity, so the pre-window base is zero and the engine builds it from
+    # the tape — exactly as the backtester's empty-lattice fallback does
+    # (ADR-019). The background ticks carry no net liquidity.
     engine = PoolEngine(
         state=PoolState(
             sqrt_price=calc_sqrt_price_a(Tick(entry_tick)),
             tick=Tick(entry_tick),
-            liquidity=_PARITY_BASE_LIQUIDITY,
+            liquidity=0.0,
             fee_growth_global_0=0.0,
             fee_growth_global_1=0.0,
             fee_tier_bps=3000,
