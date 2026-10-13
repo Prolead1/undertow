@@ -25,7 +25,7 @@ from undertow.sim.backtest import (
     summarize_backtest,
 )
 from undertow.sim.config import EpisodeConfig, GasConfig, SimConfig, SlippageConfig
-from undertow.sim.core.position import initial_deposit
+from undertow.sim.core.position import calc_sqrt_price_a, initial_deposit
 from undertow.sim.frictions import GasCostCalculator
 from undertow.sim.marketview import MarketView
 from undertow.sim.policies import HODLPolicy, PassiveNarrowPolicy, Policy, TauResetPolicy
@@ -446,6 +446,106 @@ def test_fee_accrual_is_exact_integer_q128() -> None:
         _ENTRY_PRICE,
     )
     assert tape_columns[-1] == pytest.approx(sum(fees), rel=1e-12)
+
+
+def test_hodl_credits_the_first_tape_event_fee() -> None:
+    """Regression (ADR-019 follow-up): the first tape event's fee is credited.
+
+    The position is deployed and its inside snapshots are seeded *before* the
+    first event is replayed, so a fee-bearing first swap shows up in the first
+    ledger row -- exactly as the simulator credits it (it deploys the position
+    at ``reset``, before its first event).  Before the seeding fix the first
+    ``_accrue_fees`` call took the discard branch and silently dropped this
+    fee, biasing every real-data parity run.
+    """
+    from dataclasses import replace
+
+    from undertow.data import GLOBAL_TICK_SENTINEL, default_pools
+    from undertow.sim.core.pool import PoolEngine, PoolState
+
+    lp = 10**18
+    gross = 10**12
+    fee = gross * _FEE_PIPS // 1_000_000
+    inc = (fee << 128) // lp
+    pool = default_pools()["USDC_WETH_3000"]
+
+    # The first swap must move the price (a same-price swap has a zero-length
+    # segment and accrues nothing), so it ends one tick lower; the position
+    # bounds snap to the same grid around either tick.
+    post_tick = ENTRY_TICK - 1
+    sqrt0 = tick_to_sqrt_price_x96(post_tick) / (1 << 96)
+    deployed = initial_deposit(
+        sqrt0,
+        _ENTRY_PRICE,
+        Tick(_DEFAULT_LOWER),
+        Tick(_DEFAULT_UPPER),
+        CAPITAL,
+        TickSpacing(TICK_SPACING),
+    )
+    view = _market_view(
+        minutes=[0, 10],
+        prices=[_ENTRY_PRICE] * 2,
+        ticks=[post_tick, post_tick],
+        amount0=[str(gross), "1"],
+        amount1=["-1", "-1"],
+    )
+    first_block = int(view.active_split_data()["block_number"].min())
+    state = pl.DataFrame(
+        {
+            "block_number": [first_block - 1],
+            "tick": [GLOBAL_TICK_SENTINEL],
+            "fee_growth_outside_0_x128": [None],
+            "fee_growth_outside_1_x128": [None],
+            "liquidity_gross": ["0"],
+            "liquidity_net": ["0"],
+            "initialized": [False],
+            "fee_growth_global_0_x128": ["0"],
+            "fee_growth_global_1_x128": ["0"],
+            "current_tick": [ENTRY_TICK],
+            "current_liquidity": [str(lp)],
+            "source": ["rpc_call"],
+            "pool_address": [str(pool.address)],
+            "fee_protocol": [0],
+        }
+    )
+    view = replace(view, pool=pool, pool_state=state)
+
+    ledger = run_backtest(HODLPolicy(), view, SimConfig())
+    position_liquidity = int(round(deployed.liquidity))
+    expected_raw = (position_liquidity * inc) >> 128
+    expected_fee = expected_raw / 10**DEC0
+
+    fees = ledger.equity_curve["fees"].to_list()
+    assert fees[0] == pytest.approx(expected_fee, rel=1e-12)
+    assert fees[0] > 0.0
+
+    # Sim twin: the float64 ``PoolEngine`` seeded from the same snapshot, given
+    # the same marginal position and first swap, credits the same fee to within
+    # the documented one-raw-unit integer truncation floor.
+    template = PoolState(
+        sqrt_price=calc_sqrt_price_a(Tick(ENTRY_TICK)),
+        tick=Tick(ENTRY_TICK),
+        liquidity=0.0,
+        fee_growth_global_0=0.0,
+        fee_growth_global_1=0.0,
+        fee_tier_bps=_FEE_PIPS,
+        tick_spacing=TICK_SPACING,
+    )
+    engine = PoolEngine.from_snapshot(template, [dict(r) for r in state.to_dicts()])
+    position_id = engine.open_position(
+        Tick(deployed.tick_lower),
+        Tick(deployed.tick_upper),
+        float(position_liquidity),
+    )
+    engine.step(
+        sqrt0,
+        Tick(post_tick),
+        float(gross),
+        0.0,
+        new_sqrt_price_x96=tick_to_sqrt_price_x96(post_tick),
+    )
+    sim_raw_0, _sim_raw_1 = engine.position_fees(position_id)
+    assert abs(sim_raw_0 - expected_raw) < 1.0
 
 
 def test_fees_only_accrue_while_in_range() -> None:

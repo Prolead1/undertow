@@ -354,9 +354,9 @@ class _Replay:
 
         # Position + exact fee-growth state.  ``replay`` (ADR-013) is set by
         # ``run_backtest`` once the pool and the tape's opening tick are known.
-        # ``fee_growth_last_*`` is ``None`` until the first event has been
-        # replayed: the position is seeded there without crediting the
-        # pre-deployment gap, so it earns fees only from the next event onward.
+        # ``fee_growth_last_*`` is seeded at deployment from the *pre-event*
+        # state, so the very first tape event's fee is credited exactly as the
+        # simulator credits it; ``None`` only until that seeding runs.
         self.position: Position | None = None
         self.replay: FeeGrowthReplay | None = None
         self.fee_growth_last_0: int | None = None
@@ -454,9 +454,10 @@ class _Replay:
         ``ΔfeeGrowthInside`` is evaluated by the data module's tracker on Q128
         integers; the human division happens once, here.
 
-        The first accrual after deployment (or after a rebalance) *seeds* the
-        position's inside snapshots and credits nothing, so the position never
-        earns fee growth from before it existed.
+        Deployment (and every rebalance) pre-seeds ``fee_growth_last_*`` from the
+        pre-event inside snapshots, so this normally takes the *credit* branch and
+        the first event's fee is earned.  The ``None`` fallback remains as a
+        defensive path: it seeds the snapshots and credits nothing.
         """
         replay = self.replay
         position = self.position
@@ -613,7 +614,12 @@ class _Replay:
         # Collect: realise fee income into the redeployed capital and rebase the
         # exact inside snapshots for the new range so the new position only earns
         # future growth (the fees returned by this accrue call are discarded; it
-        # exists only to read the new range's current inside values).
+        # exists only to read the new range's current inside values).  Like the
+        # initial deployment, this seeds ``fee_growth_last_*`` directly rather
+        # than resetting it to ``None``: the rebase happens after step ``i``'s
+        # event, so the next ``_accrue_fees`` call must credit step ``i+1``'s
+        # event.  A ``None`` reset would make that call re-seed *after* the event
+        # and drop its fee.
         self.position = new_position
         self.accrued_raw_0 = 0
         self.accrued_raw_1 = 0
@@ -775,6 +781,20 @@ def run_backtest(
                 tick_lower=initial_position.tick_lower,
                 tick_upper=initial_position.tick_upper,
             )
+            # Seed the inside snapshots from the *pre-event* state now, before
+            # replaying the first event, so the first event's fee is credited
+            # exactly as the simulator credits it (the simulator deploys before
+            # its first event).  This `accrue` only reads the baseline; its
+            # returned fees belong to the pre-deployment gap and are discarded.
+            _f0, _f1, g0, g1 = run.replay.accrue(
+                tick_lower=initial_position.tick_lower,
+                tick_upper=initial_position.tick_upper,
+                liquidity=int(round(initial_position.liquidity)),
+                g_inside_last_0=0,
+                g_inside_last_1=0,
+            )
+            run.fee_growth_last_0 = g0
+            run.fee_growth_last_1 = g1
 
         # Replay this event through the exact tracker, then accrue the position's
         # inside growth from the updated state (ADR-013).

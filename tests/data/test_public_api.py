@@ -38,6 +38,8 @@ EXPECTED_SURFACE: frozenset[str] = frozenset(
         "EndpointConfig",
         "default_pools",
         "load_data_config",
+        # -- ADR-019 extension: the FEE_GROWTH_SCHEMA global-row sentinel --
+        "GLOBAL_TICK_SENTINEL",
         # -- Types --
         "Address",
         "BlockNumber",

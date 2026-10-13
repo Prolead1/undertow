@@ -59,6 +59,7 @@ __all__ = [
     "EndpointConfig",
     "load_data_config",
     "default_pools",
+    "GLOBAL_TICK_SENTINEL",
     # --- Re-exported from undertow.data.schemas ---
     "SWAP_SCHEMA",
     "MINT_SCHEMA",
@@ -101,6 +102,7 @@ __all__ = [
 ]
 
 from undertow.data.config import (
+    GLOBAL_TICK_SENTINEL,
     # TICK_BASE lives in .config, not the CONTRACTS §3-attributed .fixedpoint.
     # See docs/decisions/007-data-api-loader-module-attribution.md.
     TICK_BASE,
