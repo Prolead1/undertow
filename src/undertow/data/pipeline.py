@@ -403,7 +403,7 @@ def _read_optional_stream(
 def verify(config: DataConfig) -> list[CheckResult]:
     """Build the dataset and run all validation checks."""
     dataset = build(config)
-    return run_all_checks(dataset)
+    return run_all_checks(dataset, reference_symbol=config.reference_symbol)
 
 
 # ---------------------------------------------------------------------------

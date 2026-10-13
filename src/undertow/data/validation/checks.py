@@ -36,8 +36,14 @@ from collections.abc import Mapping
 from typing import Any, Final
 
 import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.compute as pc  # type: ignore[import-untyped]
 
-from undertow.data.config import GLOBAL_TICK_SENTINEL, PoolConfig, WindowConfig
+from undertow.data.config import (
+    DEFAULT_REFERENCE_SYMBOL,
+    GLOBAL_TICK_SENTINEL,
+    PoolConfig,
+    WindowConfig,
+)
 from undertow.data.fixedpoint import sqrt_price_x96_to_tick
 from undertow.data.types import CheckResult, Severity
 
@@ -51,7 +57,11 @@ CHECK_SEVERITIES: Final[Mapping[str, Severity]] = {
     "check_monotonic_timestamps": "critical",
     "check_no_block_gaps": "critical",
     "check_no_future_data": "warning",
-    "check_swap_sign_convention": "critical",
+    # Downgraded critical -> warning (ADR-016): real USDC/WETH data contains a
+    # handful of zero-amount on-chain swaps (rounding at tick boundaries), the
+    # exact case the T13 brief allows downgrading for. Same-sign violations are
+    # still reported; only the pipeline-blocking severity changed.
+    "check_swap_sign_convention": "warning",
     "check_tick_price_consistency": "critical",
     "check_ticks_on_spacing_grid": "critical",
     "check_liquidity_conservation": "warning",
@@ -283,9 +293,11 @@ def check_swap_sign_convention(swaps: pa.Table) -> CheckResult:
     neither may be zero; report the offending ``tx_hash`` (the positive amount is
     the input, CONTRACTS.md §4.1).
 
-    Critical. The T13 brief allows downgrading to a warning *if real data ever
-    shows a degenerate zero-amount swap* — that would be a documented decision
-    (the count is reported either way), not a silent tolerance.
+    **Warning** (ADR-016). Real USDC/WETH swap events include a few zero-amount
+    legs from on-chain rounding at tick boundaries; the T13 brief explicitly
+    allows downgrading to a warning for that case. The count and example hashes
+    are still reported, so a genuine same-sign decoding bug remains visible
+    without blocking the pipeline.
     """
     name = "check_swap_sign_convention"
     a0 = _as_int_col(swaps, "amount0")
@@ -562,17 +574,45 @@ def check_liquidity_conservation(
     )
 
 
-def check_reference_coverage(reference: pa.Table, window: WindowConfig) -> CheckResult:
+def _select_symbol(table: pa.Table, symbol: str) -> pa.Table:
+    """Restrict a multi-symbol reference/regime table to the configured series.
+
+    The checks describe the series the sim consumes (ADR-014/016); pooling both
+    symbols dilutes the per-symbol gap statistics (the primary's 80-bar outage and
+    the cross-check's months-long outage average together). A table whose
+    ``symbol`` column lacks the configured symbol becomes empty, so the check
+    reports the mismatch rather than silently describing the wrong series;
+    hand-built tables without a ``symbol`` column are returned unchanged.
+
+    Deliberately differs from the sim's ``_select_primary_symbol`` (ADR-014),
+    which *raises*: validation must return a failed ``CheckResult``, not abort.
+    """
+    if table.num_rows == 0 or "symbol" not in table.column_names:
+        return table
+    return table.filter(pc.equal(table.column("symbol"), pa.scalar(symbol, type=pa.string())))
+
+
+def check_reference_coverage(
+    reference: pa.Table,
+    window: WindowConfig,
+    *,
+    reference_symbol: str = DEFAULT_REFERENCE_SYMBOL,
+) -> CheckResult:
     """Reference bars span the window; report the gap-filled count and longest run.
 
-    Gap-filled bars are the forward-filled outage rows the as-of join must land
-    on — a few are fine; a large share means the exchange feed was down and the
-    reference joins degrade. Date-mode windows span-check explicitly; in block
-    mode (no window times) only the structural gap statistics run.
+    Restricted to ``reference_symbol`` (ADR-014/016) so the statistics describe
+    the series the sim joins, not a pooled average over the cross-check.
+    Gap-filled bars are the outage rows the as-of join must land on — a few are
+    fine; a large share means the exchange feed was down and the reference joins
+    degrade. Date-mode windows span-check explicitly; in block mode (no window
+    times) only the structural gap statistics run.
     """
     name = "check_reference_coverage"
+    reference = _select_symbol(reference, reference_symbol)
     if reference.num_rows == 0:
-        return _result(name, False, "no reference bars at all", {"rows": 0})
+        return _result(
+            name, False, "no reference bars at all", {"rows": 0, "symbol": reference_symbol}
+        )
     closes = [v for v in _col(reference, "close_time")]
     filled = _as_bool_col(reference, "is_gap_filled")
     n_filled = sum(filled)
@@ -595,7 +635,11 @@ def check_reference_coverage(reference: pa.Table, window: WindowConfig) -> Check
                 False,
                 f"reference bars span [{first_close}, {last_close}] but the window is "
                 f"[{lo}, {hi}] — the as-of join starves at the edges",
-                {"first_close": first_close, "last_close": last_close},
+                {
+                    "first_close": first_close,
+                    "last_close": last_close,
+                    "symbol": reference_symbol,
+                },
             )
         span_detail = "spans the window"
 
@@ -610,6 +654,7 @@ def check_reference_coverage(reference: pa.Table, window: WindowConfig) -> Check
                 "gap_filled": n_filled,
                 "longest_gap_run": longest_run,
                 "gap_share": share,
+                "symbol": reference_symbol,
             },
         )
     return _result(
@@ -622,19 +667,23 @@ def check_reference_coverage(reference: pa.Table, window: WindowConfig) -> Check
             "gap_filled": n_filled,
             "longest_gap_run": longest_run,
             "gap_share": share,
+            "symbol": reference_symbol,
         },
     )
 
 
-def check_regime_labels_complete(regime: pa.Table) -> CheckResult:
+def check_regime_labels_complete(
+    regime: pa.Table, *, reference_symbol: str = DEFAULT_REFERENCE_SYMBOL
+) -> CheckResult:
     """Regime labels: none null, ``unknown`` only in the initial lookback
     (non-complete-window) period, and all four real bins non-empty over the full
     window. The empty-bin case is a warning — T12's handoff note says that is a
     finding the human needs to see.
     """
     name = "check_regime_labels_complete"
+    regime = _select_symbol(regime, reference_symbol)
     if regime.num_rows == 0:
-        return _result(name, False, "no regime rows", {"rows": 0})
+        return _result(name, False, "no regime rows", {"rows": 0, "symbol": reference_symbol})
     labels = [str(v) if v is not None else None for v in _col(regime, "regime")]
     windows = _as_bool_col(regime, "window_complete")
 
@@ -656,11 +705,11 @@ def check_regime_labels_complete(regime: pa.Table) -> CheckResult:
             name,
             True,
             f"{len(labels)} labels, unknown confined to the warmup, all four bins present",
-            {"rows": len(labels)},
+            {"rows": len(labels), "symbol": reference_symbol},
         )
     return _result(
         name,
         False,
         "handoff finding: " + "; ".join(problems),
-        {"rows": len(labels)},
+        {"rows": len(labels), "symbol": reference_symbol},
     )

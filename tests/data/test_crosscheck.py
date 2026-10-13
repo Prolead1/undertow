@@ -606,6 +606,35 @@ def test_run_all_checks_on_clean_tiny_dataset_reports_what_it_finds() -> None:
     assert by_name["check_dune_counts"].severity == "info"
 
 
+def test_run_all_checks_forwards_reference_symbol() -> None:
+    data = build_tiny_dataset()
+    tape = build_event_tape(
+        data.streams,
+        pool=data.pool,
+        gas=data.gas,
+        reference=data.reference,
+        regime=data.regime,
+        fee_growth=data.fee_growth,
+    )
+    dataset = Dataset(
+        tape=tape,
+        gas=data.gas,
+        reference=data.reference,
+        regime=data.regime,
+        fee_growth=data.fee_growth,
+        manifest=_manifest(),
+    )
+    # The fixture feeds are ETHUSDT-only, so selecting the cross-check yields an
+    # empty selection: the checks fail and name the requested symbol, proving the
+    # keyword reached them through run_all_checks.
+    results = run_all_checks(dataset, reference_symbol="ETHUSDC")
+    by_name = {r.name: r for r in results}
+    assert by_name["check_reference_coverage"].metrics["symbol"] == "ETHUSDC"
+    assert not by_name["check_reference_coverage"].passed
+    assert by_name["check_regime_labels_complete"].metrics["symbol"] == "ETHUSDC"
+    assert not by_name["check_regime_labels_complete"].passed
+
+
 def test_render_report_lists_failures_dataset_id_and_no_secrets(tmp_path: Path) -> None:
     results = run_all_checks(_dataset_with_three_problems())
     out = tmp_path / "report.md"
