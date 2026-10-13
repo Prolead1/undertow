@@ -28,14 +28,13 @@ independent error sources bound the drift:
 * **Float64 round-trip.**  The simulator accumulates the same fee-growth
   quantity as a float64; the conversion loses at most one half-ulp (relative
   ``2**-53``), orders of magnitude below the raw-unit truncation.
-* **Marginal-agent fee share (secondary).**  The simulator distributes a step's
-  fees over ``L_agent + L_pool_active`` while the backtester's tracker
-  distributes over ``L_pool_active`` alone (the synthetic position is marginal
-  and is never minted).  The absolute difference is approximately
-  ``fee * (L_agent / L_pool_active)**2``.  For a genuinely marginal agent
-  (``L_agent << L_pool_active``) this is far below the truncation floor; the
-  stated tolerance is justified in that regime, and a non-marginal agent can
-  exceed it.
+* **Model alignment (ADR-019).**  As of ADR-019 the simulator's ``PoolEngine``
+  is a float64 replica of the backtester's exact engine: agent positions are
+  *marginal* sentinels that never contribute to ``state.liquidity``, fees are
+  apportioned piecewise across crossed ticks, and fee growth is distributed
+  over the external ``L_pool_active`` alone — the same convention as the
+  tracker.  The former order-``(L_agent / L_pool_active)**2`` share-convention
+  term therefore no longer exists.
 
 :data:`DEFAULT_PARITY_TOLERANCE` (``1e-3`` USDC/step) clears the ~``1e-6``
 USDC/step truncation floor with a wide safety margin while remaining many orders
@@ -77,18 +76,16 @@ DEFAULT_PARITY_TOLERANCE: float = 1e-3
 
 _JUSTIFICATION_TEMPLATE = (
     "Backtester fee accrual is exact-integer Q128 through FeeGrowthReplay "
-    "(ADR-013); the simulator accumulates the same fee-growth quantity in "
-    "float64. In the marginal regime (L_agent << L_pool_active) the binding "
+    "(ADR-013); the simulator replicates the same external-liquidity, "
+    "piecewise mechanism in float64 (ADR-019), with a marginal agent position "
+    "that never contributes to the external pool liquidity. The binding "
     "residual is the backtester's final raw-unit truncation: "
     "fees = (L * (g_inside_now - g_inside_last)) >> 128 floors every accrual to "
     "a whole raw token unit, bounding the fee difference by one raw token0 unit "
     "(1e-6 USDC) per accrual plus a negligible token1 term. The float64 "
-    "round-trip adds only relative error ~2**-53, far below that. The "
-    "marginal-agent fee-share convention is a secondary term of order "
-    "fee*(L_agent/L_pool_active)**2: negligible for a genuinely marginal agent, "
-    "but it can exceed this tolerance if the agent is not small relative to the "
-    "pool. A tolerance of {tolerance:g} USDC/step covers the raw-unit "
-    "truncation floor with a wide safety margin in the marginal regime."
+    "round-trip adds only relative error ~2**-53, far below that. A tolerance "
+    "of {tolerance:g} USDC/step covers the raw-unit truncation floor with a wide "
+    "safety margin."
 )
 
 

@@ -21,11 +21,16 @@ Replay vs calibrated (ADR-009/ADR-010)
 In **replay** mode decisions are made at **reference-bar boundaries** and the
 pool engine is stepped at **tape-event granularity**: every tape ``swap`` event
 between two decision boundaries is fed to :meth:`PoolEngine.step` individually,
-so all volume is accounted for and the fees are per-event. A final zero-volume
+so all volume is accounted for and the fees are per-event.``mint``/``burn``
+events in the same interval are applied to the external lattice
+(:meth:`PoolEngine.apply_liquidity_event`), mirroring the backtester's exact fee
+engine. For hand-built views without a boundary snapshot a final zero-volume
 step aligns the pool's raw ``sqrt_price``/``tick`` with the decision bar's
-reference price. Swap volume uses the tape's raw ``amount0``/``amount1``; the
-engine works in raw units and the fees are humanised once
-(``10**dec0`` / ``10**dec1``, ADR-009).
+reference price; for tape-driven (snapshot-seeded) views the pool state follows
+the tape alone and the reference bar is used for valuation only (ADR-019). Swap
+volume uses the tape's raw ``amount0``/``amount1`` and is charged on the
+**input** leg only; the engine works in raw units and the fees are humanised
+once (``10**dec0`` / ``10**dec1``, ADR-009).
 
 In **calibrated** mode the process is only reset and advanced one step per
 decision; swap volume comes from the synthetic constants supplied at
@@ -148,6 +153,7 @@ class LpEnvironment(gym.Env):
         self._rng: np.random.Generator = np.random.default_rng(self._seed)
         self._start_seq: int = 0
         self._end_seq: int = 0
+        self._external_seeded: bool = False
         self._episode_length: int = 0
         self._step_count: int = 0
         self._bar_k: int = -1
@@ -181,6 +187,96 @@ class LpEnvironment(gym.Env):
     # ------------------------------------------------------------------
     # Construction-time snapshot of the external pool
     # ------------------------------------------------------------------
+    def _reset_external_pool(self) -> None:
+        """Rebuild the external lattice for the sampled episode window (ADR-019).
+
+        When the view carries a boundary pool-state snapshot (ADR-018), seed the
+        engine from it and replay every pre-window warmup row so the external
+        state reaches the window start — the exact same seed+warmup the
+        backtester runs (``_seed_fee_growth_replay``).  Hand-built/fixture views
+        without a snapshot keep the construction-time empty-lattice base.
+        """
+        sub = self.market_view.slice(self._start_seq, self._end_seq)
+        self._external_seeded = bool(
+            sub.pool_state is not None and sub.pool_state.height > 0
+        )
+        if self._external_seeded:
+            seeded = PoolEngine.from_snapshot(
+                self.pool_engine.state, sub.pool_state.to_dicts()
+            )
+            if sub.warmup is not None and sub.warmup.height > 0:
+                for row in sub.warmup.sort("seq").to_dicts():
+                    self._apply_warmup_row(seeded, row)
+            self._base_state = replace(seeded.state)
+            self._base_ticks = {
+                tick: replace(tick_state)
+                for tick, tick_state in seeded.ticks.items()
+            }
+        self._restore_pool_base()
+
+    @staticmethod
+    def _entry_triplet(
+        entry_row: dict[str, object], entry_price: float
+    ) -> tuple[SqrtPrice, Tick, int | None]:
+        """Raw ``(sqrt_price, tick, sqrt_price_x96)`` for the window's first row.
+
+        Mirrors the backtester's ``_resolve_market(0)``: prefer the tape row's
+        exact ``sqrt_price_x96``/``tick``; fall back to the as-of reference
+        close when the row is a liquidity event (or a fixture without an exact
+        price).  The returned ``sqrt_price_x96`` is ``None`` on the fallback.
+        """
+        x96 = entry_row.get("sqrt_price_x96")
+        tick_value = entry_row.get("tick")
+        if x96 not in (None, ""):
+            int_x96 = int(x96)
+            sqrt_price = int_x96 / float(Q96)
+            tick = (
+                Tick(int(tick_value))
+                if tick_value is not None
+                else Tick(int(sqrt_price_x96_to_tick(int_x96)))
+            )
+            return float(sqrt_price), tick, int_x96
+        _, sqrt_price, tick = human_price_to_triplet(entry_price)
+        return sqrt_price, tick, None
+
+    @staticmethod
+    def _positive_volume(value: object) -> float:
+        """The input-side volume of one signed raw amount cell (0 if absent/out)."""
+        if value in (None, ""):
+            return 0.0
+        raw = float(value)
+        return raw if raw > 0.0 else 0.0
+
+    @staticmethod
+    def _apply_warmup_row(engine: PoolEngine, row: dict[str, object]) -> None:
+        """Apply one pre-window tape row to a freshly seeded engine."""
+        event_type = str(row.get("event_type", "")).lower()
+        if event_type == "swap":
+            x96 = row.get("sqrt_price_x96")
+            tick_value = row.get("tick")
+            exact_x96: int | None = None
+            if x96 not in (None, ""):
+                int_x96 = int(x96)
+                exact_x96 = int_x96
+                sqrt_price = int_x96 / float(Q96)
+                tick = (
+                    Tick(int(tick_value))
+                    if tick_value is not None
+                    else Tick(int(sqrt_price_x96_to_tick(int_x96)))
+                )
+            else:
+                sqrt_price = engine.state.sqrt_price
+                tick = engine.state.tick
+            engine.step(
+                sqrt_price,
+                tick,
+                LpEnvironment._positive_volume(row.get("amount0")),
+                LpEnvironment._positive_volume(row.get("amount1")),
+                new_sqrt_price_x96=exact_x96,
+            )
+        elif event_type in ("mint", "burn"):
+            engine.apply_liquidity_event(row)
+
     def _capture_pool_base(self) -> None:
         if self.pool_engine.positions:
             raise EnvError(
@@ -202,6 +298,8 @@ class LpEnvironment(gym.Env):
         state.fee_growth_global_1 = self._base_state.fee_growth_global_1
         state.fee_tier_bps = self._base_state.fee_tier_bps
         state.tick_spacing = self._base_state.tick_spacing
+        state.sqrt_price_x96 = self._base_state.sqrt_price_x96
+        state.fee_protocol = self._base_state.fee_protocol
         self.pool_engine.ticks.clear()
         self.pool_engine.ticks.update(
             {tick: replace(ts) for tick, ts in self._base_ticks.items()}
@@ -307,7 +405,7 @@ class LpEnvironment(gym.Env):
         self._event_idx = 0
         self._done = False
 
-        self._restore_pool_base()
+        self._reset_external_pool()
         self._last_pool_result = {}
         self._last_tape_row = {}
         self._last_at_time = None
@@ -318,9 +416,19 @@ class LpEnvironment(gym.Env):
         if reference_price is None:
             reference_price = self._price_from_sqrt(self.pool_engine.state.sqrt_price)
         entry_price = float(reference_price)
-        _, entry_sqrt, entry_tick = human_price_to_triplet(entry_price)
-        self.pool_engine.state.sqrt_price = entry_sqrt
-        self.pool_engine.state.tick = entry_tick
+        # Replicate the backtester's ``_resolve_market(0)``: the as-of reference
+        # close is the valuation price, while the pool's raw sqrt/tick come from
+        # the tape row when present.  When the view is backed by a boundary
+        # snapshot the engine is already at the warmed window-start state and is
+        # left untouched; hand-built/fixture views keep the old anchor-on-entry
+        # behaviour (ADR-019).
+        entry_sqrt, entry_tick, entry_x96 = self._entry_triplet(
+            entry_row, entry_price
+        )
+        if not self._external_seeded:
+            self.pool_engine.state.sqrt_price = entry_sqrt
+            self.pool_engine.state.tick = entry_tick
+            self.pool_engine.state.sqrt_price_x96 = entry_x96
         self._entry_price = entry_price
         self._entry_sqrt = entry_sqrt
         self._last_tape_row = entry_row
@@ -489,19 +597,49 @@ class LpEnvironment(gym.Env):
             and self._ev_times[self._event_idx] <= at_time
         ):
             index = self._event_idx
-            if self._ev_types[index] == "swap":
+            event_type = str(self._ev_types[index]).lower()
+            if event_type == "swap":
                 event_sqrt, event_tick = self._event_triplet(index)
                 volume_0, volume_1 = self._event_volumes(index)
+                raw_x96 = self._ev_sqrt_x96[index]
+                event_x96 = (
+                    int(raw_x96) if raw_x96 not in (None, "") else None
+                )
                 result = self.pool_engine.step(
-                    event_sqrt, event_tick, volume_0, volume_1
+                    event_sqrt,
+                    event_tick,
+                    volume_0,
+                    volume_1,
+                    new_sqrt_price_x96=event_x96,
                 )
                 interval_fee_0 += result["pool_fee_earned_0"]
                 interval_fee_1 += result["pool_fee_earned_1"]
+            elif event_type in ("mint", "burn"):
+                # External liquidity moves the fee-growth denominator exactly as
+                # the backtester's tracker does (ADR-019). ``collect``/``flash``
+                # move no fee state and are skipped, as in ``apply_event``.
+                self.pool_engine.apply_liquidity_event(self._ev_rows[index])
             self._last_tape_row = self._ev_rows[index]
             self._event_idx += 1
 
-        # Align the pool's raw price with the decision bar (zero volume).
-        self.pool_engine.step(sqrt_price, tick, 0.0, 0.0)
+        # Fixture-only zero-volume alignment (ADR-019).  Hand-built views (the
+        # shared ``tiny_market_view``) hold a constant tape price while their
+        # reference feed moves, so the pool is aligned to the decision bar to
+        # keep the agent in range.  When the view is backed by a boundary
+        # snapshot the pool state is driven by the tape alone, exactly like the
+        # backtester's tracker: aligning onto a reference tick can land exactly
+        # on an agent boundary and flip ``fee_growth_outside`` in a way the
+        # tracker never does, producing spurious multi-hundred-thousand-USDC fee
+        # jumps.  The reference ``sqrt_price``/``tick`` returned above are still
+        # used for valuation.
+        if not self._external_seeded:
+            self.pool_engine.step(
+                sqrt_price,
+                tick,
+                0.0,
+                0.0,
+                new_sqrt_price_x96=None,
+            )
         self._last_pool_result = {
             "fees_accrued": {},
             "ticks_crossed": [],
@@ -510,7 +648,29 @@ class LpEnvironment(gym.Env):
             "pool_fee_earned_1": interval_fee_1,
         }
         self._last_at_time = at_time
-        return price, sqrt_price, at_time, self._last_tape_row, False
+        # Mark the position at the **last tape event's own reference price** — the
+        # same ``(raw sqrt, human price)`` pair the backtester's
+        # ``_resolve_market`` returns for that event.  ``price_process.step()``
+        # gives the decision bar's close, which can be a full reference bar later
+        # than the last event's as-of close; pairing a bar-close human price with
+        # the last swap's raw ``sqrt_price`` values the position with two
+        # different timestamps and injects a one-bar mark-to-market error into
+        # IL/PnL parity (ADR-019 parity follow-up).  The event's raw sqrt is
+        # already on the engine, so only the human leg needs correcting.
+        mark_price = price
+        if self._external_seeded:
+            for key in ("price_reference", "price_pool"):
+                raw = self._last_tape_row.get(key)
+                if raw not in (None, ""):
+                    mark_price = float(raw)
+                    break
+        return (
+            mark_price,
+            self.pool_engine.state.sqrt_price,
+            at_time,
+            self._last_tape_row,
+            False,
+        )
 
     def _advance_calibrated(
         self,
@@ -560,12 +720,18 @@ class LpEnvironment(gym.Env):
         return self.pool_engine.state.sqrt_price, self.pool_engine.state.tick
 
     def _event_volumes(self, index: int) -> tuple[float, float]:
-        """Raw swap volume for a tape event (the engine's units, ADR-012)."""
-        amount0 = self._ev_amount0[index]
-        amount1 = self._ev_amount1[index]
-        volume_0 = abs(float(amount0)) if amount0 not in (None, "") else 0.0
-        volume_1 = abs(float(amount1)) if amount1 not in (None, "") else 0.0
-        return volume_0, volume_1
+        """Raw swap volume for a tape event (the engine's units, ADR-012).
+
+        Only the **input** leg is returned: ``amount0``/``amount1`` are signed
+        (input positive, output negative) and Uniswap — like the backtester's
+        exact ``FeeGrowthTracker`` (CONTRACTS.md §4.1) — charges the fee on the
+        input side alone.  The output leg is reported as ``0.0`` so the engine's
+        piecewise step never double-charges the same swap.
+        """
+        return (
+            self._positive_volume(self._ev_amount0[index]),
+            self._positive_volume(self._ev_amount1[index]),
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
