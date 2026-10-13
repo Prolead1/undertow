@@ -34,6 +34,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 - `adr/006-gas-timestamps-feehistory-only.md` — **accepted**: `GAS_SCHEMA` is base-fee only; per-block `block_timestamp`/`eth_usd_price` removed (~122M CU saved; the event tape already carries timestamps free from the event logs).
 - `adr/014-reference-symbol-selection.md` — **accepted**: `DataConfig.reference_symbol` (default `ETHUSDT`, optional `[reference] symbol`) and a keyword-only `build_event_tape(reference_symbol=...)` restrict the multi-symbol reference and regime streams to one series before the backward joins (the stream stores the primary plus its cross-check); the tape is derived at load time, so no re-snapshot is needed.
 - `adr/016-validation-swap-sign-and-symbol.md` — **accepted**: `check_swap_sign_convention` downgraded critical→warning (26 real zero-amount swaps in 447 714, the T13 brief's anticipated case), and `check_reference_coverage`/`check_regime_labels_complete` filter to `DataConfig.reference_symbol`.
+- `adr/017-reference-cross-fill.md` — **accepted**: `forward_fill_klines` cross-fills a secondary reference symbol from the densest one's effective close (median-ratio scaled, fresher-series-aware) instead of freezing it across a multi-month outage; the densest symbol is never cross-filled; cross-filled bars stay `is_gap_filled=True` and are counted in `GapStats.n_cross_filled`.
 
 ## All tasks complete — data module v1 merged 🎉
 

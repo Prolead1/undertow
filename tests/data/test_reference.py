@@ -404,6 +404,153 @@ def test_gap_stats_in_warnings(tmp_path: Path, mocked_http: responses.RequestsMo
 
 
 # ---------------------------------------------------------------------------
+# 6b. Cross-fill: a secondary symbol's gaps are filled from the densest series
+# ---------------------------------------------------------------------------
+
+
+def _row(symbol: str, minute: int, close: float) -> dict:
+    return {
+        "symbol": symbol,
+        "open_time_ms": _epoch_ms(T0 + timedelta(minutes=minute)),
+        "open": close,
+        "high": close,
+        "low": close,
+        "close": close,
+        "volume_base": 1.0,
+        "quote_volume": close,
+        "trades": 1,
+    }
+
+
+def test_cross_fill_secondary_from_dense_primary() -> None:
+    rows = [_row("ETHUSDT", m, 100.0 + m) for m in range(10)]
+    rows += [_row("ETHUSDC", m, 100.0 + m) for m in (0, 1, 8, 9)]
+    grid, stats = forward_fill_klines(
+        rows, start_utc=T0, end_utc=T0 + timedelta(minutes=10)
+    )
+    usdc = {r["open_time_ms"]: r for r in grid if r["symbol"] == "ETHUSDC"}
+    usdt = {r["open_time_ms"]: r for r in grid if r["symbol"] == "ETHUSDT"}
+    for minute in range(2, 8):
+        row = usdc[_epoch_ms(T0 + timedelta(minutes=minute))]
+        assert row["is_gap_filled"] is True
+        assert row["close"] == usdt[_epoch_ms(T0 + timedelta(minutes=minute))]["close"]
+        assert row["volume_base"] == 0.0
+        assert row["trades"] == 0
+    assert usdc[_epoch_ms(T0)]["is_gap_filled"] is False  # observed untouched
+    assert stats["ETHUSDC"].n_cross_filled == 6
+    assert stats["ETHUSDC"].n_filled == 0
+    # The densest series is never cross-filled.
+    assert stats["ETHUSDT"].n_cross_filled == 0
+    assert stats["ETHUSDT"].n_filled == 0
+
+
+def test_cross_fill_scales_by_median_observed_ratio() -> None:
+    rows = [_row("ETHUSDT", m, 100.0) for m in range(10)]
+    rows += [_row("ETHUSDC", m, 101.0) for m in (0, 1, 8, 9)]  # 1.01 basis
+    grid, _ = forward_fill_klines(
+        rows, start_utc=T0, end_utc=T0 + timedelta(minutes=10)
+    )
+    usdc = {r["open_time_ms"]: r for r in grid if r["symbol"] == "ETHUSDC"}
+    assert usdc[_epoch_ms(T0 + timedelta(minutes=5))]["close"] == pytest.approx(101.0)
+
+
+def test_cross_fill_disabled_is_plain_forward_fill() -> None:
+    rows = [_row("ETHUSDT", m, 100.0 + m) for m in range(10)]
+    rows.append(_row("ETHUSDC", 0, 500.0))
+    grid, stats = forward_fill_klines(
+        rows, start_utc=T0, end_utc=T0 + timedelta(minutes=10), cross_fill=False
+    )
+    usdc = {r["open_time_ms"]: r for r in grid if r["symbol"] == "ETHUSDC"}
+    assert stats["ETHUSDC"].n_filled == 9
+    assert stats["ETHUSDC"].n_cross_filled == 0
+    assert usdc[_epoch_ms(T0 + timedelta(minutes=5))]["close"] == 500.0
+
+
+def test_cross_fill_uses_source_forward_filled_close() -> None:
+    # ETHUSDT is densest (6 bars) with an interior gap 5..8; ETHUSDC has only its
+    # endpoints. Mid-gap the source's effective close is its forward-filled bar 4.
+    rows = [_row("ETHUSDT", m, 100.0 + m) for m in (0, 1, 2, 3, 4, 9)]
+    rows += [_row("ETHUSDC", 0, 100.0), _row("ETHUSDC", 9, 109.0)]
+    grid, stats = forward_fill_klines(rows, start_utc=T0, end_utc=T0 + timedelta(minutes=10))
+    usdc = {r["open_time_ms"]: r for r in grid if r["symbol"] == "ETHUSDC"}
+    assert stats["ETHUSDT"].n_cross_filled == 0  # the densest series is never filled
+    assert stats["ETHUSDC"].n_cross_filled == 8
+    assert usdc[_epoch_ms(T0 + timedelta(minutes=5))]["close"] == pytest.approx(104.0)
+
+
+def test_cross_fill_prefers_the_fresher_series() -> None:
+    # Source observed 0..4 then a gap; secondary observed at 0 and 7. At minute 8
+    # the source's effective close is stale (origin 4) while the secondary's own
+    # last close (origin 7) is fresher -> forward-fill, not cross-fill.
+    rows = [_row("ETHUSDT", m, 100.0 + m) for m in range(5)]
+    rows += [_row("ETHUSDC", 0, 100.0), _row("ETHUSDC", 7, 777.0)]
+    grid, _ = forward_fill_klines(rows, start_utc=T0, end_utc=T0 + timedelta(minutes=10))
+    usdc = {r["open_time_ms"]: r for r in grid if r["symbol"] == "ETHUSDC"}
+    assert usdc[_epoch_ms(T0 + timedelta(minutes=2))]["close"] == pytest.approx(102.0)
+    assert usdc[_epoch_ms(T0 + timedelta(minutes=8))]["close"] == pytest.approx(777.0)
+
+
+def test_cross_fill_skipped_for_a_single_symbol() -> None:
+    # One symbol with a gap and no sibling -> forward-fill, never cross-fill.
+    rows = [_row("ETHUSDT", 0, 100.0), _row("ETHUSDT", 4, 400.0)]
+    grid, stats = forward_fill_klines(rows, start_utc=T0, end_utc=T0 + timedelta(minutes=6))
+    usdt = {r["open_time_ms"]: r for r in grid if r["symbol"] == "ETHUSDT"}
+    assert stats["ETHUSDT"].n_cross_filled == 0
+    assert stats["ETHUSDT"].n_filled == 4
+    assert usdt[_epoch_ms(T0 + timedelta(minutes=2))]["close"] == pytest.approx(100.0)
+
+
+def test_cross_fill_scale_defaults_to_one_without_overlap() -> None:
+    # No shared observed minute -> the median ratio is undefined, so scale is 1.0.
+    rows = [_row("ETHUSDT", m, 100.0 + m) for m in (0, 2, 4, 6, 8)]
+    rows += [_row("ETHUSDC", 1, 50.0), _row("ETHUSDC", 3, 50.0)]
+    grid, _ = forward_fill_klines(rows, start_utc=T0, end_utc=T0 + timedelta(minutes=10))
+    usdc = {r["open_time_ms"]: r for r in grid if r["symbol"] == "ETHUSDC"}
+    assert usdc[_epoch_ms(T0 + timedelta(minutes=5))]["close"] == pytest.approx(104.0)
+
+
+def test_cross_fill_fills_secondary_leading_edge_from_sibling() -> None:
+    # The sibling has data before the secondary starts, so the secondary's leading
+    # edge is cross-filled (contemporaneous) rather than left null/absent.
+    rows = [_row("ETHUSDT", m, 100.0 + m) for m in range(6)]
+    rows += [_row("ETHUSDC", 4, 104.0), _row("ETHUSDC", 5, 105.0)]
+    grid, stats = forward_fill_klines(rows, start_utc=T0, end_utc=T0 + timedelta(minutes=6))
+    usdc = {r["open_time_ms"]: r for r in grid if r["symbol"] == "ETHUSDC"}
+    first = usdc[_epoch_ms(T0)]
+    assert first["close"] == pytest.approx(100.0)
+    assert first["is_gap_filled"] is True
+    assert stats["ETHUSDC"].n_cross_filled == 4
+    assert stats["ETHUSDC"].leading_missing == 0
+
+
+def test_fetch_warns_on_cross_fill(tmp_path: Path, mocked_http: responses.RequestsMock) -> None:
+    primary = _load_api_fixture()
+    klines = primary["klines"]
+    secondary = {"klines": klines[:10] + klines[20:]}  # a 10-minute outage from 00:10
+
+    def callback(request: requests.PreparedRequest) -> tuple[int, dict[str, str], str]:
+        q = parse_qs(urlsplit(request.url).query)
+        symbol = q.get("symbol", ["ETHUSDT"])[0]
+        start = int(q.get("startTime", ["0"])[0])
+        end = int(q.get("endTime", [str(2**63)])[0])
+        src = primary if symbol == "ETHUSDT" else secondary if symbol == "ETHUSDC" else None
+        if src is None:
+            return 200, {}, json.dumps([])
+        return 200, {}, json.dumps([k for k in src["klines"] if start <= k[0] < end])
+
+    mocked_http.add_callback(
+        responses.GET,
+        re.compile(re.escape(REST_BASE) + r"/api/v3/klines.*"),
+        callback,
+    )
+    fetcher = _fetcher(tmp_path, symbols=("ETHUSDT", "ETHUSDC"))
+    res = fetcher.fetch(_req(T0, T0 + timedelta(minutes=36)))
+    warnings = "\n".join(res.warnings)
+    assert "ETHUSDC: cross-fill" in warnings
+    assert "densest sibling" in warnings
+
+
+# ---------------------------------------------------------------------------
 # 7. Grid completeness: a 24h window yields exactly 1440 consecutive bars
 # ---------------------------------------------------------------------------
 

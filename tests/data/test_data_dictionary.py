@@ -193,7 +193,8 @@ def test_prose_documents_regime_thresholds_and_adr001() -> None:
 
 def test_prose_documents_gap_policy_and_known_limitations() -> None:
     doc = render_data_dictionary()
-    assert "forward-filled and flagged" in doc
+    assert "filled and " in doc and "flagged" in doc
+    assert "cross-filled from the" in doc  # ADR-017
     assert "USDT as a USD proxy" in doc
     assert "NFT position manager" in doc
     assert "sampled, not per-block" in doc
