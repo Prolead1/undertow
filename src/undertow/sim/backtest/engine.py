@@ -635,6 +635,64 @@ class _Replay:
         return new_capital, gas_cost, slippage_cost, lower, upper
 
 
+def _seed_fee_growth_replay(
+    market_view: MarketView,
+    config: SimConfig,
+    tape: _TapeBuffer,
+    warmup: pl.DataFrame | None,
+) -> FeeGrowthReplay:
+    """Seed the exact fee-growth engine (ADR-013 / ADR-018).
+
+    When the view carries a pool-state snapshot at the window's seed block
+    (``first_block - 1``, the state *before* the first event), seed from it — the
+    only way to be correct for a window that starts mid-lifecycle (positions
+    minted before it are absent from the tape). Otherwise fall back to an empty
+    lattice anchored on the first tape tick, which is correct only when the window
+    contains every position's mint (the fixtures). The snapshot block must equal
+    ``first_block - 1``: the snapshot is post-block state and the replay re-applies
+    the window's first block, so any other block is a hard error.
+    """
+    pool = _resolve_pool(market_view, config)
+    fee_pips = int(config.episode.fee_tier_bps)
+    warm_tape = _TapeBuffer(warmup) if warmup is not None and warmup.height else None
+    # The seed is the state *before* the first replayed event: the pool_state is
+    # post-block state and the replay re-applies that block's rows. When a window
+    # is sliced out of a full lane, the warmup rows begin at the lane's first
+    # block, so the lane-start snapshot still matches.
+    anchor = warm_tape if warm_tape is not None else tape
+    first_block = int(anchor.block[0]) if anchor.block else 0
+    seed_block = first_block - 1
+    pool_state = market_view.pool_state
+    if pool_state is not None and pool_state.height > 0:
+        snapshot_block = int(pool_state["block_number"].max())
+        if snapshot_block != seed_block:
+            raise BacktestError(
+                f"run_backtest: the pool-state snapshot is for block {snapshot_block} "
+                f"but the replay begins at block {first_block} (seed block "
+                f"{seed_block}); the exact engine must be seeded at the state before "
+                "the first replayed event."
+            )
+        replay = FeeGrowthReplay.from_snapshot(
+            pool, pool_state.to_arrow(), fee_pips=fee_pips
+        )
+    else:
+        seed_tick = 0
+        for tick_value in anchor.tick:
+            if tick_value is not None:
+                seed_tick = _as_int(tick_value)
+                break
+        replay = FeeGrowthReplay(
+            pool,
+            fee_pips=fee_pips,
+            block_number=first_block,
+            current_tick=seed_tick,
+        )
+    if warm_tape is not None:
+        for i in range(len(warm_tape)):
+            replay.apply_event(warm_tape.row(i))
+    return replay
+
+
 def run_backtest(
     policy: Policy,
     market_view: MarketView,
@@ -668,17 +726,7 @@ def run_backtest(
     # real grid; the first swap's pre-price is legitimately unknown (the
     # tracker flags an approximation if that swap crosses).  An empty tick
     # lattice is built by the tape's own mint/burn events.
-    seed_tick = 0
-    for tick_value in tape.tick:
-        if tick_value is not None:
-            seed_tick = _as_int(tick_value)
-            break
-    run.replay = FeeGrowthReplay(
-        _resolve_pool(market_view, config),
-        fee_pips=int(config.episode.fee_tier_bps),
-        block_number=tape.block[0] if tape.block else 0,
-        current_tick=seed_tick,
-    )
+    run.replay = _seed_fee_growth_replay(market_view, config, tape, market_view.warmup)
 
     total_events = len(tape)
     periods_per_year = run.periods_per_year

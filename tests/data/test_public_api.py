@@ -27,6 +27,7 @@ EXPECTED_SURFACE: frozenset[str] = frozenset(
         "load_reference_feed",
         "load_gas_feed",
         "load_regime_labels",
+        "load_fee_growth",
         # -- Core / dataset / config --
         "Dataset",
         "DatasetManifest",

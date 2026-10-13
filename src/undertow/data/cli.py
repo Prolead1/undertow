@@ -20,6 +20,7 @@ from pathlib import Path
 from undertow.data.config import DataConfig, load_config
 from undertow.data.logging_setup import add_file_handler, configure_logging
 from undertow.data.pipeline import (
+    capture_pool_state,
     info,
     pull,
     snapshot,
@@ -129,6 +130,19 @@ def _build_parser() -> argparse.ArgumentParser:
     info_p = sub.add_parser("info", help="print manifest summary and row counts")
     info_p.add_argument("--config", required=True, help="path to TOML config file")
     info_p.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="machine-readable JSON output",
+    )
+
+    # --- pool-state (ADR-018 boundary snapshot) ---
+    pool_p = sub.add_parser(
+        "pool-state",
+        help="capture the exact pool state at each walk-forward split boundary",
+    )
+    pool_p.add_argument("--config", required=True, help="path to TOML config file")
+    pool_p.add_argument(
         "--json",
         action="store_true",
         default=False,
@@ -398,6 +412,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_snapshot(args)
         elif args.command == "info":
             return _cmd_info(args)
+        elif args.command == "pool-state":
+            return _cmd_pool_state(args)
         else:
             parser.print_help()
             return 2
@@ -483,6 +499,34 @@ def _cmd_snapshot(args: argparse.Namespace) -> int:
         print(f"Logging to {log_path}", file=sys.stderr)
     report = snapshot(config, out=args.out)
     print(_format_snapshot_report(report, json_output=args.json))
+    return 0
+
+
+def _cmd_pool_state(args: argparse.Namespace) -> int:
+    config = _load_config(args.config)
+    result = capture_pool_state(config)
+    if result is None:
+        message = (
+            "pool-state: config has no [window] train_end_utc/eval_start_utc split "
+            "hook; nothing captured"
+        )
+        print(json.dumps({"captured": False, "reason": message}) if args.json else message)
+        return 0
+    payload = {
+        "captured": True,
+        "stream": "fee_growth",
+        "rows": result.row_count,
+        "min_block": result.min_block,
+        "max_block": result.max_block,
+    }
+    print(
+        json.dumps(payload, indent=2)
+        if args.json
+        else (
+            f"pool-state: captured {result.row_count} row(s) at blocks "
+            f"{result.min_block}..{result.max_block}"
+        )
+    )
     return 0
 
 

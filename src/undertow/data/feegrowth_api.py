@@ -32,7 +32,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from undertow.data.config import PoolConfig
+import pyarrow as pa  # type: ignore[import-untyped]
+
+from undertow.data.config import GLOBAL_TICK_SENTINEL, PoolConfig
 from undertow.data.transforms.feegrowth import (
     FeeGrowthState,
     FeeGrowthTracker,
@@ -47,6 +49,11 @@ __all__ = ["FeeGrowthReplay"]
 #: keys only on the tick range (the owner is part of the frozen key shape, not
 #: of the arithmetic), so a single canonical placeholder is sufficient here.
 _KEY_OWNER = Address("0x" + "00" * 20)
+
+
+def _as_int(value: object) -> int:
+    """Schema ints are decimal strings; accept either form loudly."""
+    return int(str(value))
 
 
 class FeeGrowthReplay:
@@ -107,6 +114,63 @@ class FeeGrowthReplay:
         obj._pool = pool
         obj._tracker = FeeGrowthTracker(pool, state)
         return obj
+
+    @classmethod
+    def from_snapshot(
+        cls,
+        pool: PoolConfig,
+        snapshot: pa.Table,
+        *,
+        fee_pips: int | None = None,
+    ) -> FeeGrowthReplay:
+        """Seed a replay from a ``FEE_GROWTH_SCHEMA`` pool-state snapshot.
+
+        The snapshot carries exactly one global sentinel row (``tick ==
+        GLOBAL_TICK_SENTINEL``) with the block's globals, ``current_tick``,
+        ``current_liquidity`` and ``fee_protocol``, plus one row per initialized
+        tick (the ``ticks(int24)`` fields). This is how the backtester starts
+        mid-lifecycle: the opening lattice comes from chain, and the replay then
+        advances with the event tape. ``current_sqrt_price_x96`` stays ``None``
+        (the pre-snapshot price is unknown), so a first crossing swap is flagged
+        approximate exactly as at an empty-seeded replay.
+        """
+        rows = snapshot.to_pylist()
+        addresses = {str(r["pool_address"]) for r in rows}
+        if addresses != {str(pool.address)}:
+            raise ValueError(
+                "FeeGrowthReplay.from_snapshot: snapshot pool address(es) "
+                f"{sorted(addresses)} do not match pool {pool.address}"
+            )
+        globals_rows = [r for r in rows if int(r["tick"]) == GLOBAL_TICK_SENTINEL]
+        if len(globals_rows) != 1:
+            raise ValueError(
+                "FeeGrowthReplay.from_snapshot: expected exactly one global sentinel "
+                f"row (tick == {GLOBAL_TICK_SENTINEL}), got {len(globals_rows)}"
+            )
+        g = globals_rows[0]
+        ticks: dict[int, TickState] = {}
+        for r in rows:
+            tick = int(r["tick"])
+            if tick == GLOBAL_TICK_SENTINEL:
+                continue
+            ticks[tick] = TickState(
+                fee_growth_outside_0_x128=_as_int(r["fee_growth_outside_0_x128"] or 0),
+                fee_growth_outside_1_x128=_as_int(r["fee_growth_outside_1_x128"] or 0),
+                liquidity_gross=_as_int(r["liquidity_gross"]),
+                liquidity_net=_as_int(r["liquidity_net"]),
+                initialized=bool(r["initialized"]),
+            )
+        state = FeeGrowthState(
+            block_number=BlockNumber(int(g["block_number"])),
+            fee_growth_global_0_x128=_as_int(g["fee_growth_global_0_x128"]),
+            fee_growth_global_1_x128=_as_int(g["fee_growth_global_1_x128"]),
+            current_tick=int(g["current_tick"]),
+            current_liquidity=_as_int(g["current_liquidity"]),
+            ticks=ticks,
+            fee_protocol=int(g["fee_protocol"]),
+            fee_pips=fee_pips,
+        )
+        return cls.from_state(pool, state)
 
     def apply_event(self, row: Mapping[str, object]) -> None:
         """Replay one tape row.

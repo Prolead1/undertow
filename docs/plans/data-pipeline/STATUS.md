@@ -34,6 +34,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 - `adr/006-gas-timestamps-feehistory-only.md` — **accepted**: `GAS_SCHEMA` is base-fee only; per-block `block_timestamp`/`eth_usd_price` removed (~122M CU saved; the event tape already carries timestamps free from the event logs).
 - `adr/014-reference-symbol-selection.md` — **accepted**: `DataConfig.reference_symbol` (default `ETHUSDT`, optional `[reference] symbol`) and a keyword-only `build_event_tape(reference_symbol=...)` restrict the multi-symbol reference and regime streams to one series before the backward joins (the stream stores the primary plus its cross-check); the tape is derived at load time, so no re-snapshot is needed.
 - `adr/016-validation-swap-sign-and-symbol.md` — **accepted**: `check_swap_sign_convention` downgraded critical→warning (26 real zero-amount swaps in 447 714, the T13 brief's anticipated case), and `check_reference_coverage`/`check_regime_labels_complete` filter to `DataConfig.reference_symbol`.
+- `adr/018-backtester-boundary-pool-state.md` — **accepted**: `RpcFetcher.pool_state_at` enumerates the pool's `tickBitmap` at each walk-forward boundary (`undertow-data pool-state`), stores it as the optional `fee_growth` stream, and `FeeGrowthReplay.from_snapshot` seeds the backtester's exact fee engine so it can replay a window that starts mid-lifecycle (the state the tape alone cannot reconstruct).
 
 ## All tasks complete — data module v1 merged 🎉
 

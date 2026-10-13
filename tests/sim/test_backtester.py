@@ -965,3 +965,100 @@ def test_no_lookahead_from_future_tape_rows() -> None:
         changed = run_backtest(policy, future_view, SimConfig())
         assert base.equity_curve.head(4).equals(changed.equity_curve.head(4))
         assert base.decision_log.head(4).equals(changed.decision_log.head(4))
+
+
+def test_backtest_rejects_a_pool_state_snapshot_off_the_window_edge(
+    tiny_market_view: MarketView,
+) -> None:
+    """A snapshot from a block other than the window's first is a hard error.
+
+    Seeding from an earlier block would silently skip the events in between, so
+    the backtester refuses rather than produce a quietly-wrong fee path.
+    """
+    from dataclasses import replace
+
+    first_block = int(tiny_market_view.active_split_data()["block_number"].min())
+    # The seed block must be first_block - 1; a snapshot at first_block is wrong.
+    bogus = pl.DataFrame({"block_number": [first_block]})
+    view = replace(tiny_market_view, pool_state=bogus)
+    with pytest.raises(BacktestError, match="pool-state snapshot"):
+        run_backtest(HODLPolicy(), view, SimConfig())
+
+
+def test_backtest_seeds_from_a_matching_pool_state_snapshot(
+    tiny_market_view: MarketView,
+) -> None:
+    """A global-only snapshot at ``first_block - 1`` seeds the engine and replays.
+
+    The seed block is one before the window's first event because the snapshot is
+    post-block state and the replay re-applies that block's rows.
+    """
+    from dataclasses import replace
+
+    from undertow.data.config import GLOBAL_TICK_SENTINEL, default_pools
+
+    first_block = int(tiny_market_view.active_split_data()["block_number"].min())
+    pool = default_pools()["USDC_WETH_3000"]
+    state = pl.DataFrame(
+        {
+            "block_number": [first_block - 1],
+            "tick": [GLOBAL_TICK_SENTINEL],
+            "fee_growth_outside_0_x128": [None],
+            "fee_growth_outside_1_x128": [None],
+            "liquidity_gross": ["0"],
+            "liquidity_net": ["0"],
+            "initialized": [False],
+            "fee_growth_global_0_x128": ["0"],
+            "fee_growth_global_1_x128": ["0"],
+            "current_tick": [196242],
+            "current_liquidity": ["0"],
+            "source": ["rpc_call"],
+            "pool_address": [str(pool.address)],
+            "fee_protocol": [0],
+        }
+    )
+    view = replace(tiny_market_view, pool=pool, pool_state=state)
+    ledger = run_backtest(HODLPolicy(), view, SimConfig())
+    assert ledger.n_steps > 0
+    # The seeded replay is exact (no approximation flagged).
+    assert ledger.fee_growth_exact is True
+
+
+def test_backtest_warms_up_a_sliced_window_from_the_lane_snapshot(
+    tiny_market_view: MarketView,
+) -> None:
+    """A mid-lane slice replays the lane's warmup rows from the lane-start seed.
+
+    Regression for the walk-forward path (RQ3 / parity): ``slice`` keeps the
+    lane-start ``pool_state`` plus the rows before the window, and the engine
+    replays those warmup rows before accounting, so the seed block still matches.
+    """
+    from dataclasses import replace
+
+    from undertow.data.config import GLOBAL_TICK_SENTINEL, default_pools
+
+    first_block = int(tiny_market_view.active_split_data()["block_number"].min())
+    pool = default_pools()["USDC_WETH_3000"]
+    state = pl.DataFrame(
+        {
+            "block_number": [first_block - 1],
+            "tick": [GLOBAL_TICK_SENTINEL],
+            "fee_growth_outside_0_x128": [None],
+            "fee_growth_outside_1_x128": [None],
+            "liquidity_gross": ["0"],
+            "liquidity_net": ["0"],
+            "initialized": [False],
+            "fee_growth_global_0_x128": ["0"],
+            "fee_growth_global_1_x128": ["0"],
+            "current_tick": [196242],
+            "current_liquidity": ["0"],
+            "source": ["rpc_call"],
+            "pool_address": [str(pool.address)],
+            "fee_protocol": [0],
+        }
+    )
+    view = replace(tiny_market_view, pool=pool, pool_state=state)
+    sub = view.slice(100, 300)
+    assert sub.warmup is not None and sub.warmup.height == 100
+    ledger = run_backtest(HODLPolicy(), sub, SimConfig())
+    assert ledger.n_steps > 0

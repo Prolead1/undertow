@@ -13,8 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from undertow.data import FeeGrowthReplay
-from undertow.data.config import default_pools
+import pyarrow as pa  # type: ignore[import-untyped]
+
+from undertow.data import FEE_GROWTH_SCHEMA, FeeGrowthReplay
+from undertow.data.config import GLOBAL_TICK_SENTINEL, default_pools
 from undertow.data.fixedpoint import get_amount1_delta, tick_to_sqrt_price_x96
 from undertow.data.transforms.feegrowth import (
     FeeGrowthApproximation,
@@ -27,6 +29,72 @@ from undertow.data.types import Address, BlockNumber
 
 FIXTURE = Path(__file__).resolve().parents[1] / "data" / "fixtures" / "feegrowth_replay.json"
 POOL = default_pools()["USDC_WETH_3000"]  # fee 3000, spacing 60
+
+
+def _snapshot_table(*, block: int = 13_916_168, global_tick: int = 194_197) -> pa.Table:
+    rows = [
+        {
+            "block_number": block,
+            "tick": GLOBAL_TICK_SENTINEL,
+            "fee_growth_outside_0_x128": None,
+            "fee_growth_outside_1_x128": None,
+            "liquidity_gross": "0",
+            "liquidity_net": "0",
+            "initialized": False,
+            "fee_growth_global_0_x128": str(1000),
+            "fee_growth_global_1_x128": str(2000),
+            "current_tick": global_tick,
+            "current_liquidity": str(10**18),
+            "source": "rpc_call",
+            "pool_address": str(POOL.address),
+            "fee_protocol": 0,
+        },
+        {
+            "block_number": block,
+            "tick": 196_200,
+            "fee_growth_outside_0_x128": str(10),
+            "fee_growth_outside_1_x128": str(20),
+            "liquidity_gross": str(5 * 10**18),
+            "liquidity_net": str(3 * 10**18),
+            "initialized": True,
+            "fee_growth_global_0_x128": str(1000),
+            "fee_growth_global_1_x128": str(2000),
+            "current_tick": global_tick,
+            "current_liquidity": str(10**18),
+            "source": "rpc_call",
+            "pool_address": str(POOL.address),
+            "fee_protocol": 0,
+        },
+    ]
+    return pa.Table.from_pylist(rows, schema=FEE_GROWTH_SCHEMA)
+
+
+def test_from_snapshot_seeds_the_tracker_state() -> None:
+    replay = FeeGrowthReplay.from_snapshot(POOL, _snapshot_table())
+    state = replay.snapshot()
+    assert state.block_number == BlockNumber(13_916_168)
+    assert state.current_tick == 194_197
+    assert state.current_liquidity == 10**18
+    assert state.fee_growth_global_0_x128 == 1000
+    assert state.fee_growth_global_1_x128 == 2000
+    assert state.ticks[196_200].liquidity_gross == 5 * 10**18
+    assert state.ticks[196_200].fee_growth_outside_0_x128 == 10
+
+
+def test_from_snapshot_rejects_a_missing_global_row() -> None:
+    table = _snapshot_table().slice(1, 1)  # drop the sentinel row
+    with pytest.raises(ValueError, match="global sentinel"):
+        FeeGrowthReplay.from_snapshot(POOL, table)
+
+
+def test_from_snapshot_rejects_a_wrong_pool_address() -> None:
+    table = _snapshot_table()
+    idx = table.schema.get_field_index("pool_address")
+    table = table.set_column(
+        idx, "pool_address", pa.array(["0x" + "11" * 20] * table.num_rows)
+    )
+    with pytest.raises(ValueError, match="do not match pool"):
+        FeeGrowthReplay.from_snapshot(POOL, table)
 Q96 = 2**96
 _OWNER = Address("0x" + "aa" * 20)
 

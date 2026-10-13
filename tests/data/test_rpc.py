@@ -29,6 +29,7 @@ from undertow.data.fetchers.abi import (
     SELECTOR_FEE_GROWTH_GLOBAL_1_X128,
     SELECTOR_LIQUIDITY,
     SELECTOR_SLOT0,
+    SELECTOR_TICK_BITMAP,
     SELECTOR_TICKS,
     TOPIC_SWAP,
     encode_ticks_calldata,
@@ -366,6 +367,91 @@ def _install_fee_growth_calls(resp: _Responder, fx: dict) -> None:
         raise _RpcError(f"unknown selector {selector}")
 
     resp.handlers["eth_call"] = eth_call
+
+
+def _install_pool_state_calls(
+    resp: _Responder, fx: dict, word: int, word_pos: int = 12
+) -> None:
+    """Serve slot0/liquidity/globals/tickBitmap/ticks for a pool-state snapshot."""
+    by_selector = {
+        SELECTOR_SLOT0: fx["slot0"],
+        SELECTOR_LIQUIDITY: fx["liquidity"],
+        SELECTOR_FEE_GROWTH_GLOBAL_0_X128: fx["feeGrowthGlobal0X128"],
+        SELECTOR_FEE_GROWTH_GLOBAL_1_X128: fx["feeGrowthGlobal1X128"],
+    }
+
+    def eth_call(params: list[object]) -> object:
+        data = str(params[0]["data"])
+        selector = "0x" + data[2:10]
+        if selector == SELECTOR_TICK_BITMAP:
+            pos = int(data[10:], 16)
+            pos = pos - (1 << 256) if pos >= (1 << 255) else pos
+            return "0x" + format(word, "064x") if pos == word_pos else "0x" + "0" * 64
+        if selector == SELECTOR_TICKS:
+            return fx["ticks"][str(196242)]  # payload values are irrelevant here
+        if selector in by_selector:
+            return by_selector[selector]
+        raise _RpcError(f"unknown selector {selector}")
+
+    resp.handlers["eth_call"] = eth_call
+
+
+def test_pool_state_at_enumerates_initialized_ticks(mocked_http, tmp_path: Path) -> None:
+    resp = _Responder(mocked_http)
+    fx = _ticks_fixture()
+    # Word 12 covers compressed ticks 3072..3327 -> real ticks 184320..199620.
+    # Bits 198/199 are compressed ticks 3270/3271 -> real ticks 196200/196260.
+    _install_pool_state_calls(resp, fx, word=(1 << 198) | (1 << 199))
+    table = _maker(tmp_path).pool_state_at(POOL, BlockNumber(fx["block_number"]))
+    validate_table(table, SCHEMA_REGISTRY["fee_growth"])
+    assert table.num_rows == 3  # global sentinel + 2 initialized ticks
+    assert table.column("tick").to_pylist() == [GLOBAL_TICK_SENTINEL, 196200, 196260]
+
+
+def test_pool_state_at_warm_cache_makes_no_new_requests(mocked_http, tmp_path: Path) -> None:
+    resp = _Responder(mocked_http)
+    fx = _ticks_fixture()
+    _install_pool_state_calls(resp, fx, word=1 << 198)
+    f = _maker(tmp_path)
+    f.pool_state_at(POOL, BlockNumber(fx["block_number"]))
+    before = resp.calls
+    f.pool_state_at(POOL, BlockNumber(fx["block_number"]))
+    assert resp.calls == before  # bitmap + fee-growth snapshots are both cached
+
+
+def test_jsonrpc_batch_retries_a_per_item_transient_error(mocked_http, tmp_path: Path) -> None:
+    """One call in a batch hitting a provider CU/s cap is retried, not fatal."""
+    resp = _Responder(mocked_http)
+    fx = _ticks_fixture()
+    by_selector = {
+        SELECTOR_LIQUIDITY: fx["liquidity"],
+        SELECTOR_FEE_GROWTH_GLOBAL_0_X128: fx["feeGrowthGlobal0X128"],
+        SELECTOR_FEE_GROWTH_GLOBAL_1_X128: fx["feeGrowthGlobal1X128"],
+    }
+    seen = {"slot0": 0}
+
+    def eth_call(params: list[object]) -> object:
+        data = str(params[0]["data"])
+        selector = "0x" + data[2:10]
+        if selector == SELECTOR_SLOT0:
+            seen["slot0"] += 1
+            if seen["slot0"] == 1:
+                raise _RpcError(
+                    "Your app has exceeded its compute units per second capacity"
+                )
+            return fx["slot0"]
+        if selector == SELECTOR_TICKS:
+            tick = int(data[10:], 16)
+            tick = tick - (1 << 256) if tick >= (1 << 255) else tick
+            return fx["ticks"][str(tick)]
+        if selector in by_selector:
+            return by_selector[selector]
+        raise _RpcError(f"unknown selector {selector}")
+
+    resp.handlers["eth_call"] = eth_call
+    table = _maker(tmp_path).fee_growth_at(POOL, BlockNumber(fx["block_number"]), [196242])
+    assert table.num_rows == 2  # global + one tick
+    assert seen["slot0"] == 2  # first attempt failed, the retry succeeded
 
 
 def test_fee_growth_at_rows_exact_and_schema_conformant(
