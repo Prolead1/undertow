@@ -346,14 +346,21 @@ class FeeGrowthTracker:
                 f"from tick {pre_tick} to {post_tick}"
             )
 
-        upward = post_price > pre_price
+        # Crossings are selected by **pool tick**, not by price (ADR-021): a
+        # downward swap that ends exactly on a tick boundary sets ``slot0.tick``
+        # to ``T-1`` while the price stays at ``boundary(T)``, so the next upward
+        # move must still cross ``T``.  The protocol's interval is the half-open
+        # ``(min_tick, max_tick]`` over the recorded slot0 ticks.
+        pre_tick_value = int(pre_tick)
+        post_tick_value = int(post_tick)
+        upward = post_tick_value > pre_tick_value
         if upward:
             crossed = sorted(
-                t for t in self.ticks if pre_price < tick_to_sqrt_price_x96(t) <= post_price
+                t for t in self.ticks if pre_tick_value < t <= post_tick_value
             )
         else:
             crossed = sorted(
-                (t for t in self.ticks if post_price <= tick_to_sqrt_price_x96(t) < pre_price),
+                (t for t in self.ticks if post_tick_value < t <= pre_tick_value),
                 reverse=True,
             )
 

@@ -40,6 +40,10 @@ undertow-sim …` works from the repo root.
 Build it once with the data pipeline (this is the only step that touches the
 network; it requires the endpoints' environment variables):
 
+> The `undertow-sim` commands below **never fetch** and load the data config
+> without expanding its `${ENV_VAR}` endpoint placeholders, so the two secrets
+> are only needed for the snapshot itself.
+
 ```bash
 export GRAPH_API_KEY=...      # required by configs/eth_usdc_3000.toml
 export ETH_RPC_URL=...        # archive node URL
@@ -154,8 +158,9 @@ configuration that produced it.
 - **`unknown policy '…'`** — pick one of the six listed in the error / `info`:
   `hodl`, `passive_narrow`, `passive_wide`, `full_range_v2`, `tau_reset`,
   `cost_aware`.
-- **`Environment variable … is not set`** — the data config contains a
-  `${ENV_VAR}` placeholder; export it before running `undertow-data snapshot`.
+- **`Environment variable … is not set`** — only `undertow-data` needs the
+  endpoint secrets, and only for `snapshot`; export the config's `${ENV_VAR}`
+  placeholders before running it. `undertow-sim` does not read them.
 - **`Parity check failed` / parity `FAIL`** — run `uv run undertow-sim info` to
   inspect the recorded parity status, and re-run the S14 parity suite.
 - **Training too slow** — reduce `training.total_timesteps` or increase

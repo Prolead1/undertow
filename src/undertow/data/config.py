@@ -491,7 +491,9 @@ def _parse_regime(section: Mapping[str, object], where: str) -> RegimeConfig:
     )
 
 
-def _parse_endpoints(section: Mapping[str, object], where: str) -> EndpointConfig:
+def _parse_endpoints(
+    section: Mapping[str, object], where: str, *, expand_env: bool = True
+) -> EndpointConfig:
     _check_unknown(section, _ENDPOINT_KEYS, f"{where}[endpoints]")
     concurrent = _opt_int(section, "max_concurrency", f"{where}[endpoints]")
     timeout = _opt_float(section, "request_timeout_s", f"{where}[endpoints]")
@@ -509,16 +511,17 @@ def _parse_endpoints(section: Mapping[str, object], where: str) -> EndpointConfi
             f"{where}[endpoints]: min_request_interval_s must be >= 0, "
             f"got {min_interval}"
         )
+    graph_url = _need_str(section, "graph_url", f"{where}[endpoints]")
+    rpc_url = _need_str(section, "rpc_url", f"{where}[endpoints]")
+    reference_base_url = _need_str(section, "reference_base_url", f"{where}[endpoints]")
+    if expand_env:
+        graph_url = _expand_env(graph_url, f"{where}[endpoints]")
+        rpc_url = _expand_env(rpc_url, f"{where}[endpoints]")
+        reference_base_url = _expand_env(reference_base_url, f"{where}[endpoints]")
     return EndpointConfig(
-        graph_url=_expand_env(
-            _need_str(section, "graph_url", f"{where}[endpoints]"), f"{where}[endpoints]"
-        ),
-        rpc_url=_expand_env(
-            _need_str(section, "rpc_url", f"{where}[endpoints]"), f"{where}[endpoints]"
-        ),
-        reference_base_url=_expand_env(
-            _need_str(section, "reference_base_url", f"{where}[endpoints]"), f"{where}[endpoints]"
-        ),
+        graph_url=graph_url,
+        rpc_url=rpc_url,
+        reference_base_url=reference_base_url,
         max_concurrency=concurrent if concurrent is not None else 4,
         request_timeout_s=timeout if timeout is not None else 30.0,
         max_retries=retries if retries is not None else 5,
@@ -591,11 +594,16 @@ def _parse_gas(section: Mapping[str, object], where: str) -> tuple[Mapping[str, 
     return MappingProxyType(out), tip_surcharge_pct
 
 
-def load_config(path: str | Path) -> DataConfig:
+def load_config(path: str | Path, *, expand_endpoints: bool = True) -> DataConfig:
     """Load a ``DataConfig`` from a TOML file.
 
     Only I/O in this module. ``${ENV_VAR}`` placeholders are expanded in ``[endpoints]`` string
     fields; a missing variable raises ``ConfigError`` naming the variable (never its value).
+
+    ``expand_endpoints=False`` leaves those placeholders literal and never reads the
+    environment.  Read-only consumers that need only ``[paths]``/``[pool]``/``[window]`` — the
+    simulator, which never fetches — use it so loading a dataset does not require fetch
+    credentials.
     """
     p = Path(path)
     try:
@@ -611,7 +619,9 @@ def load_config(path: str | Path) -> DataConfig:
     pool = _parse_pool(_table(raw, "pool", where), where)
     window = _parse_window(_table(raw, "window", where), where)
     regime = _parse_regime(_table(raw, "regime", where), where)
-    endpoints = _parse_endpoints(_table(raw, "endpoints", where), where)
+    endpoints = _parse_endpoints(
+        _table(raw, "endpoints", where), where, expand_env=expand_endpoints
+    )
     paths = _table(raw, "paths", where)
     _check_unknown(paths, _PATH_KEYS, f"{where}[paths]")
     cache_dir = Path(_need_str(paths, "cache_dir", f"{where}[paths]"))

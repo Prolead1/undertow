@@ -163,12 +163,10 @@ class PoolState:
     fee_growth_global_1: float
     fee_tier_bps: int  # e.g. 3000 for 0.30%
     tick_spacing: int
-    #: Exact Q64.96 sqrt price of the last tape swap, when the caller has one.
-    #: The swap row's integer price is the only representation precise enough to
-    #: place a price exactly on a tick boundary; the float ``sqrt_price`` cannot
-    #: distinguish ``tick_to_sqrt_price_x96(t)`` from a price one raw unit below
-    #: it.  ``None`` for synthetic/fixture states, where crossing falls back to
-    #: the float comparison (ADR-019).
+    #: Exact Q64.96 sqrt price of the last tape swap, retained as informational
+    #: provenance for diagnostics.  No logic reads it: crossings are selected
+    #: from the recorded ``tick`` (ADR-021) and valuation uses the float
+    #: ``sqrt_price``.  ``None`` for synthetic/fixture states.
     sqrt_price_x96: int | None = None
     #: Packed uint8 protocol-fee split from slot0 (bits 0-3 = fp0 for token0-in
     #: swaps, bits 4-7 = fp1 for token1-in swaps); ``0`` means protocol fees are
@@ -388,63 +386,6 @@ class PoolEngine:
         return cls(state=seeded, ticks=ticks)
 
     # -- Internal helpers -------------------------------------------------
-    def _crossed_ticks(self, old_tick: Tick, new_tick: Tick) -> list[Tick]:
-        return _select_crossed_ticks(self.ticks, old_tick, new_tick)
-
-    def _crossed_ticks_exact(
-        self, pre_x96: int, post_x96: int
-    ) -> list[Tick]:
-        """Ticks crossed, compared on exact Q64.96 integers (ADR-019).
-
-        The integer twin of :meth:`_crossed_ticks_by_price`; used whenever the
-        caller can supply the swap's raw ``sqrt_price_x96``.  Exact-integer
-        comparison is what makes the engine agree with the tracker when a price
-        sits exactly on (or one raw unit from) a boundary — a float64 division
-        cannot tell those apart.
-        """
-        upward = post_x96 > pre_x96
-        crossed: list[Tick] = []
-        for tick in sorted(self.ticks):
-            if not self.ticks[tick].initialized:
-                continue
-            boundary = self._boundary_x96(tick)
-            if upward:
-                if pre_x96 < boundary <= post_x96:
-                    crossed.append(tick)
-            elif post_x96 <= boundary < pre_x96:
-                crossed.append(tick)
-        return crossed
-
-    def _crossed_ticks_by_price(
-        self, pre_price: float, post_price: float
-    ) -> list[Tick]:
-        """Initialized ticks crossed by a move from ``pre_price`` to ``post_price``.
-
-        This mirrors ``FeeGrowthTracker.apply_swap`` exactly (ADR-013): the
-        selection is **price**-based, not tick-based, because a swap's recorded
-        ``tick`` can disagree with its ``sqrt_price_x96`` by one at an exact
-        boundary (slot0's tick vs the post-swap ratio).  Upward it selects
-        ``pre_price < price(t) <= post_price``; downward the reverse half-open
-        ``post_price <= price(t) < pre_price``.  ``price(t)`` is
-        ``calc_sqrt_price_a(t)``, the sim's raw float sqrt price.  The returned
-        list is ascending (the caller reverses it for a downward walk).
-        """
-        upward = post_price > pre_price
-        crossed: list[Tick] = []
-        for tick in sorted(self.ticks):
-            if not self.ticks[tick].initialized:
-                continue
-            # The exact Q64.96 boundary divided by ``Q96``, so a tape price that
-            # sits exactly on a boundary compares equal (the tracker compares the
-            # raw integers); ``calc_sqrt_price_a``'s ~1e-6 relative error would
-            # otherwise flip the strict inequality and drop a genuine crossing.
-            boundary = tick_to_sqrt_price_x96(int(tick)) / float(Q96)
-            if upward:
-                if pre_price < boundary <= post_price:
-                    crossed.append(tick)
-            elif post_price <= boundary < pre_price:
-                crossed.append(tick)
-        return crossed
 
     def _cross_one(self, tick: Tick, upward: bool) -> None:
         """Cross a single initialized ``tick`` in the exact ``Tick.cross`` order.
@@ -671,7 +612,6 @@ class PoolEngine:
         pre_price = float(self.state.sqrt_price)
         post_price = float(new_sqrt_price)
         post_tick = Tick(new_tick)
-        pre_x96 = self.state.sqrt_price_x96
 
         volume_0 = float(swap_volume_0)
         volume_1 = float(swap_volume_1)
@@ -689,21 +629,19 @@ class PoolEngine:
         pool_fee_0 = gross_in * fee_pips / _FEE_DENOMINATOR if input_token == 0 else 0.0
         pool_fee_1 = gross_in * fee_pips / _FEE_DENOMINATOR if input_token == 1 else 0.0
 
-        # The set of initialized ticks to cross.  Selection is **price**-based to
-        # mirror the exact tracker (``feegrowth.py``:337): a swap's recorded
-        # ``tick`` can lag its ``sqrt_price_x96`` by one at an exact boundary, so
-        # a tick-derived direction would cross the set with the wrong sign and
-        # silently corrupt ``state.liquidity``.  The physical crossing order is
-        # ascending for an upward move and descending for a downward one, so the
-        # segment walk reverses the (always-ascending) crossed list.  ``pre_tick``
-        # is still the caller's slot0 tick, used only to set the final state tick.
-        post_x96 = int(new_sqrt_price_x96) if new_sqrt_price_x96 is not None else None
-        if pre_x96 is not None and post_x96 is not None:
-            upward = post_x96 > pre_x96
-            ticks_crossed: list[Tick] = self._crossed_ticks_exact(pre_x96, post_x96)
-        else:
-            upward = post_price > pre_price
-            ticks_crossed = self._crossed_ticks_by_price(pre_price, post_price)
+        # The set of initialized ticks to cross, selected by **pool tick** rather
+        # than by price (ADR-021).  A downward swap that ends exactly on a tick
+        # boundary makes the contract set ``slot0.tick`` to ``T-1`` while the
+        # price stays at ``boundary(T)``; a price-based rule would then let the
+        # next upward move start on a boundary and miss crossing ``T``, silently
+        # corrupting ``state.liquidity``.  The protocol's own interval is
+        # ``(min_tick, max_tick]`` — exactly what ``_select_crossed_ticks``
+        # implements and what ``tick_cross`` already uses.  The physical crossing
+        # order is ascending upward and descending downward, so the segment walk
+        # reverses the always-ascending list.
+        pre_tick = self.state.tick
+        upward = post_tick > pre_tick
+        ticks_crossed = _select_crossed_ticks(self.ticks, pre_tick, post_tick)
         walk = ticks_crossed if upward else list(reversed(ticks_crossed))
 
         # Build the segment list: [pre_price, b1] .. [bn, post_price], each with

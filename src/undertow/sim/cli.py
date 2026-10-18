@@ -242,6 +242,9 @@ def _load_market_view(
 
     Reads only through the top-level ``undertow.data`` public API.  A missing or
     invalid snapshot becomes a clear, actionable error rather than a traceback.
+    The simulator never fetches, so the config's ``${ENV_VAR}`` endpoint
+    placeholders are left literal: loading a dataset must not require
+    ``GRAPH_API_KEY``/``ETH_RPC_URL``.
     """
     data_path = Path(data_config_path)
     if not data_path.is_file():
@@ -251,7 +254,7 @@ def _load_market_view(
             EXIT_CONFIG,
         )
     try:
-        data_config = load_data_config(data_path)
+        data_config = load_data_config(data_path, expand_endpoints=False)
     except Exception as exc:  # noqa: BLE001 - report any data-config failure cleanly
         raise CliError(
             f"failed to load data config {data_path}: {exc}", EXIT_CONFIG

@@ -504,6 +504,37 @@ def test_multi_tick_swap_apportionment_and_cross_order() -> None:
     assert t.current_tick == 120
 
 
+def test_reversing_off_a_boundary_crosses_the_recorded_tick() -> None:
+    """ADR-021: crossings follow the recorded ``slot0`` tick, not the price.
+
+    A downward swap landing exactly on ``boundary(60)`` records
+    ``current_tick = 59`` while the price stays on the boundary.  An upward
+    reversal must therefore still cross tick 60; keying off the price would see
+    it start on the boundary and miss the crossing (the real-lane divergence at
+    block 15,369,829).
+    """
+    t = _tracker(
+        current_tick=59,
+        current_liquidity=0,
+        ticks={60: TickState(0, 0, 10**18, 10**18, True)},
+        price=R[60],
+    )
+    net = get_amount1_delta(R[60], R[120], 10**18, True)
+    row = _swap_row(
+        block=1001,
+        input_token=1,
+        gross=_gross_for(net),
+        out=get_amount0_delta(R[60], R[120], 10**18, False),
+        post_tick=120,
+        post_price=R[120],
+    )
+
+    t.apply_swap(row)
+
+    assert t.current_tick == 120
+    assert t.current_liquidity == 10**18
+
+
 # ---------------------------------------------------------------------------
 # FeeGrowthApproximation provenance.
 # ---------------------------------------------------------------------------

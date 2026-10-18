@@ -507,7 +507,7 @@ class PoolState:
     fee_tier_bps: int               # e.g. 3000 for 0.30%
     tick_spacing: int
     # ADR-019 additive fields; defaulted so frozen constructors still build.
-    sqrt_price_x96: int | None = None  # exact Q64.96 of the last tape swap
+    sqrt_price_x96: int | None = None  # provenance only; crossings use `tick` (ADR-021)
     fee_protocol: int = 0              # packed uint8 fp0/fp1 for the LP split
 
     # -- Fee-growth inside a range (eqs 4–6 of §10.2.4) --
@@ -584,8 +584,12 @@ class PoolEngine:
         net input (last segment absorbing the float remainder), each segment's LP
         fee (net of ``fee_protocol``) added over that segment's active ``L``, and
         the boundary crossed **after** its segment's fee (update-then-cross).
-        Crossing direction is **price-derived** (exact Q64.96 when supplied, else
-        float), never tick-derived. Zero-liquidity final segments are guarded so
+        Ticks are crossed on the protocol's half-open **tick** interval
+        ``(min(pre_tick, post_tick), max(pre_tick, post_tick)]`` — the recorded
+        ``slot0.tick`` is authoritative (a downward swap landing exactly on
+        ``boundary(T)`` records ``T-1`` while the price stays on the boundary),
+        so crossing is never price-derived (ADR-021). Zero-liquidity final
+        segments are guarded so
         the step cannot divide by zero. Returns a dict with:
           - fees_accrued: dict[position_id, (fees_0, fees_1)]
           - ticks_crossed: list[Tick]

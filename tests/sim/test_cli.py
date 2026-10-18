@@ -365,6 +365,28 @@ class TestMissingConfig:
         assert result.returncode != 0
         assert "data config not found" in result.stderr
 
+    def test_data_config_loaded_without_endpoint_credentials(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The simulator never fetches: loading a dataset must not need secrets."""
+        from undertow.sim import SimConfig
+        from undertow.sim.cli import _load_market_view
+
+        seen: dict[str, object] = {}
+
+        def fake_load(path: object, **kwargs: object) -> object:
+            seen.update(kwargs)
+            raise RuntimeError("stop after capturing the call")
+
+        monkeypatch.setattr("undertow.sim.cli.load_data_config", fake_load)
+        config_path = tmp_path / "data.toml"
+        config_path.write_text("", encoding="utf-8")
+
+        with pytest.raises(CliError):
+            _load_market_view(SimConfig(), config_path, "train")
+
+        assert seen == {"expand_endpoints": False}
+
 
 # ---------------------------------------------------------------------------
 # 5. help text

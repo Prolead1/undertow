@@ -596,6 +596,20 @@ def test_load_config_missing_env_var_names_var_no_value(monkeypatch: pytest.Monk
     assert "SECRETVALUE12345" not in msg
 
 
+def test_load_config_without_endpoint_expansion_needs_no_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Read-only consumers (the simulator) load paths/pool/window without secrets."""
+    monkeypatch.delenv("GRAPH_API_KEY", raising=False)
+    monkeypatch.delenv("ETH_RPC_URL", raising=False)
+    cfg = load_config(CONFIG_DIR / "eth_usdc_3000.toml", expand_endpoints=False)
+    assert cfg.output_dir == Path("data/datasets/eth_usdc_3000")
+    assert cfg.reference_symbol == "ETHUSDT"
+    # The placeholders are preserved literally and never read the environment.
+    assert "${GRAPH_API_KEY}" in cfg.endpoints.graph_url
+    assert cfg.endpoints.rpc_url == "${ETH_RPC_URL}"
+
+
 def test_load_config_rejects_fee_tier_spacing_mismatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

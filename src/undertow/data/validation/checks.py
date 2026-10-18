@@ -527,8 +527,11 @@ def check_liquidity_conservation(
                 for t in crossed:
                     active_liquidity += tick_net[t]
             else:
+                # ADR-021: the protocol's interval is ``(post_tick, current_tick]``
+                # (``slot0.tick`` is authoritative, and a down-landing on
+                # ``boundary(T)`` records ``T-1`` while crossing ``T``).
                 crossed = sorted(
-                    (t for t in tick_net if post_tick <= t < current_tick), reverse=True
+                    (t for t in tick_net if post_tick < t <= current_tick), reverse=True
                 )
                 for t in crossed:
                     active_liquidity -= tick_net[t]

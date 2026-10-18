@@ -582,31 +582,32 @@ def test_swap_fee_matches_data_pips_denominator() -> None:
     assert result["pool_fee_earned_0"] != pytest.approx(volume * 3000 / 10_000.0)
 
 
-def test_exact_boundary_crossing_matches_tracker() -> None:
-    """Crossing is price-based, mirroring the exact ``apply_swap`` (ADR-019).
+def test_exact_boundary_crossing_uses_the_recorded_tick() -> None:
+    """Crossing selection follows the protocol's ``slot0`` tick (ADR-021).
 
-    Moving down and landing exactly on a boundary crosses that boundary (the
-    tracker's half-open ``post_price <= price(t) < pre_price``), so liquidity is
-    restored at the upper bound and removed at the lower bound.
+    A downward swap landing exactly on ``boundary(T)`` makes the contract record
+    ``slot0.tick = T-1`` while the price stays at the boundary, so the next
+    upward move must still cross ``T``.  A price-based rule would see the price
+    start on the boundary and skip the crossing.
     """
     engine = _engine(liquidity=0.0)
-    lower, upper = Tick(196140), Tick(196380)
-    _mint(engine, lower, upper, 1_000.0)
+    upper = Tick(196380)
+    _mint(engine, 196140, upper, 1_000.0)
     assert engine.state.liquidity == pytest.approx(1_000.0)
 
-    # Move to just above the upper bound: external position inactive.
-    start = Tick(ENTRY_TICK + 240)
-    engine.step(calc_sqrt_price_a(start), start, 0.0, 0.0)
+    # Move above the upper bound: external position inactive.
+    engine.step(calc_sqrt_price_a(Tick(196500)), Tick(196500), 0.0, 0.0)
     assert engine.state.liquidity == pytest.approx(0.0)
 
-    # Land exactly on the upper bound: the upper is crossed (liquidity back on).
-    engine.step(calc_sqrt_price_a(upper), upper, 0.0, 0.0)
-    assert engine.state.tick == upper
+    # Land exactly on the upper bound from above: recorded tick is ``T-1`` and
+    # the position is active again.
+    engine.step(calc_sqrt_price_a(upper), Tick(int(upper) - 1), 0.0, 0.0)
+    assert engine.state.tick == int(upper) - 1
     assert engine.state.liquidity == pytest.approx(1_000.0)
 
-    # Land exactly on the lower bound: the lower is crossed (liquidity off).
-    engine.step(calc_sqrt_price_a(lower), lower, 0.0, 0.0)
-    assert engine.state.tick == lower
+    # Reverse upward off the boundary: ``T`` must be crossed a second time.
+    result = engine.step(calc_sqrt_price_a(upper), upper, 0.0, 0.0)
+    assert result["ticks_crossed"] == [upper]
     assert engine.state.liquidity == pytest.approx(0.0)
 
 
@@ -769,32 +770,25 @@ def test_step_zero_liquidity_final_segment_does_not_divide_by_zero() -> None:
 # ---------------------------------------------------------------------------
 # Price-derived crossing direction (reviewer finding 2, ADR-019)
 # ---------------------------------------------------------------------------
-def test_step_direction_is_price_derived_when_recorded_tick_lags() -> None:
-    """A lagging slot0 tick must not invert the crossing direction.
+def test_step_crosses_tick_when_reversing_off_a_boundary() -> None:
+    """Reversing off a boundary crosses it, matching the exact tracker (ADR-021).
 
-    The tape's recorded ``tick`` can equal the pre-swap tick while the exact
-    ``sqrt_price_x96`` crosses an initialized boundary (43 such transitions
-    exist in the real stream).  The tracker derives the direction from the
-    price (``feegrowth.py:337``); a tick-derived direction would subtract
-    ``liquidity_net`` on an upward crossing and silently corrupt
-    ``state.liquidity``.
+    This is the real-lane regression (block 15,369,829): a downward swap ended
+    exactly on ``boundary(T)`` and recorded ``slot0.tick = T-1``; the next
+    upward move therefore had to cross ``T`` even though the price started on
+    its boundary.  Keying off the price instead silently left the external
+    position active and corrupted ``state.liquidity``.
     """
     boundary = tick_to_sqrt_price_x96(ENTRY_TICK)
-    # A one-raw-unit move is below float64 resolution at this magnitude, so use a
-    # delta that still sits inside the same integer tick but survives the float
-    # division (a real boundary lag is a sub-tick price move).
-    delta = 10**20
-    pre_x96 = boundary - delta
-    post_x96 = boundary + delta
     state = PoolState(
-        sqrt_price=pre_x96 / float(Q96),
-        tick=Tick(ENTRY_TICK - 1),  # recorded tick lags the price by one
+        sqrt_price=boundary / float(Q96),
+        tick=Tick(ENTRY_TICK - 1),  # slot0 tick recorded by the down-landing
         liquidity=0.0,
         fee_growth_global_0=0.0,
         fee_growth_global_1=0.0,
         fee_tier_bps=FEE_TIER_BPS,
         tick_spacing=SPACING,
-        sqrt_price_x96=pre_x96,
+        sqrt_price_x96=boundary,
     )
     engine = PoolEngine(state=state, ticks={})
     # External liquidity begins AT the boundary tick; it is inactive while the
@@ -802,16 +796,16 @@ def test_step_direction_is_price_derived_when_recorded_tick_lags() -> None:
     _mint(engine, ENTRY_TICK, ENTRY_TICK + 600, 5.0e6)
     assert engine.state.liquidity == 0.0
 
+    post = Tick(ENTRY_TICK + 10)
     result = engine.step(
-        post_x96 / float(Q96),
-        Tick(ENTRY_TICK - 1),  # recorded new tick is unchanged, but price rose
+        calc_sqrt_price_a(post),
+        post,
         0.0,
         1.0e6,
-        new_sqrt_price_x96=post_x96,
+        new_sqrt_price_x96=tick_to_sqrt_price_x96(post),
     )
 
     assert result["ticks_crossed"] == [Tick(ENTRY_TICK)]
-    # Upward: +liquidity_net.  A tick-derived direction would give -5e6.
     assert engine.state.liquidity == pytest.approx(5.0e6)
 
 
