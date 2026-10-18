@@ -415,6 +415,49 @@ def test_apply_mint_and_burn_updates_external_liquidity() -> None:
     assert Tick(196380) not in engine.ticks
 
 
+def test_apply_burn_tolerates_float64_residue_above_2_pow_53() -> None:
+    """ADR-020: an exact cancellation above 2**53 is not a stream inconsistency."""
+    engine = _engine(liquidity=0.0)
+    amount = 11_806_162_276_124_034  # > 2**53, where float64's ULP is 2
+    # A float64 accumulator can land a few units below the integer burn amount
+    # after a run of additions; this burn then cancels it to ~zero.
+    gross = float(amount) - 2.0
+    engine.ticks[Tick(ENTRY_TICK - 120)] = TickState(
+        liquidity_gross=gross, liquidity_net=gross, initialized=True
+    )
+    engine.ticks[Tick(ENTRY_TICK + 120)] = TickState(
+        liquidity_gross=gross, liquidity_net=-gross, initialized=True
+    )
+    engine.state.liquidity = gross
+
+    engine.apply_liquidity_event(
+        {
+            "event_type": "burn",
+            "tick_lower": ENTRY_TICK - 120,
+            "tick_upper": ENTRY_TICK + 120,
+            "liquidity_amount": str(amount),
+        }
+    )
+
+    assert Tick(ENTRY_TICK - 120) not in engine.ticks
+    assert Tick(ENTRY_TICK + 120) not in engine.ticks
+
+
+def test_apply_burn_still_rejects_a_genuine_over_burn() -> None:
+    """ADR-020: the tolerance absorbs float64 rounding only, not real gaps."""
+    engine = _engine(liquidity=0.0)
+    _mint(engine, ENTRY_TICK - 120, ENTRY_TICK + 120, 1_000.0)
+    with pytest.raises(PositionError, match="would drive liquidity_gross negative"):
+        engine.apply_liquidity_event(
+            {
+                "event_type": "burn",
+                "tick_lower": ENTRY_TICK - 120,
+                "tick_upper": ENTRY_TICK + 120,
+                "liquidity_amount": "2000",
+            }
+        )
+
+
 def test_apply_zero_amount_liquidity_is_noop() -> None:
     engine = _engine(liquidity=0.0)
     _mint(engine, ENTRY_TICK - 120, ENTRY_TICK + 120, 1_000.0)

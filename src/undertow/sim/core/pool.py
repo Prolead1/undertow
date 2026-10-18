@@ -77,6 +77,13 @@ __all__ = ["PoolEngine", "PoolState", "TickState"]
 # would be 30%, a 100x overcharge.)
 _FEE_DENOMINATOR: float = 1_000_000.0
 
+# Liquidity on real pools routinely exceeds ``2**53``, where float64 can no
+# longer represent the integers exactly.  An exact cancellation (`gross + delta
+# == 0`) can therefore leave a few-ULP negative residue; treat a residue within
+# this fraction of the applied delta as zero, and anything larger as a genuine
+# stream inconsistency (ADR-020).
+_LIQUIDITY_ROUNDING_TOLERANCE: float = 1e-12
+
 
 def _as_int(value: object) -> int:
     """Coerce a snapshot/cell value (decimal string, int or ``None``) to ``int``."""
@@ -490,11 +497,17 @@ class PoolEngine:
             gross_before = before.liquidity_gross if before is not None else 0.0
             gross_after = gross_before + float(delta)
             if gross_after < 0.0:
-                raise PositionError(
-                    f"{event_type} of liquidity {liquidity_amount} at tick {tick} "
-                    "would drive liquidity_gross negative — the event stream is "
-                    "inconsistent"
-                )
+                if gross_after > -_LIQUIDITY_ROUNDING_TOLERANCE * abs(float(delta)):
+                    # Exact cancellation above 2**53 leaves a float64 residue;
+                    # clamp it so the tick is removed rather than rejecting a
+                    # consistent stream (ADR-020).
+                    gross_after = 0.0
+                else:
+                    raise PositionError(
+                        f"{event_type} of liquidity {liquidity_amount} at tick {tick} "
+                        "would drive liquidity_gross negative — the event stream is "
+                        "inconsistent"
+                    )
             if gross_before == 0.0:
                 if self.state.tick >= tick:
                     outside_0 = self.state.fee_growth_global_0

@@ -1193,6 +1193,44 @@ class TestExternalPoolSeeding:
 
         assert _pool_fingerprint(env) == first
 
+    @pytest.mark.parametrize("start_seq", [3, 4, 5, 6, 7, 8])
+    def test_checkpoint_warmup_matches_full_replay(
+        self, monkeypatch: pytest.MonkeyPatch, start_seq: int
+    ) -> None:
+        """ADR-020: warming from a checkpoint is identical to a full warmup."""
+
+        def fingerprint(stride: int) -> tuple[object, ...]:
+            monkeypatch.setattr(
+                "undertow.sim.env.lp_env.WARMUP_CHECKPOINT_STRIDE", stride
+            )
+            env = _seeded_env(_seeded_market_view())
+            env._start_seq = start_seq
+            env._reset_external_pool()
+            return _pool_fingerprint(env)
+
+        assert fingerprint(2) == fingerprint(10**9)
+
+    def test_checkpoint_warmup_replays_at_most_stride(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ADR-020: a reset replays only the gap from the nearest checkpoint."""
+        monkeypatch.setattr("undertow.sim.env.lp_env.WARMUP_CHECKPOINT_STRIDE", 2)
+        env = _seeded_env(_seeded_market_view())
+        env._ensure_warmup_checkpoints()  # build the timeline once, uncounted
+
+        original = LpEnvironment._apply_warmup_row
+        replayed: list[dict[str, object]] = []
+
+        def counting(engine: PoolEngine, row: dict[str, object]) -> None:
+            replayed.append(row)
+            original(engine, row)
+
+        monkeypatch.setattr(LpEnvironment, "_apply_warmup_row", staticmethod(counting))
+        env._start_seq = 5  # nearest checkpoint is seq 3 in the 8-row fixture
+        env._reset_external_pool()
+
+        assert 0 < len(replayed) <= 2
+
     def test_alignment_gate_skips_zero_volume_step_for_seeded_views(
         self, tiny_env: LpEnvironment
     ) -> None:
