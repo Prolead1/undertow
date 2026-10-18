@@ -11,9 +11,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 import pyarrow as pa  # type: ignore[import-untyped]
+import pytest
 
 from undertow.data import FEE_GROWTH_SCHEMA, FeeGrowthReplay
 from undertow.data.config import GLOBAL_TICK_SENTINEL, default_pools

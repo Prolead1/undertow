@@ -182,8 +182,14 @@ _REGIME_UNITS: dict[str, str] = {
 }
 
 _TAPE_PAYLOAD_UNITS: dict[str, str] = {
-    "amount0": "signed on swap rows, non-negative on mint/burn/collect rows; null where inapplicable",
-    "amount1": "signed on swap rows, non-negative on mint/burn/collect rows; null where inapplicable",
+    "amount0": (
+        "signed on swap rows, non-negative on mint/burn/collect rows; "
+        "null where inapplicable"
+    ),
+    "amount1": (
+        "signed on swap rows, non-negative on mint/burn/collect rows; "
+        "null where inapplicable"
+    ),
     "sqrt_price_x96": "uint160 pool sqrt price, Q64.96; swap rows only",
     "liquidity": "uint128 active liquidity; swap rows only",
     "tick": "pool tick (int32); swap rows only",
@@ -198,7 +204,9 @@ _TAPE_PAYLOAD_UNITS: dict[str, str] = {
 _TAPE_DERIVED_UNITS: dict[str, str] = {
     "seq": "0..N-1 dense canonical step index (int64)",
     "price_pool": "pool price derived from sqrt_price_x96, decimals-adjusted (float64)",
-    "price_reference": "as-of join: last reference close with close_time <= block_timestamp (float64)",
+    "price_reference": (
+        "as-of join: last reference close with close_time <= block_timestamp (float64)"
+    ),
     "regime": "as-of join from the regime table (bull|bear|sideways|high_vol|unknown)",
     "base_fee_per_gas": "joined from gas on block_number, wei (uint256)",
     "priority_fee_p50_wei": "joined from gas on block_number, wei (uint256)",

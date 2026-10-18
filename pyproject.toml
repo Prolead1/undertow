@@ -53,11 +53,20 @@ testpaths = ["tests"]
 # ``-n auto`` parallelises the suite across CPUs. It is only fast because
 # ``tests/conftest.py`` pins BLAS/OpenMP to one thread per worker; without that
 # each worker spawns a thread per core and oversubscribes the machine.
-addopts = "-q --strict-markers -n auto"
+# ``--cov=undertow`` + ``[tool.coverage.report] fail_under`` gate every run at 90%
+# coverage, so a push cannot land below it. ``-n auto`` only stays fast because
+# ``tests/conftest.py`` pins BLAS/OpenMP to one thread per worker (otherwise each
+# worker spawns a thread per core and oversubscribes the machine).
+addopts = "-q --strict-markers -n auto --cov=undertow"
 markers = [
     "network: hits a live endpoint; deselected by default",
     "slow: > 5s",
 ]
+
+[tool.coverage.report]
+fail_under = 90
+skip_covered = true
+show_missing = true
 
 [tool.ruff]
 line-length = 100
@@ -66,6 +75,12 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "ANN"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests exercise public behavior; pytest injects typed fixtures at runtime, so
+# annotating every test parameter/return is noise rather than a check.  The
+# library under ``src/`` is what must stay fully annotated.
+"tests/**" = ["ANN"]
 
 [tool.mypy]
 python_version = "3.11"

@@ -15,15 +15,14 @@ from __future__ import annotations
 
 import json
 import random
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
 
-import pyarrow as pa
 import pytest
 import responses
 
-from undertow.data.config import EndpointConfig, GLOBAL_TICK_SENTINEL, default_pools
+from undertow.data.config import GLOBAL_TICK_SENTINEL, EndpointConfig, default_pools
 from undertow.data.fetchers.abi import (
     SELECTOR_FEE_GROWTH_GLOBAL_0_X128,
     SELECTOR_FEE_GROWTH_GLOBAL_1_X128,
@@ -32,7 +31,6 @@ from undertow.data.fetchers.abi import (
     SELECTOR_TICK_BITMAP,
     SELECTOR_TICKS,
     TOPIC_SWAP,
-    encode_ticks_calldata,
 )
 from undertow.data.fetchers.base import FetchRequest
 from undertow.data.fetchers.rpc import RpcFetcher
@@ -82,7 +80,7 @@ class _Responder:
     """
 
     def __init__(
-        self, mocked: "responses.RequestsMock", *, shuffle: bool = True, url: str = RPC_URL
+        self, mocked: responses.RequestsMock, *, shuffle: bool = True, url: str = RPC_URL
     ) -> None:
         self.calls: list[dict] = []
         self.handlers: dict[str, Callable[[list[object]], object]] = {}
@@ -199,7 +197,7 @@ def _fixture(name: str) -> list[dict]:
     ],
 )
 def test_fetch_log_streams(
-    mocked_http: "responses.RequestsMock",
+    mocked_http: responses.RequestsMock,
     tmp_path: Path,
     stream: str,
     fixture: str,
@@ -289,7 +287,7 @@ def test_eth_get_logs_filter_is_a_single_object(mocked_http, tmp_path: Path) -> 
 def test_fetch_flash_inline_log(mocked_http, tmp_path: Path) -> None:
     """Flash decode through the transport (no flash fixture exists: the pinned
     pools have negligible flash volume; T10 needs to know it is decoded)."""
-    from undertow.data.fetchers.abi import TOPIC_FLASH, decode_flash
+    from undertow.data.fetchers.abi import TOPIC_FLASH
 
     log = {
         "address": str(POOL.address),
@@ -483,8 +481,13 @@ def test_fee_growth_at_rows_exact_and_schema_conformant(
 
     row_tick = table.slice(1, 1).to_pylist()[0]
     # All Q128 values decode back to EXACT integers.
-    assert decode_uint(row_tick["fee_growth_global_0_x128"]) == decode_uint(row0["fee_growth_global_0_x128"])
-    assert decode_uint(row_tick["fee_growth_global_0_x128"]) == 245472016230501318647318615910821729000
+    assert decode_uint(row_tick["fee_growth_global_0_x128"]) == decode_uint(
+        row0["fee_growth_global_0_x128"]
+    )
+    assert (
+        decode_uint(row_tick["fee_growth_global_0_x128"])
+        == 245472016230501318647318615910821729000
+    )
     assert decode_uint(row_tick["liquidity_net"]) == -2_000_000_000_000_000_000  # signed
     assert decode_uint(row_tick["liquidity_gross"]) == 15_000_000_000_000_000_000
     assert row_tick["initialized"] is True
@@ -567,7 +570,9 @@ def test_batch_out_of_order_reassembly(mocked_http, tmp_path: Path) -> None:
     assert table.column("tick").to_pylist() == [
         GLOBAL_TICK_SENTINEL, 196242, 196238
     ]
-    assert decode_uint(table.slice(1, 1).to_pylist()[0]["liquidity_net"]) == -2_000_000_000_000_000_000
+    assert decode_uint(table.slice(1, 1).to_pylist()[0]["liquidity_net"]) == (
+        -2_000_000_000_000_000_000
+    )
     # The last request recorded was a single JSON-RPC batch (one HTTP POST):
     # slot0 + liquidity + 2 globals + 2 ticks, all in ONE batch.
     assert any(isinstance(call, list) and len(call) == 6 for call in resp.calls)
@@ -690,7 +695,10 @@ def test_reorg_detected_on_cached_hash_change(mocked_http, tmp_path: Path) -> No
         block = int(str(params[0]), 16)
         return {
             "number": hex(block),
-            "hash": "0x00000000000000000000000000000000000000000000000000000000000" + f"{block:03x}",
+            "hash": (
+                "0x00000000000000000000000000000000000000000000000000000000000"
+                + f"{block:03x}"
+            ),
             "timestamp": hex(1),
         }
 

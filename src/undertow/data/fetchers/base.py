@@ -31,6 +31,7 @@ and wrap the result in ``FetchResult``.
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import hashlib
 import json
@@ -43,7 +44,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 from urllib.parse import urlsplit
 
 import pyarrow as pa
@@ -282,7 +283,7 @@ class BaseHttpFetcher:
         """
         canonical = _canonicalize(dict(params))
         payload = json.dumps(canonical, separators=(",", ":"), sort_keys=True)
-        digest = hashlib.sha256(f"{route.value}:{stream}:{payload}".encode("utf-8")).hexdigest()
+        digest = hashlib.sha256(f"{route.value}:{stream}:{payload}".encode()).hexdigest()
         return digest[:CACHE_DIGEST_BYTES]
 
     # ------------------------------------------------------------------
@@ -347,10 +348,8 @@ class BaseHttpFetcher:
                 json.dump(envelope, fh, separators=(",", ":"))
             os.replace(tmp, path)
         except BaseException:
-            try:
+            with contextlib.suppress(OSError):
                 tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
             raise
 
     def clear_cache(self, stream: str | None = None) -> None:
@@ -426,7 +425,7 @@ class BaseHttpFetcher:
         *,
         method: str = "GET",
         headers: Mapping[str, str] | None = None,
-        json: Any = None,
+        json: object | None = None,
         context: str = "",
     ) -> requests.Response:
         """Perform one HTTP request to ``url`` with backoff/jitter on transient failures.
@@ -593,7 +592,11 @@ class BaseHttpFetcher:
         start = request.start_block
         end = request.end_block
         if start is None or end is None:
-            return [], 0, False, [f"fetch_rows: no block range in request ({self._describe(request, None, None)}); nothing to fetch"]
+            detail = (
+                "fetch_rows: no block range in request "
+                f"({self._describe(request, None, None)}); nothing to fetch"
+            )
+            return [], 0, False, [detail]
         if start > end:
             return [], 0, False, [f"fetch_rows: empty block range {start}..{end}; nothing to fetch"]
 

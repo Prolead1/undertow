@@ -10,12 +10,12 @@ from undertow.data.fetchers.base import (
     BACKOFF_BASE_SECONDS,
     BACKOFF_CAP_SECONDS,
     DEFAULT_CHUNK_SIZE,
-    FetchRequest,
-    FetchResult,
-    Fetcher,
     TOO_MANY_RESULTS_PATTERNS,
     TRANSIENT_ERROR_PATTERNS,
     BaseHttpFetcher,
+    Fetcher,
+    FetchRequest,
+    FetchResult,
 )
 
 __all__ = [

@@ -158,7 +158,7 @@ def _load_config(path: str) -> DataConfig:
         return load_config(path)
     except ConfigError as e:
         print(f"Error: {e}", file=sys.stderr)
-        raise SystemExit(2)
+        raise SystemExit(2) from None
 
 
 def _die(message: str, *, exit_code: int) -> int:
