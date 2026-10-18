@@ -507,7 +507,7 @@ class PoolState:
     fee_tier_bps: int               # e.g. 3000 for 0.30%
     tick_spacing: int
     # ADR-019 additive fields; defaulted so frozen constructors still build.
-    sqrt_price_x96: int | None = None  # exact Q64.96 of the last tape swap
+    sqrt_price_x96: int | None = None  # provenance only; crossings use `tick` (ADR-021)
     fee_protocol: int = 0              # packed uint8 fp0/fp1 for the LP split
 
     # -- Fee-growth inside a range (eqs 4–6 of §10.2.4) --

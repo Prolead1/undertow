@@ -163,12 +163,10 @@ class PoolState:
     fee_growth_global_1: float
     fee_tier_bps: int  # e.g. 3000 for 0.30%
     tick_spacing: int
-    #: Exact Q64.96 sqrt price of the last tape swap, when the caller has one.
-    #: The swap row's integer price is the only representation precise enough to
-    #: place a price exactly on a tick boundary; the float ``sqrt_price`` cannot
-    #: distinguish ``tick_to_sqrt_price_x96(t)`` from a price one raw unit below
-    #: it.  ``None`` for synthetic/fixture states, where crossing falls back to
-    #: the float comparison (ADR-019).
+    #: Exact Q64.96 sqrt price of the last tape swap, retained as informational
+    #: provenance for diagnostics.  No logic reads it: crossings are selected
+    #: from the recorded ``tick`` (ADR-021) and valuation uses the float
+    #: ``sqrt_price``.  ``None`` for synthetic/fixture states.
     sqrt_price_x96: int | None = None
     #: Packed uint8 protocol-fee split from slot0 (bits 0-3 = fp0 for token0-in
     #: swaps, bits 4-7 = fp1 for token1-in swaps); ``0`` means protocol fees are
