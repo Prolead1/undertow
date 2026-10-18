@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow as pa
 
 from undertow.data.config import GLOBAL_TICK_SENTINEL, PoolConfig
 from undertow.data.transforms.feegrowth import (

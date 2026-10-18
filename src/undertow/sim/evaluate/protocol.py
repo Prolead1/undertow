@@ -46,7 +46,7 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import polars as pl
@@ -453,7 +453,7 @@ def _run_sim_window(
     done = False
     steps = 0
     while not done:
-        action = policy.act(observation_from_vector(vector), rng)
+        action = policy.act(observation_from_vector(vector.tolist()), rng)
         index = action_to_index(env, action)
         vector, _reward, terminated, truncated, info = env.step(index)
         raw = info["reward_breakdown_raw"]
@@ -481,8 +481,9 @@ def _run_sim_window(
         "net": net,
     }
     equity_series = pl.Series("equity", equities)
-    start_seq = int(env.price_process.start_seq)
-    end_seq = int(env.price_process.end_seq)
+    replay_process = cast(ReplayPriceProcess, env.price_process)
+    start_seq = int(replay_process.start_seq)
+    end_seq = int(replay_process.end_seq)
     return EpisodeRecord(
         policy_name=policy.name,
         backend="replay_sim",

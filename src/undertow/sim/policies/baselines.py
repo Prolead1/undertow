@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 from undertow.data import MAX_TICK, MIN_TICK, price_to_tick
 from undertow.sim.core.position import DEFAULT_DEC0, DEFAULT_DEC1
 from undertow.sim.policies.base import HOLDAction
-from undertow.sim.types import Action, Tick
+from undertow.sim.types import Action, Tick, TickSpacing
 
 if TYPE_CHECKING:
     import numpy as np
@@ -107,7 +107,7 @@ class _PassiveBandPolicy:
     def __init__(self, *, tick_spacing: int = DEFAULT_TICK_SPACING) -> None:
         if tick_spacing <= 0:
             raise ValueError("tick_spacing must be > 0")
-        self._tick_spacing = int(tick_spacing)
+        self._tick_spacing = TickSpacing(int(tick_spacing))
         self._deployed = False
 
     @property
@@ -166,7 +166,7 @@ class FullRangeV2Policy:
     def __init__(self, *, tick_spacing: int = DEFAULT_TICK_SPACING) -> None:
         if tick_spacing <= 0:
             raise ValueError("tick_spacing must be > 0")
-        self._tick_spacing = int(tick_spacing)
+        self._tick_spacing = TickSpacing(int(tick_spacing))
         self._deployed = False
 
     @property
@@ -228,7 +228,7 @@ class TauResetPolicy:
         if tick_spacing <= 0:
             raise ValueError("tick_spacing must be > 0")
         self._half_width_ticks = int(half_width_ticks)
-        self._tick_spacing = int(tick_spacing)
+        self._tick_spacing = TickSpacing(int(tick_spacing))
         self._deployed = False
         self._current_lower: Tick | None = None
         self._current_upper: Tick | None = None
@@ -299,7 +299,7 @@ class CostAwareRebalancePolicy:
         self._half_width_ticks = int(half_width_ticks)
         self._min_interval_steps = int(min_interval_steps)
         self._gas_model = gas_model
-        self._tick_spacing = int(tick_spacing)
+        self._tick_spacing = TickSpacing(int(tick_spacing))
         self._deployed = False
         self._current_lower: Tick | None = None
         self._current_upper: Tick | None = None

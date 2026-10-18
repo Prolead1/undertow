@@ -27,12 +27,15 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import datetime
+from typing import cast
 
 import numpy as np
 import polars as pl
 
+from undertow.sim.coerce import as_int
 from undertow.sim.core.pool import PoolEngine
 from undertow.sim.core.position import DEFAULT_DEC0, DEFAULT_DEC1, Position
+from undertow.sim.frictions.gas import GasModel
 from undertow.sim.marketview import MarketView
 from undertow.sim.types import Price, SqrtPrice, Tick, Wealth
 
@@ -185,7 +188,7 @@ class ObservationBuilder:
         self.episode_length = int(length)
 
     # -- History helpers (backward-looking) ------------------------------
-    def _reference_closes_through(self, at_time: object) -> np.ndarray:
+    def _reference_closes_through(self, at_time: datetime) -> np.ndarray:
         """Reference closes with ``close_time <= at_time``, ascending.
 
         This is the look-ahead wall in code: a bar whose close is strictly
@@ -208,12 +211,12 @@ class ObservationBuilder:
         tape row's own joined gas columns when the feed has no row (the tiny
         fixture's gas feed is shorter than its tape).
         """
-        block_number = int(tape_row.get("block_number", 0) or 0)
+        block_number = as_int(tape_row.get("block_number", 0) or 0)
         row = self.market_view.gas_at_block(block_number)
         if row is None:
             row = tape_row
-        base = int(row.get("base_fee_per_gas") or 0)
-        priority = int(row.get("priority_fee_p50_wei") or 0)
+        base = as_int(row.get("base_fee_per_gas") or 0)
+        priority = as_int(row.get("priority_fee_p50_wei") or 0)
         return float(base + priority), base, priority
 
     # -- Build -----------------------------------------------------------
@@ -222,7 +225,7 @@ class ObservationBuilder:
         step: int,
         position: Position,
         pool_engine: PoolEngine,
-        gas_model: object,
+        gas_model: GasModel,
         entry_price: Price,
         entry_sqrt_price: SqrtPrice,
         initial_capital: Wealth,
@@ -238,7 +241,7 @@ class ObservationBuilder:
         tape_row = self.market_view.tape_at(int(step))
         step_in_episode = int(step) - self.episode_start
         return self.build_at(
-            at_time=tape_row["block_timestamp"],
+            at_time=cast(datetime, tape_row["block_timestamp"]),
             tape_row=tape_row,
             step_in_episode=step_in_episode,
             steps_remaining=max(0, self.episode_length - 1 - step_in_episode),
@@ -259,7 +262,7 @@ class ObservationBuilder:
         steps_remaining: int,
         position: Position,
         pool_engine: PoolEngine,
-        gas_model: object,
+        gas_model: GasModel,
         entry_price: Price,
         entry_sqrt_price: SqrtPrice,
         initial_capital: Wealth,

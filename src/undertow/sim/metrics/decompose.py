@@ -80,6 +80,7 @@ def pnl_decomposition(ledger: pl.DataFrame) -> dict[str, float]:
         missing.append(f"{IL_COLUMN} (or il_change)")
     if missing:
         raise KeyError("ledger is missing required PnL column(s): " + ", ".join(missing))
+    assert il_column is not None  # the missing check above rejects None
 
     total_fees = float(ledger["fees"].sum())
     total_il_change = float(ledger[il_column].sum())

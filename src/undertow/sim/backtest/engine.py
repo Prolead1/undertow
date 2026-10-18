@@ -52,7 +52,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from statistics import median
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import polars as pl
@@ -70,6 +70,7 @@ from undertow.sim.backtest.ledger import (
     decompose_equity_curve,
     git_commit,
 )
+from undertow.sim.coerce import as_int
 from undertow.sim.config import SimConfig
 from undertow.sim.core.position import (
     DEFAULT_DEC0,
@@ -82,6 +83,7 @@ from undertow.sim.marketview import MarketView
 from undertow.sim.types import Action, BacktestError, Tick, TickSpacing
 
 if TYPE_CHECKING:
+    from undertow.sim.env.observations import Observation
     from undertow.sim.policies import Policy
 
 LOGGER = logging.getLogger("undertow.sim.backtest.engine")
@@ -430,7 +432,7 @@ class _Replay:
 
         tick_value = self.tape.tick[i]
         if tick_value is not None:
-            tick = int(tick_value)
+            tick = as_int(tick_value)
         elif self.last_tick is not None:
             tick = self.last_tick
         else:
@@ -670,7 +672,7 @@ def _seed_fee_growth_replay(
     seed_block = first_block - 1
     pool_state = market_view.pool_state
     if pool_state is not None and pool_state.height > 0:
-        snapshot_block = int(pool_state["block_number"].max())
+        snapshot_block = cast(int, pool_state["block_number"].max())
         if snapshot_block != seed_block:
             raise BacktestError(
                 f"run_backtest: the pool-state snapshot is for block {snapshot_block} "
@@ -808,6 +810,7 @@ def run_backtest(
         # whole window (PLAN §7 "ΔIL definition"), so it does not move when the
         # policy rebalances.  This makes the per-step `il` column and the
         # decomposition reconcile exactly with `excess_vs_hodl`.
+        assert run.initial_position is not None  # deployed before the loop
         hodl_now = run.initial_position.hodl_value(
             run.initial_entry_sqrt, run.initial_entry_price, price
         )
@@ -838,7 +841,9 @@ def run_backtest(
                 total_decisions_hint,
                 str(tape.regime[i] or "unknown"),
             )
-            action = policy.act(observation, rng)
+            # ``BacktestObservation`` is the §11 field set's structural stand-in
+            # (see the module docstring); policies only read those fields.
+            action = policy.act(cast("Observation", observation), rng)
             if not action.is_hold():
                 (
                     new_equity,

@@ -138,6 +138,9 @@ class SimConfig:
         return np.random.default_rng(self.seed)
 
 
+_T = typing.TypeVar("_T")
+
+
 def load_sim_config(path: str | Path) -> SimConfig:
     """Load a ``SimConfig`` from a TOML file.
 
@@ -167,7 +170,7 @@ def load_sim_config(path: str | Path) -> SimConfig:
             f"Unknown config section(s): {', '.join(sorted(unknown))}"
         )
 
-    def _populate(cls: type, data: dict | None) -> object:
+    def _populate(cls: type[_T], data: dict | None) -> _T:
         """Build a frozen dataclass from a dict, falling back to defaults."""
         data = data or {}
         type_hints = typing.get_type_hints(cls)

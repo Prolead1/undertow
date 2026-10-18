@@ -27,6 +27,7 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
+from undertow.sim.coerce import as_int
 from undertow.sim.config import GasConfig
 from undertow.sim.marketview import MarketView
 
@@ -187,10 +188,10 @@ class ReplayGasModel:
         row = self._market_view.gas_at_block(block_number)
         if row is None:
             return 0.0
-        base_fee = int(row["base_fee_per_gas"])
+        base_fee = as_int(row["base_fee_per_gas"])
         # Retained for the contract; `0` in the tape per ADR-005 and ignored by
         # the calculator anyway.
-        priority_fee = int(row.get("priority_fee_p50_wei") or 0)
+        priority_fee = as_int(row.get("priority_fee_p50_wei") or 0)
         return self._calculator.gas_cost_usdc(
             action_type,
             block_number,

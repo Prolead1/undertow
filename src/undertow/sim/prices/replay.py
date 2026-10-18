@@ -8,6 +8,7 @@ Every returned triplet is mutually consistent per ADR-009.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import cast
 
 import numpy as np
 import polars as pl
@@ -95,12 +96,14 @@ class ReplayPriceProcess:
             raise MarketViewError(
                 f"ReplayPriceProcess: no tape rows in [{self._start_seq}, {self._end_seq})"
             )
-        start_time = tape["block_timestamp"].min()
-        end_time = tape["block_timestamp"].max()
-        if start_time is None or end_time is None:
+        start_time_raw = tape["block_timestamp"].min()
+        end_time_raw = tape["block_timestamp"].max()
+        if start_time_raw is None or end_time_raw is None:
             raise MarketViewError("ReplayPriceProcess: episode window has no timestamps")
 
-        bars = window_view.reference_bars(start_time, end_time)
+        bars = window_view.reference_bars(
+            cast(datetime, start_time_raw), cast(datetime, end_time_raw)
+        )
         if bars.height == 0:
             raise MarketViewError(
                 "ReplayPriceProcess: no reference bars cover the episode window"
