@@ -24,9 +24,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+import polars as pl
 import pyarrow as pa
 
 from undertow.data.config import DataConfig, PoolConfig
@@ -72,6 +74,14 @@ LOGGER = logging.getLogger("undertow.data.pipeline")
 
 _LOG_STREAMS: tuple[str, ...] = ("swap", "mint", "burn", "collect")
 """The four log streams the tape unions."""
+
+#: Snapshot-fetch throttling (ADR-018). The boundary snapshot reads ~600-1000
+#: historical ``eth_call``s; small batches plus a minimum interval keep a provider's
+#: CU/s cap from being tripped in a single request, and the retry budget absorbs the
+#: rest. Scoped to :func:`capture_pool_state`; block-range pulls are unaffected.
+_POOL_STATE_BATCH_SIZE: int = 10
+_POOL_STATE_MIN_INTERVAL_S: float = 0.25
+_POOL_STATE_MAX_RETRIES: int = 10
 
 _DEFAULT_STREAMS: tuple[str, ...] = (
     "swap",
@@ -382,6 +392,80 @@ def build(config: DataConfig) -> "Dataset":
         tape=tape,
         gas=gas, reference=reference, regime=regime, fee_growth=fee_growth,
         manifest=manifest,
+    )
+
+
+def capture_pool_state(config: DataConfig) -> StreamPullResult | None:
+    """Capture the exact pool state at each walk-forward split boundary (ADR-018).
+
+    Writes the optional ``fee_growth`` stream: one ``RpcFetcher.pool_state_at``
+    snapshot per lane (global row + every initialized tick), taken at
+    **``first_tape_block - 1``** — ``pool_state_at(B)`` is the state *after* block
+    ``B`` and the backtester replays block ``B``'s rows, so the seed must be the
+    state *before* the window's first event. This is what makes a window that
+    starts mid-lifecycle replayable exactly (positions minted before it are absent
+    from the tape). ``n_requests`` is ``0`` because the facade does not propagate
+    the underlying ``eth_call`` count. Requires the
+    ``WindowConfig`` walk-forward hook (``train_end_utc`` / ``eval_start_utc``); a
+    config without it is a no-op returning ``None``.
+    """
+    window = config.window
+    if (
+        window.start_utc is None
+        or window.end_utc is None
+        or window.train_end_utc is None
+        or window.eval_start_utc is None
+    ):
+        return None
+    dataset = build(config)
+    tape = pl.from_arrow(dataset.tape)
+    blocks: list[int] = []
+    for start, end in (
+        (window.start_utc, window.train_end_utc),
+        (window.eval_start_utc, window.end_utc),
+    ):
+        lane = tape.filter(
+            (pl.col("block_timestamp") >= start) & (pl.col("block_timestamp") < end)
+        )
+        if lane.height:
+            # `pool_state_at(B)` is the state AFTER block B, and the backtester
+            # replays every row from the lane's first block onwards — so seed at
+            # its predecessor, i.e. the state *before* the window's first event.
+            blocks.append(int(lane["block_number"].min()) - 1)
+    if not blocks:
+        return None
+    # The snapshot fetches ~600-1000 historical `eth_call`s; a 100-call batch would
+    # exceed a provider's CU/s cap in one request, so throttle and retry hard here
+    # (scoped to the snapshot; the block-range gas/log pulls are unaffected).
+    endpoints = replace(
+        config.endpoints,
+        min_request_interval_s=max(
+            config.endpoints.min_request_interval_s, _POOL_STATE_MIN_INTERVAL_S
+        ),
+        max_retries=max(config.endpoints.max_retries, _POOL_STATE_MAX_RETRIES),
+    )
+    fetcher = RpcFetcher(endpoints, config.cache_dir, json_rpc_batch_size=_POOL_STATE_BATCH_SIZE)
+    tables = [fetcher.pool_state_at(config.pool, BlockNumber(block)) for block in blocks]
+    combined = pa.concat_tables(tables)
+    sm = write_stream(
+        combined,
+        config.output_dir,
+        "fee_growth",
+        pool=config.pool,
+        route=Route.RPC,
+        n_requests=0,
+        warnings=(),
+    )
+    return StreamPullResult(
+        stream="fee_growth",
+        route=Route.RPC,
+        row_count=combined.num_rows,
+        n_requests=0,
+        from_cache=False,
+        warnings=(),
+        content_hash=sm.content_hash,
+        min_block=sm.min_block,
+        max_block=sm.max_block,
     )
 
 

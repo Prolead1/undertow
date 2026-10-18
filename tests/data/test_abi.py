@@ -37,6 +37,7 @@ from undertow.data.fetchers.abi import (
     SELECTOR_FEE_GROWTH_GLOBAL_1_X128,
     SELECTOR_LIQUIDITY,
     SELECTOR_SLOT0,
+    SELECTOR_TICK_BITMAP,
     SELECTOR_TICKS,
     TOPIC_BURN,
     TOPIC_COLLECT,
@@ -52,6 +53,7 @@ from undertow.data.fetchers.abi import (
     decode_swap,
     decode_ticks_return,
     decode_uint256_return,
+    encode_tick_bitmap_calldata,
     encode_ticks_calldata,
     selectors,
 )
@@ -164,6 +166,7 @@ def test_selectors_recompute() -> None:
         "feeGrowthGlobal0X128()": SELECTOR_FEE_GROWTH_GLOBAL_0_X128,
         "feeGrowthGlobal1X128()": SELECTOR_FEE_GROWTH_GLOBAL_1_X128,
         "ticks(int24)": SELECTOR_TICKS,
+        "tickBitmap(int16)": SELECTOR_TICK_BITMAP,
     }
     assert methods == selectors()
 
@@ -382,6 +385,16 @@ def test_uint256_and_liquidity_returns_exact() -> None:
     g0 = decode_uint256_return(fx["feeGrowthGlobal0X128"])
     assert g0 == 245472016230501318647318615910821729000
     assert decode_liquidity_return(fx["liquidity"]) == 15_000_000_000_000_000_000
+
+
+def test_encode_tick_bitmap_calldata() -> None:
+    word = encode_tick_bitmap_calldata(12)
+    assert word[:10] == SELECTOR_TICK_BITMAP
+    assert int(word[10:], 16) == 12
+    # Negative int16 (the word can be negative for low negative ticks).
+    assert int(encode_tick_bitmap_calldata(-58)[10:], 16) == (1 << 256) - 58
+    with pytest.raises(SchemaViolationError):
+        encode_tick_bitmap_calldata(1 << 15)  # does not fit int16
 
 
 def test_encode_ticks_calldata() -> None:

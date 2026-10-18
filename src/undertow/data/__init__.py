@@ -92,6 +92,7 @@ __all__ = [
     "load_reference_feed",
     "load_gas_feed",
     "load_regime_labels",
+    "load_fee_growth",
     # === ADR-013 extension (exact fee-growth replay for the backtester) ===
     # A deliberate, ADR-documented additive export: the sim reaches the exact
     # integer fee-growth engine through this facade, never through
@@ -132,6 +133,7 @@ from undertow.data.fixedpoint import (
 )
 from undertow.data.loader import (
     load_dataset,
+    load_fee_growth,
     load_gas_feed,
     load_reference_feed,
     load_regime_labels,

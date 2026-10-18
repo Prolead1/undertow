@@ -26,6 +26,12 @@ deployment_block = 12370624  # pool factory creation (verified on-chain)
 # T07's block index (last block with timestamp <= end_utc); end_utc is inclusive.
 start_utc = "2022-01-01T00:00:00Z"
 end_utc = "2024-12-31T23:59:59Z"
+# Walk-forward split hook (recorded in the manifest; drives the `pool-state` snapshot at each
+# lane's first block so the backtester can seed its exact fee engine at a mid-lifecycle window).
+# Only the lane STARTS matter: the eval lane starts at `eval_start_utc`, and the train lane at the
+# window start, so `train_end_utc` need not equal the sim's `SplitConfig.train_end_utc`.
+train_end_utc = "2024-01-01T00:00:00Z"
+eval_start_utc = "2024-01-01T00:00:00Z"
 
 [regime]
 # Pre-committed thresholds (PLAN.md §7); sweepable via T12's sensitivity_sweep.

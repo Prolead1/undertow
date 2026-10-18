@@ -19,7 +19,7 @@ import pyarrow as pa
 
 from undertow.data.config import DataConfig, EndpointConfig, RegimeConfig, load_config
 from undertow.data.pipeline import build
-from undertow.data.schemas import SORT_KEYS
+from undertow.data.schemas import FEE_GROWTH_SCHEMA, SORT_KEYS
 from undertow.data.storage.manifest import read_manifest
 from undertow.data.transforms.align import Dataset
 
@@ -136,3 +136,19 @@ def load_regime_labels(config: DataConfig) -> pa.Table:
     """Load the regime labels (``REGIME_SCHEMA``), sorted by ``timestamp``."""
     dataset = load_dataset(config, streams=frozenset({"regime"}))
     return _sorted(dataset.require("regime"), "regime")
+
+
+def load_fee_growth(config: DataConfig) -> pa.Table:
+    """Load the pool-state snapshots (``FEE_GROWTH_SCHEMA``), sorted by ``(block_number, tick)``.
+
+    Unlike the other feeds this one is genuinely optional: a dataset built without
+    the RPC boundary snapshot has no ``fee_growth`` stream, so this returns a typed
+    **empty** table and callers fall back to a zero seed. Each snapshot block
+    carries one global sentinel row plus one row per initialized tick — the exact
+    pool state needed to seed the backtester's fee-growth engine at a window edge
+    (its positions were minted before the window and are absent from the tape).
+    """
+    dataset = load_dataset(config, streams=frozenset({"fee_growth"}))
+    if dataset.fee_growth is None:
+        return FEE_GROWTH_SCHEMA.empty_table()
+    return _sorted(dataset.fee_growth, "fee_growth")

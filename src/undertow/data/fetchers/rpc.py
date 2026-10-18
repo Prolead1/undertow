@@ -72,7 +72,13 @@ from pathlib import Path
 import pyarrow as pa
 import requests
 
-from undertow.data.config import GLOBAL_TICK_SENTINEL, EndpointConfig, PoolConfig
+from undertow.data.config import (
+    GLOBAL_TICK_SENTINEL,
+    MAX_TICK,
+    MIN_TICK,
+    EndpointConfig,
+    PoolConfig,
+)
 from undertow.data.fetchers.abi import (
     SELECTOR_FEE_GROWTH_GLOBAL_0_X128,
     SELECTOR_FEE_GROWTH_GLOBAL_1_X128,
@@ -92,6 +98,7 @@ from undertow.data.fetchers.abi import (
     decode_swap,
     decode_ticks_return,
     decode_uint256_return,
+    encode_tick_bitmap_calldata,
     encode_ticks_calldata,
 )
 from undertow.data.fetchers.base import (
@@ -320,6 +327,88 @@ class RpcFetcher(BaseHttpFetcher):
         table = pa.Table.from_pylist(rows, schema=FEE_GROWTH_SCHEMA)
         validate_table(table, FEE_GROWTH_SCHEMA)
         return table
+
+    def pool_state_at(self, pool: PoolConfig, block: BlockNumber) -> pa.Table:
+        """Snapshot the pool's complete fee-growth/liquidity state at ``block``.
+
+        Enumerates **every initialized tick** from the pool's ``tickBitmap`` and
+        returns a full ``FEE_GROWTH_SCHEMA`` table: one global sentinel row plus
+        one row per initialized tick. This is what seeds the exact fee engine at
+        the start of a backtest window whose positions were minted before the
+        window (the event tape alone cannot reconstruct the opening lattice).
+        """
+        if pool is None:
+            raise FetchError("pool_state_at: a pool is required (fee growth is pool-scoped)")
+        if int(block) <= 0:
+            raise FetchError(f"pool_state_at: block must be > 0, got {block}")
+        self._assert_confirmed(block)
+        ticks = self._initialized_ticks(pool, int(block))
+        rows = self._fee_growth_rows(pool, int(block), ticks)
+        table = pa.Table.from_pylist(rows, schema=FEE_GROWTH_SCHEMA)
+        validate_table(table, FEE_GROWTH_SCHEMA)
+        return table
+
+    def _initialized_ticks(self, pool: PoolConfig, block: int) -> list[int]:
+        """Every initialized tick in the pool's bitmap at ``block`` (ascending).
+
+        Scans all bitmap words covering the full ``[MIN_TICK, MAX_TICK]`` range
+        (116 words for the pinned 0.3% pool, whose spacing is 60), so no
+        initialized tick — including full-range positions at the sentinels — is
+        missed. Empty words cost one cheap ``eth_call`` each.
+        """
+        spacing = int(pool.tick_spacing)
+        min_word = (MIN_TICK // spacing) // 256
+        max_word = (MAX_TICK // spacing) // 256
+        word_positions = list(range(min_word, max_word + 1))
+        words = self._tick_bitmap_words(str(pool.address), block, word_positions)
+        ticks: list[int] = []
+        for word_pos in word_positions:
+            word = words.get(word_pos, 0)
+            while word:
+                bit = (word & -word).bit_length() - 1
+                ticks.append((word_pos * 256 + bit) * spacing)
+                word &= word - 1
+        return ticks
+
+    def _tick_bitmap_words(
+        self, pool_address: str, block: int, word_positions: list[int]
+    ) -> dict[int, int]:
+        """``{word_pos: 256-bit bitmap word}`` at ``block`` (cached)."""
+        path = self._bitmap_cache_path(pool_address, block, word_positions)
+        cached = self._read_json_gzip(path)
+        if isinstance(cached, dict):
+            return {int(k): int(v) for k, v in cached.items()}
+        entries = [
+            (
+                "eth_call",
+                [{"to": pool_address, "data": encode_tick_bitmap_calldata(w)}, hex(block)],
+                f"tickBitmap({w})",
+            )
+            for w in word_positions
+        ]
+        results: list[object] = []
+        for i in range(0, len(entries), self._batch_size):
+            results.extend(
+                self._jsonrpc_batch(
+                    entries[i : i + self._batch_size],
+                    batch_context=f"pool_state_at(block={block})",
+                )
+            )
+        if len(results) != len(entries):
+            raise PermanentFetchError(
+                f"pool_state_at(block={block}): expected {len(entries)} bitmap results, "
+                f"got {len(results)}"
+            )
+        words = {
+            w: decode_uint256_return(str(r))
+            for w, r in zip(word_positions, results, strict=True)
+        }
+        self._write_json_gzip(
+            path,
+            {"pool": pool_address, "block": block, "words": word_positions},
+            {str(k): str(v) for k, v in words.items()},
+        )
+        return words
 
     # ------------------------------------------------------------------
     # Base contract implementation
@@ -614,53 +703,69 @@ class RpcFetcher(BaseHttpFetcher):
                 {"jsonrpc": _JSONRPC_VERSION, "id": rid, "method": method, "params": params}
             )
 
-        try:
-            raw = self._with_jsonrpc_retry(
-                lambda: self._post_jsonrpc(calls, batch_context), batch_context
-            )
-        except PermanentFetchError as exc:
-            if self._batch_unsupported(str(exc)):
-                return [self._jsonrpc(m, p, c) for m, p, c in entries]
-            raise
+        attempt = 0
+        while True:
+            try:
+                raw = self._with_jsonrpc_retry(
+                    lambda: self._post_jsonrpc(calls, batch_context), batch_context
+                )
+            except PermanentFetchError as exc:
+                if self._batch_unsupported(str(exc)):
+                    return [self._jsonrpc(m, p, c) for m, p, c in entries]
+                raise
 
-        if not isinstance(raw, list):
-            raise PermanentFetchError(
-                f"{batch_context}: JSON-RPC batch response must be a list, got "
-                f"{type(raw).__name__}"
-            )
-        results_by_id: dict[int, object] = {}
-        for item in raw:
-            if not isinstance(item, dict) or "id" not in item:
-                raise PermanentFetchError(f"{batch_context}: malformed batch item {item!r}")
-            rid = item["id"]
-            if not isinstance(rid, int):
+            if not isinstance(raw, list):
                 raise PermanentFetchError(
-                    f"{batch_context}: batch response id {rid!r} is not an integer "
-                    "(the ids this client sends are integers)"
+                    f"{batch_context}: JSON-RPC batch response must be a list, got "
+                    f"{type(raw).__name__}"
                 )
-            entry = by_id.get(rid)
-            if entry is None:
+            results_by_id: dict[int, object] = {}
+            transient: RateLimitError | TransientNetworkError | None = None
+            try:
+                for item in raw:
+                    if not isinstance(item, dict) or "id" not in item:
+                        raise PermanentFetchError(
+                            f"{batch_context}: malformed batch item {item!r}"
+                        )
+                    rid = item["id"]
+                    if not isinstance(rid, int):
+                        raise PermanentFetchError(
+                            f"{batch_context}: batch response id {rid!r} is not an integer "
+                            "(the ids this client sends are integers)"
+                        )
+                    entry = by_id.get(rid)
+                    if entry is None:
+                        raise PermanentFetchError(
+                            f"{batch_context}: batch response carried id {rid!r} which "
+                            "this request did not send"
+                        )
+                    if item.get("error") is not None:
+                        method, params, context = entry
+                        # Name the failing call precisely: the per-entry ``context``
+                        # is "ticks(196238)" / "slot0()" ... — the params shorthand
+                        # alone truncates the calldata and would hide which call.
+                        self._classify_jsonrpc_error(
+                            item["error"],
+                            f"{batch_context}: {context} "
+                            f"({method} {_params_shorthand(params)})",
+                        )
+                    results_by_id[rid] = item.get("result")
+            except (RateLimitError, TransientNetworkError) as exc:
+                # A per-item transient error (e.g. provider CU/s throttling on one
+                # call in the batch) is retryable; re-send the whole batch.
+                transient = exc
+            if transient is not None:
+                self._handle_transient(transient, attempt)
+                attempt += 1
+                continue
+
+            missing = [str(call_id) for call_id in call_ids if call_id not in results_by_id]
+            if missing:
                 raise PermanentFetchError(
-                    f"{batch_context}: batch response carried id {rid!r} which this "
-                    "request did not send"
+                    f"{batch_context}: batch response missing result(s) for id(s) "
+                    + ", ".join(missing)
                 )
-            if item.get("error") is not None:
-                method, params, context = entry
-                # Name the failing call precisely: the per-entry ``context`` is
-                # "ticks(196238)" / "slot0()" ... — the params shorthand alone
-                # truncates the calldata and would hide which call failed.
-                self._classify_jsonrpc_error(
-                    item["error"],
-                    f"{batch_context}: {context} ({method} {_params_shorthand(params)})",
-                )
-            results_by_id[rid] = item.get("result")
-        missing = [str(call_id) for call_id in call_ids if call_id not in results_by_id]
-        if missing:
-            raise PermanentFetchError(
-                f"{batch_context}: batch response missing result(s) for id(s) "
-                + ", ".join(missing)
-            )
-        return [results_by_id[call_id] for call_id in call_ids]  # input order
+            return [results_by_id[call_id] for call_id in call_ids]  # input order
 
     def _batch_unsupported(self, message: str) -> bool:
         needle = message.lower()
@@ -865,29 +970,34 @@ class RpcFetcher(BaseHttpFetcher):
         key = self._fg_cache_key(pool_address, block, ticks)
         return self._cache_dir / "rpc" / "fee_growth" / f"{key}.json.gz"
 
-    def _fg_cache_read(
-        self, pool: PoolConfig, block: int, ticks: list[int]
-    ) -> list[dict] | None:
-        path = self._fg_cache_path(str(pool.address), block, ticks)
+    def _bitmap_cache_path(
+        self, pool_address: str, block: int, word_positions: list[int]
+    ) -> Path:
+        key = self.cache_key(
+            self.route,
+            "tick_bitmap",
+            {"pool": pool_address, "block": block, "words": [int(w) for w in word_positions]},
+        )
+        return self._cache_dir / "rpc" / "tick_bitmap" / f"{key}.json.gz"
+
+    def _read_json_gzip(self, path: Path) -> object | None:
+        """Read a gzip-JSON cache envelope's ``body`` (``None`` on miss/corruption)."""
         if not path.exists():
             return None
         try:
             with gzip.open(path, "rb") as fh:
                 envelope = json.loads(fh.read().decode("utf-8"))
         except Exception as exc:  # pragma: no cover - defensive, corrupt local file
-            LOGGER.warning("corrupt fee_growth cache entry %s (%s); treating as miss", path, exc)
+            LOGGER.warning("corrupt cache entry %s (%s); treating as miss", path, exc)
             return None
-        body = envelope.get("body") if isinstance(envelope, dict) else None
-        return body if isinstance(body, list) else None
+        return envelope.get("body") if isinstance(envelope, dict) else None
 
-    def _fg_cache_write(
-        self, pool: PoolConfig, block: int, ticks: list[int], rows: list[dict]
-    ) -> None:
-        path = self._fg_cache_path(str(pool.address), block, ticks)
+    def _write_json_gzip(self, path: Path, params: dict[str, object], body: object) -> None:
+        """Atomically write a gzip-JSON cache envelope."""
         envelope = {
-            "params": {"pool": str(pool.address), "block": block, "ticks": ticks},
+            "params": params,
             "fetched_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
-            "body": rows,
+            "body": body,
         }
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
@@ -898,6 +1008,21 @@ class RpcFetcher(BaseHttpFetcher):
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise
+
+    def _fg_cache_read(
+        self, pool: PoolConfig, block: int, ticks: list[int]
+    ) -> list[dict] | None:
+        body = self._read_json_gzip(self._fg_cache_path(str(pool.address), block, ticks))
+        return body if isinstance(body, list) else None
+
+    def _fg_cache_write(
+        self, pool: PoolConfig, block: int, ticks: list[int], rows: list[dict]
+    ) -> None:
+        self._write_json_gzip(
+            self._fg_cache_path(str(pool.address), block, ticks),
+            {"pool": str(pool.address), "block": block, "ticks": ticks},
+            rows,
+        )
 
     def _fee_growth_fetch(
         self, pool: PoolConfig, block: int, ticks: list[int]

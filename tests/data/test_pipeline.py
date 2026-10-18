@@ -7,19 +7,22 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import polars as pl
 import pyarrow as pa
 import pytest
 
 from tests.data.conftest import TinyDataset
-from undertow.data.config import DataConfig
+from undertow.data.config import GLOBAL_TICK_SENTINEL, DataConfig, WindowConfig
 from undertow.data.fetchers.base import FetchRequest, FetchResult
 from undertow.data.pipeline import (
     _DEFAULT_STREAMS,
     _config_with_output_dir,
     build,
+    capture_pool_state,
     info,
     pull,
     snapshot,
@@ -465,6 +468,98 @@ def test_build_threads_reference_symbol(tmp_path: Path, tiny_dataset: TinyDatase
         build(cfg)
     # The kwarg must be present (a deleted wiring line omits it) and equal the config.
     assert captured.get("reference_symbol") == cfg.reference_symbol
+
+
+def test_capture_pool_state_is_none_without_the_split_hook(
+    tmp_path: Path, tiny_dataset: TinyDataset
+) -> None:
+    # The tiny window is block-mode, so the walk-forward hook is unset → no-op.
+    cfg = _write_tiny_streams(tiny_dataset, tmp_path / "out")
+    assert capture_pool_state(cfg) is None
+
+
+def _fee_growth_snapshot(pool: object, block: int) -> pa.Table:
+    from undertow.data.schemas import FEE_GROWTH_SCHEMA
+
+    return pa.Table.from_pylist(
+        [
+            {
+                "block_number": block,
+                "tick": GLOBAL_TICK_SENTINEL,
+                "fee_growth_outside_0_x128": None,
+                "fee_growth_outside_1_x128": None,
+                "liquidity_gross": "0",
+                "liquidity_net": "0",
+                "initialized": False,
+                "fee_growth_global_0_x128": "0",
+                "fee_growth_global_1_x128": "0",
+                "current_tick": 0,
+                "current_liquidity": "0",
+                "source": "rpc_call",
+                "pool_address": str(pool.address),  # type: ignore[attr-defined]
+                "fee_protocol": 0,
+            }
+        ],
+        schema=FEE_GROWTH_SCHEMA,
+    )
+
+
+def test_capture_pool_state_snapshots_at_first_block_minus_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tiny_dataset: TinyDataset
+) -> None:
+    cfg = _write_tiny_streams(tiny_dataset, tmp_path / "out")
+    tape = pl.from_arrow(build(cfg).tape)
+    lo = tape["block_timestamp"].min()
+    hi = tape["block_timestamp"].max()
+    assert lo is not None and hi is not None
+    mid = lo + (hi - lo) / 2
+    cfg = replace(
+        cfg,
+        window=WindowConfig(
+            start_utc=lo, end_utc=hi, train_end_utc=mid, eval_start_utc=mid
+        ),
+    )
+
+    def first_seed_block(lo: datetime, hi: datetime) -> int:
+        lane = tape.filter(
+            (pl.col("block_timestamp") >= lo) & (pl.col("block_timestamp") < hi)
+        )
+        return int(lane["block_number"].min()) - 1
+
+    expected = [
+        first_seed_block(cfg.window.start_utc, cfg.window.train_end_utc),  # type: ignore[arg-type]
+        first_seed_block(cfg.window.eval_start_utc, cfg.window.end_utc),  # type: ignore[arg-type]
+    ]
+    seen: list[int] = []
+
+    def fake_pool_state_at(self: object, pool: object, block: object) -> pa.Table:
+        seen.append(int(block))
+        return _fee_growth_snapshot(pool, int(block))
+
+    monkeypatch.setattr(
+        "undertow.data.pipeline.RpcFetcher.pool_state_at", fake_pool_state_at
+    )
+    result = capture_pool_state(cfg)
+    assert result is not None
+    assert seen == expected
+
+
+def test_load_fee_growth_is_typed_empty_when_the_stream_is_absent(
+    tmp_path: Path, tiny_dataset: TinyDataset
+) -> None:
+    import shutil
+
+    from undertow.data.loader import load_fee_growth
+    from undertow.data.schemas import FEE_GROWTH_SCHEMA
+
+    cfg = _write_tiny_streams(tiny_dataset, tmp_path / "out")
+    shutil.rmtree(
+        tmp_path / "out" / f"pool={tiny_dataset.pool.address}" / "stream=fee_growth",
+        ignore_errors=True,
+    )
+    table = load_fee_growth(cfg)
+    assert table.num_rows == 0
+    assert table.schema == FEE_GROWTH_SCHEMA
 
 
 def test_config_with_output_dir_preserves_extensions(

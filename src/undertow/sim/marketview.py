@@ -15,6 +15,7 @@ only through the top-level ``undertow.data`` public API
 from __future__ import annotations
 
 import bisect
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
@@ -25,6 +26,7 @@ import polars as pl
 from undertow.data import (
     DataConfig,
     PoolConfig,
+    load_fee_growth,
     load_gas_feed,
     load_reference_feed,
     load_regime_labels,
@@ -34,6 +36,8 @@ from undertow.sim.config import EpisodeConfig, SplitConfig
 from undertow.sim.types import LookAheadError, MarketViewError, Regime
 
 __all__ = ["MarketView", "build_market_view"]
+
+LOGGER = logging.getLogger("undertow.sim.marketview")
 
 SplitName = Literal["train", "eval"]
 
@@ -100,6 +104,17 @@ class MarketView:
     #: hand-built views may leave it ``None`` and the backtester falls back to
     #: a pool derived from ``SimConfig.episode``.
     pool: PoolConfig | None = None
+    #: Pool-state snapshot (``FEE_GROWTH_SCHEMA`` as polars) for the active split's
+    #: first block — specifically the state **before** its first event
+    #: (``first_block - 1``): one global row plus one row per initialized tick.
+    #: Seeds the backtester's exact fee-growth engine when the window starts
+    #: mid-lifecycle (positions minted before it are absent from the tape). ``None``
+    #: for hand-built views or datasets without the boundary snapshot.
+    pool_state: pl.DataFrame | None = None
+    #: Tape rows *before* the active window, kept when a full lane is :meth:`slice`d
+    #: so the backtester can warm its exact fee engine from the lane-start
+    #: ``pool_state`` to the window start (ADR-018). ``None`` for a full lane.
+    warmup: pl.DataFrame | None = None
 
     # ------------------------------------------------------------------
     # Invariants (CONTRACTS §4.1)
@@ -201,6 +216,14 @@ class MarketView:
         if sub_start is None or sub_end is None:
             raise MarketViewError("slice produced rows with no block_timestamp")
 
+        # Keep the parent lane's rows before this window so the backtester can
+        # warm its exact fee engine from the lane-start pool_state.
+        prior = active.filter(pl.col("seq") < start_seq)
+        if self.warmup is not None and self.warmup.height:
+            warmup = pl.concat([self.warmup, prior]) if prior.height else self.warmup
+        else:
+            warmup = prior if prior.height else None
+
         if self.is_train:
             return MarketView(
                 train=sub,
@@ -215,6 +238,8 @@ class MarketView:
                 is_train=True,
                 episode_config=self.episode_config,
                 pool=self.pool,
+                pool_state=self.pool_state,
+                warmup=warmup,
             )
         return MarketView(
             train=None,
@@ -229,6 +254,8 @@ class MarketView:
             is_train=False,
             episode_config=self.episode_config,
             pool=self.pool,
+            pool_state=self.pool_state,
+            warmup=warmup,
         )
 
     def tape_at(self, seq: int) -> dict[str, object]:
@@ -422,9 +449,32 @@ def build_market_view(
     reference = _sort(_to_polars(load_reference_feed(data_config)), ["open_time"])
     gas = _sort(_to_polars(load_gas_feed(data_config)), ["block_number"])
     regimes = _sort(_to_polars(load_regime_labels(data_config)), ["timestamp"])
+    fee_growth = _sort(_to_polars(load_fee_growth(data_config)), ["block_number", "tick"])
     # One series, always: the feed carries the primary + cross-check symbols.
     reference = _select_primary_symbol(reference, data_config.reference_symbol, "reference")
     regimes = _select_primary_symbol(regimes, data_config.reference_symbol, "regime")
+
+    def _state_at(active: pl.DataFrame) -> pl.DataFrame | None:
+        """The pool-state snapshot for ``active``'s first block (or ``None``).
+
+        The seed block is ``first_block - 1``: a snapshot at block ``B`` is the
+        state *after* ``B``, and the backtester replays block ``B``'s events, so
+        seeding at ``B`` would double-apply them.
+        """
+        if fee_growth.height == 0 or "block_number" not in fee_growth.columns:
+            return None
+        seed_block = int(active["block_number"].min()) - 1
+        exact = fee_growth.filter(pl.col("block_number") == seed_block)
+        if exact.height == 0:
+            LOGGER.warning(
+                "build_market_view: a fee_growth stream is present but has no "
+                "snapshot at block %d (the active split's first block minus one); "
+                "the backtester will fall back to an empty lattice. Re-run "
+                "`undertow-data pool-state` after changing the split.",
+                seed_block,
+            )
+            return None
+        return exact
 
     if split == "train":
         start, end = split_config.train_start_utc, split_config.train_end_utc
@@ -446,6 +496,7 @@ def build_market_view(
             is_train=True,
             episode_config=episode_config,
             pool=data_config.pool,
+            pool_state=_state_at(active),
         )
 
     start, end = split_config.eval_start_utc, split_config.eval_end_utc
@@ -465,4 +516,5 @@ def build_market_view(
         is_train=False,
         episode_config=episode_config,
         pool=data_config.pool,
+        pool_state=_state_at(active),
     )

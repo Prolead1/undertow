@@ -24,6 +24,8 @@ deployment_block = 12376729  # pool factory creation (verified on-chain)
 [window]
 start_utc = "2022-01-01T00:00:00Z"
 end_utc = "2024-12-31T23:59:59Z"
+train_end_utc = "2024-01-01T00:00:00Z"
+eval_start_utc = "2024-01-01T00:00:00Z"
 
 [regime]
 lookback_days = 30

@@ -99,6 +99,7 @@ SELECTOR_LIQUIDITY: Final[str] = "0x1a686502"  # liquidity()
 SELECTOR_FEE_GROWTH_GLOBAL_0_X128: Final[str] = "0xf3058399"  # feeGrowthGlobal0X128()
 SELECTOR_FEE_GROWTH_GLOBAL_1_X128: Final[str] = "0x46141319"  # feeGrowthGlobal1X128()
 SELECTOR_TICKS: Final[str] = "0xf30dba93"  # ticks(int24)
+SELECTOR_TICK_BITMAP: Final[str] = "0x5339c296"  # tickBitmap(int16)
 
 # Number of 32-byte words each event's `data` payload carries: the count of the
 # event's NON-indexed parameters, in declaration order.
@@ -535,6 +536,20 @@ def encode_ticks_calldata(tick: int) -> str:
     return SELECTOR_TICKS + word
 
 
+def encode_tick_bitmap_calldata(word_pos: int) -> str:
+    """Calldata for ``tickBitmap(int16)`` at ``word_pos``.
+
+    ``word_pos`` is the bitmap word index (``compressed_tick // 256``), an int16.
+    Like :func:`encode_ticks_calldata`, the argument is sign-extended to 32 bytes.
+    """
+    if not -(1 << 15) <= word_pos < (1 << 15):
+        raise SchemaViolationError(
+            f"encode_tick_bitmap_calldata: word_pos {word_pos} does not fit in int16"
+        )
+    word = (word_pos & ((1 << 256) - 1)).to_bytes(32, "big").hex()
+    return SELECTOR_TICK_BITMAP + word
+
+
 def selectors() -> dict[str, str]:
     """Map method name -> calldata selector (used by the tests and fee_growth_at)."""
     return {
@@ -543,4 +558,5 @@ def selectors() -> dict[str, str]:
         "feeGrowthGlobal0X128()": SELECTOR_FEE_GROWTH_GLOBAL_0_X128,
         "feeGrowthGlobal1X128()": SELECTOR_FEE_GROWTH_GLOBAL_1_X128,
         "ticks(int24)": SELECTOR_TICKS,
+        "tickBitmap(int16)": SELECTOR_TICK_BITMAP,
     }

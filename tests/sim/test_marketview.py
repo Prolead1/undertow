@@ -6,13 +6,14 @@ fixture values, and the ``build_episode`` invariants from ``CONTRACTS.md`` §4.1
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
 import pytest
 
-from undertow.data import DataConfig
+from undertow.data import FEE_GROWTH_SCHEMA, DataConfig
 from undertow.sim.config import EpisodeConfig, SplitConfig
 from undertow.sim.marketview import MarketView, build_market_view
 from undertow.sim.types import LookAheadError, MarketViewError
@@ -43,6 +44,8 @@ def _patch_loaders(monkeypatch: pytest.MonkeyPatch, view: MarketView) -> None:
     monkeypatch.setattr(mv, "load_reference_feed", lambda cfg: view.reference.to_arrow())
     monkeypatch.setattr(mv, "load_gas_feed", lambda cfg: view.gas.to_arrow())
     monkeypatch.setattr(mv, "load_regime_labels", lambda cfg: view.regimes.to_arrow())
+    # No boundary snapshot in the synthetic fixtures → empty (pool_state is None).
+    monkeypatch.setattr(mv, "load_fee_growth", lambda cfg: FEE_GROWTH_SCHEMA.empty_table())
 
 
 def _train_view_with_bounds(view: MarketView, start: datetime, end: datetime) -> MarketView:
@@ -655,3 +658,73 @@ class TestTinyFixture:
     def test_fixture_data_config(self, tiny_data_config: DataConfig) -> None:
         assert tiny_data_config.pool.token0_symbol == "USDC"
         assert tiny_data_config.pool.token1_symbol == "WETH"
+
+def test_slice_propagates_pool_state(tiny_market_view: MarketView) -> None:
+    state = pl.DataFrame({"block_number": [0], "tick": [0]})
+    view = replace(tiny_market_view, pool_state=state)
+    sub = view.slice(0, 100)
+    assert sub.pool_state is not None
+    assert sub.pool_state.equals(state)
+
+
+def _fee_growth_frame(blocks: list[int], pool_address: str) -> pl.DataFrame:
+    count = len(blocks)
+    return pl.DataFrame(
+        {
+            "block_number": blocks,
+            "tick": [-(2**31)] * count,
+            "fee_growth_outside_0_x128": [None] * count,
+            "fee_growth_outside_1_x128": [None] * count,
+            "liquidity_gross": ["0"] * count,
+            "liquidity_net": ["0"] * count,
+            "initialized": [False] * count,
+            "fee_growth_global_0_x128": ["0"] * count,
+            "fee_growth_global_1_x128": ["0"] * count,
+            "current_tick": [0] * count,
+            "current_liquidity": ["0"] * count,
+            "source": ["rpc_call"] * count,
+            "pool_address": [pool_address] * count,
+            "fee_protocol": [0] * count,
+        }
+    )
+
+
+def test_build_market_view_selects_the_seed_block_before_the_first_event(
+    monkeypatch: pytest.MonkeyPatch,
+    tiny_data_config: DataConfig,
+    tiny_market_view: MarketView,
+) -> None:
+    import undertow.sim.marketview as mv
+
+    _patch_loaders(monkeypatch, tiny_market_view)
+    first = int(tiny_market_view.train["block_number"].min())
+    frame = _fee_growth_frame([first, first - 1], str(tiny_data_config.pool.address))
+    monkeypatch.setattr(mv, "load_fee_growth", lambda cfg: frame)
+    view = build_market_view(tiny_data_config, _TINY_SPLIT)
+    assert view.pool_state is not None
+    assert view.pool_state["block_number"].to_list() == [first - 1]
+
+
+def test_build_market_view_warns_when_only_the_wrong_seed_block_is_present(
+    monkeypatch: pytest.MonkeyPatch,
+    tiny_data_config: DataConfig,
+    tiny_market_view: MarketView,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import undertow.sim.marketview as mv
+
+    _patch_loaders(monkeypatch, tiny_market_view)
+    first = int(tiny_market_view.train["block_number"].min())
+    frame = _fee_growth_frame([first], str(tiny_data_config.pool.address))
+    monkeypatch.setattr(mv, "load_fee_growth", lambda cfg: frame)
+    with caplog.at_level(logging.WARNING, logger="undertow.sim.marketview"):
+        view = build_market_view(tiny_data_config, _TINY_SPLIT)
+    assert view.pool_state is None
+    assert any("no snapshot" in record.message for record in caplog.records)
+
+
+def test_slice_composes_warmup_across_nested_slices(tiny_market_view: MarketView) -> None:
+    sub = tiny_market_view.slice(100, 300).slice(150, 250)
+    assert sub.warmup is not None
+    assert sub.warmup.height == 150
+    assert sub.warmup["seq"].to_list() == list(range(150))

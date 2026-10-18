@@ -523,8 +523,8 @@ def test_load_config_round_trip_real_configs(
     assert cfg.window.end_block is None
     assert cfg.window.start_utc == datetime(2022, 1, 1, tzinfo=UTC)
     assert cfg.window.end_utc == datetime(2024, 12, 31, 23, 59, 59, tzinfo=UTC)
-    assert cfg.window.train_end_utc is None
-    assert cfg.window.eval_start_utc is None
+    assert cfg.window.train_end_utc == datetime(2024, 1, 1, tzinfo=UTC)
+    assert cfg.window.eval_start_utc == datetime(2024, 1, 1, tzinfo=UTC)
     assert cfg.regime == RegimeConfig(
         lookback_days=30, vol_threshold=0.8, drift_threshold=0.05, periods_per_year=525600
     )
