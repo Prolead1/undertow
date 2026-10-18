@@ -18,6 +18,7 @@ import bisect
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Literal, cast
 
 import numpy as np
@@ -26,6 +27,7 @@ import polars as pl
 from undertow.data import (
     DataConfig,
     PoolConfig,
+    load_data_config,
     load_fee_growth,
     load_gas_feed,
     load_reference_feed,
@@ -35,7 +37,7 @@ from undertow.data import (
 from undertow.sim.config import EpisodeConfig, SplitConfig
 from undertow.sim.types import LookAheadError, MarketViewError, Regime
 
-__all__ = ["MarketView", "build_market_view"]
+__all__ = ["MarketView", "build_market_view", "load_market_view"]
 
 LOGGER = logging.getLogger("undertow.sim.marketview")
 
@@ -432,6 +434,29 @@ def _select_primary_symbol(frame: pl.DataFrame, configured: str, stream: str) ->
             f"configured reference_symbol {configured!r} is not among them"
         )
     return frame.filter(pl.col("symbol") == configured)
+
+
+def load_market_view(
+    data_config_path: str | Path,
+    split_config: SplitConfig,
+    *,
+    split: str = "train",
+    episode_config: EpisodeConfig | None = None,
+) -> MarketView:
+    """Load a built dataset snapshot into a :class:`MarketView`.
+
+    The simulator never fetches, so the endpoint ``${ENV_VAR}`` placeholders are
+    left unexpanded (``expand_endpoints=False``): reading a dataset must not
+    require ``GRAPH_API_KEY``/``ETH_RPC_URL``.  ``split`` is validated by
+    :func:`build_market_view`; this wrapper only narrows the type.
+    """
+    data_config = load_data_config(data_config_path, expand_endpoints=False)
+    return build_market_view(
+        data_config,
+        split_config,
+        split=cast(SplitName, split),
+        episode_config=episode_config,
+    )
 
 
 def build_market_view(

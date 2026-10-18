@@ -176,6 +176,7 @@ class TrainingConfig:
     total_timesteps: int = 1_000_000
     checkpoint_freq_steps: int = 100_000
     log_freq_steps: int = 10_000
+    vec_env: Literal["dummy", "subproc"] = "dummy"  # ADR-022: per-slot process in "subproc"
 
 @dataclass(frozen=True, slots=True)
 class BacktestConfig:

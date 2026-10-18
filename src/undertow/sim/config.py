@@ -111,6 +111,16 @@ class TrainingConfig:
     total_timesteps: int = 1_000_000
     checkpoint_freq_steps: int = 100_000
     log_freq_steps: int = 10_000
+    #: Vector-env backend.  ``"subproc"`` runs each ``parallel_envs`` slot in
+    #: its own process (true multicore replay); ``"dummy"`` steps them
+    #: sequentially in-process and is what synthetic/test views use.
+    vec_env: Literal["dummy", "subproc"] = "dummy"
+
+    def __post_init__(self) -> None:
+        if self.vec_env not in ("dummy", "subproc"):
+            raise SimConfigError(
+                f"training.vec_env must be 'dummy' or 'subproc', got {self.vec_env!r}"
+            )
 
 
 @dataclass(frozen=True, slots=True)

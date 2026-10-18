@@ -31,10 +31,8 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from undertow.data import load_data_config
 from undertow.sim.backtest import BacktestLedger, BacktestResult, run_backtest, summarize_backtest
 from undertow.sim.config import SimConfig, load_sim_config
-from undertow.sim.core.pool import PoolEngine, PoolState
 from undertow.sim.env import LpEnvironment
 from undertow.sim.evaluate import (
     METRIC_NAMES,
@@ -45,12 +43,8 @@ from undertow.sim.evaluate import (
     run_regime_evaluation,
     write_results,
 )
-from undertow.sim.frictions import (
-    FlatGasModel,
-    ProportionalSlippageModel,
-    ReplayGasModel,
-)
-from undertow.sim.marketview import MarketView, build_market_view
+from undertow.sim.frictions import FlatGasModel
+from undertow.sim.marketview import MarketView, load_market_view
 from undertow.sim.policies import (
     CostAwareRebalancePolicy,
     FullRangeV2Policy,
@@ -61,8 +55,9 @@ from undertow.sim.policies import (
     TauResetPolicy,
 )
 from undertow.sim.prices import CalibratedPriceProcess
-from undertow.sim.prices.base import human_price_to_triplet
+from undertow.sim.prices.regime_jump import MRSJDParams
 from undertow.sim.train import train_ppo
+from undertow.sim.train.envs import EnvFactory, fit_calibrated
 from undertow.sim.types import Action, PriceMode
 
 __all__ = ["main"]
@@ -93,9 +88,6 @@ DEFAULT_HALF_WIDTH_TICKS: int = 120
 #: Minimum decision interval (steps) for the cost-aware policy — one day at the
 #: pinned 10-minute cadence (144 steps).
 DEFAULT_MIN_INTERVAL_STEPS: int = 144
-
-#: Fallback external liquidity for a hand-built tape with no ``liquidity`` column.
-_DEFAULT_BASE_LIQUIDITY: float = 1.0e18
 
 EXIT_OK: int = 0
 EXIT_ERROR: int = 1
@@ -254,16 +246,10 @@ def _load_market_view(
             EXIT_CONFIG,
         )
     try:
-        data_config = load_data_config(data_path, expand_endpoints=False)
-    except Exception as exc:  # noqa: BLE001 - report any data-config failure cleanly
-        raise CliError(
-            f"failed to load data config {data_path}: {exc}", EXIT_CONFIG
-        ) from exc
-    try:
-        return build_market_view(
-            data_config,
+        return load_market_view(
+            data_path,
             config.split,
-            split=split,  # type: ignore[arg-type]
+            split=split,
             episode_config=config.episode,
         )
     except Exception as exc:  # noqa: BLE001 - missing/invalid snapshot is expected
@@ -399,46 +385,19 @@ def _load_checkpoint(checkpoint: Path) -> object:
 # ---------------------------------------------------------------------------
 # Environment factory (training)
 # ---------------------------------------------------------------------------
-def _first_positive_liquidity(tape: pl.DataFrame) -> float:
-    """First non-null, positive ``liquidity`` value in a tape frame."""
-    if "liquidity" not in tape.columns:
-        return _DEFAULT_BASE_LIQUIDITY
-    for raw in tape["liquidity"].to_list():
-        if raw is None:
-            continue
-        try:
-            value = float(str(raw))
-        except (TypeError, ValueError):  # pragma: no cover - schema guarantees strings
-            continue
-        if value > 0.0:
-            return value
-    return _DEFAULT_BASE_LIQUIDITY
+def _calibrated_params(market_view: MarketView) -> tuple[MRSJDParams, float]:
+    """Fit the calibrated MRSJD on the train view, rejecting an eval view.
 
-
-def _fresh_pool_engine(market_view: MarketView, config: SimConfig) -> PoolEngine:
-    """A pristine external pool (no agent positions) at the tape's entry tick."""
-    tape = market_view.active_split_data().sort("seq")
-    first_row = tape.row(0, named=True)
-    entry_price = first_row.get("price_reference")
-    if entry_price is None:
-        entry_price = first_row.get("price_pool")
-    if entry_price is None:
-        entry_price = market_view.reference_close(first_row["block_timestamp"])
-    if entry_price is None:
-        raise CliError("could not resolve an entry price for the training environment")
-    _, sqrt_price, tick = human_price_to_triplet(float(entry_price))
-    return PoolEngine(
-        state=PoolState(
-            sqrt_price=sqrt_price,
-            tick=tick,
-            liquidity=_first_positive_liquidity(tape),
-            fee_growth_global_0=0.0,
-            fee_growth_global_1=0.0,
-            fee_tier_bps=int(config.episode.fee_tier_bps),
-            tick_spacing=int(config.episode.tick_spacing),
-        ),
-        ticks={},
-    )
+    Fitting on eval data would be look-ahead, so this is reported as a user
+    config error rather than an internal failure.
+    """
+    if not market_view.is_train:
+        raise CliError(
+            "calibrated price mode must be trained on the train split "
+            "(fitting on eval data would be look-ahead).",
+            EXIT_CONFIG,
+        )
+    return fit_calibrated(market_view)
 
 
 def _make_env_factory(
@@ -452,31 +411,11 @@ def _make_env_factory(
     slot).
     """
     if config.price_mode is PriceMode.CALIBRATED:
-        if not market_view.is_train:
-            raise CliError(
-                "calibrated price mode must be trained on the train split "
-                "(fitting on eval data would be look-ahead).",
-                EXIT_CONFIG,
-            )
-        params = CalibratedPriceProcess.fit(market_view)
-        tape = market_view.active_split_data().sort("seq")
-        first_row = tape.row(0, named=True)
-        initial_price = first_row.get("price_reference") or first_row.get("price_pool")
-        if initial_price is None:
-            initial_price = market_view.reference_close(first_row["block_timestamp"])
-        if initial_price is None:
-            raise CliError("could not resolve an initial price for the MRSJD process")
+        params, initial_price = _calibrated_params(market_view)
 
         def calibrated_factory() -> LpEnvironment:
-            process = CalibratedPriceProcess(params, initial_price=float(initial_price))
-            return LpEnvironment(
-                market_view,
-                _fresh_pool_engine(market_view, config),
-                process,
-                ReplayGasModel(market_view, config.gas),
-                ProportionalSlippageModel(),
-                config,
-            )
+            process = CalibratedPriceProcess(params, initial_price=initial_price)
+            return build_replay_env(market_view, config, price_process=process)
 
         return calibrated_factory
 
@@ -660,9 +599,33 @@ def _cmd_backtest(
     return EXIT_OK
 
 
+def _train_env_factory(
+    args: argparse.Namespace, config: SimConfig, view: MarketView
+) -> Callable[[], LpEnvironment]:
+    """Pick the environment factory for the configured vector-env backend.
+
+    ``subproc`` returns a picklable :class:`EnvFactory` that rebuilds the view in
+    each worker process; ``dummy`` keeps the in-process closure over ``view``.
+    Calibrated params are fitted once here, in the parent.
+    """
+    if config.training.vec_env != "subproc":
+        return _make_env_factory(view, config)
+    params = initial_price = None
+    if config.price_mode is PriceMode.CALIBRATED:
+        params, initial_price = _calibrated_params(view)
+    return EnvFactory(
+        data_config_path=Path(args.data_config),
+        split=args.split,
+        config=config,
+        mrsjd_params=params,
+        initial_price=initial_price,
+        _view=view,
+    )
+
+
 def _cmd_train(args: argparse.Namespace, config: SimConfig, view: MarketView, output: Path) -> int:
     """Train PPO across the configured seeds and write checkpoints + manifests."""
-    env_factory = _make_env_factory(view, config)
+    env_factory = _train_env_factory(args, config, view)
     result = train_ppo(env_factory, config, log_dir=output)
     payload = {
         "seeds": [int(seed) for seed in result.seeds],

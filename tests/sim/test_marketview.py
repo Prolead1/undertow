@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -728,3 +729,42 @@ def test_slice_composes_warmup_across_nested_slices(tiny_market_view: MarketView
     assert sub.warmup is not None
     assert sub.warmup.height == 150
     assert sub.warmup["seq"].to_list() == list(range(150))
+
+
+def test_load_market_view_disables_endpoint_expansion(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The simulator never fetches: the data config loads without credentials."""
+    import undertow.sim.marketview as mv
+    from undertow.sim.config import SimConfig
+
+    seen: dict[str, object] = {}
+    sentinel = object()
+
+    def fake_load(path: object, **kwargs: object) -> object:
+        seen["path"] = path
+        seen.update(kwargs)
+        return sentinel
+
+    def fake_build(
+        data_config: object,
+        split_config: object,
+        *,
+        split: str = "train",
+        episode_config: object = None,
+    ) -> str:
+        assert data_config is sentinel
+        seen["split"] = split
+        return "VIEW"
+
+    monkeypatch.setattr(mv, "load_data_config", fake_load)
+    monkeypatch.setattr(mv, "build_market_view", fake_build)
+
+    result = mv.load_market_view(tmp_path / "data.toml", SimConfig().split, split="train")
+
+    assert result == "VIEW"
+    assert seen == {
+        "path": tmp_path / "data.toml",
+        "expand_endpoints": False,
+        "split": "train",
+    }

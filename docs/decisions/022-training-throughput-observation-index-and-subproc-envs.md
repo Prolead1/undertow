@@ -66,4 +66,9 @@ oversubscribe further. The right fix was algorithmic.
   that can rebuild its view in the worker, which is why the CLI no longer passes
   the closure over the parent frame to `train_ppo`.
 - `build_replay_env` gains an optional `price_process` so calibrated training
-  reuses the exact same engine/frictions construction as replay.
+  reuses the exact same engine/frictions construction as replay.  That also
+  unifies the **initial deployment width**: calibrated training now deploys the
+  parity width 2 (±2 tick spacings at the 0.30% tier), matching replay training,
+  the backtester and the evaluate runner, where it previously used `lp_env`'s
+  standalone default of 10.  The width is pinned by
+  `tests/sim/test_train_envs.py`.

@@ -27,6 +27,7 @@ contract intact.
 from __future__ import annotations
 
 import logging
+import os
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -35,7 +36,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
-from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv, VecMonitor
 
 from undertow.sim.train.runs import (
     RunManifest,
@@ -44,6 +45,7 @@ from undertow.sim.train.runs import (
     library_versions,
     write_run_manifest,
 )
+from undertow.sim.types import SimConfigError
 
 if TYPE_CHECKING:
     import gymnasium as gym
@@ -60,6 +62,41 @@ PPO_BATCH_SIZE: int = 64
 PPO_N_EPOCHS: int = 10
 PPO_LEARNING_RATE: float = 3e-4
 PPO_DEVICE: str = "cpu"  # CPU keeps runs bit-reproducible and GPU-free in tests
+
+#: Accepted ``training.vec_env`` backends (validated again by ``TrainingConfig``).
+_VEC_ENV_BACKENDS: tuple[str, ...] = ("dummy", "subproc")
+
+#: Thread-pool variables pinned before starting worker processes.  Polars
+#: (rayon) reads ``POLARS_MAX_THREADS`` at import, so each worker's one-off
+#: index build must not open a per-core pool either.
+_THREAD_ENV_VARS: tuple[str, ...] = (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "POLARS_MAX_THREADS",
+)
+
+
+def _pin_thread_env() -> None:
+    """Pin BLAS/OpenMP to one thread per process.
+
+    With ``SubprocVecEnv`` every worker would otherwise spawn a thread per core,
+    and N workers x N threads on N CPUs spends more time synchronising than
+    computing (the same oversubscription ``tests/conftest.py`` pins away for the
+    suite).  Set before the workers are forked/spawned so they inherit it; an
+    explicit non-empty value is honoured.
+    """
+    for var in _THREAD_ENV_VARS:
+        if not os.environ.get(var):
+            os.environ[var] = "1"
+
+
+def _pin_torch_threads() -> None:
+    """One torch thread in the parent: the PPO net is tiny and sharding it loses."""
+    import torch
+
+    torch.set_num_threads(1)
 
 
 def _snap_batch_size(rollout: int, cap: int) -> int:
@@ -133,14 +170,32 @@ def _resolve_log_dir(seed: int, log_dir: Path | None) -> Path:
 
 
 def _make_vec_env(
-    env_fn: Callable[[], gym.Env], parallel_envs: int, seed: int
+    env_fn: Callable[[], gym.Env],
+    parallel_envs: int,
+    seed: int,
+    *,
+    backend: str = "dummy",
 ) -> VecMonitor:
     """Build a seeded single- or multi-env vector env.
 
     ``env_fn`` is invoked once per parallel environment; no env is shared
-    between seeds or between the parallel slots.
+    between seeds or between the parallel slots.  ``backend="subproc"`` runs
+    each slot in its own process (``SubprocVecEnv``); ``"dummy"`` steps them
+    sequentially in this process.  A single slot always uses ``DummyVecEnv``:
+    process overhead cannot pay for itself there.
     """
-    vec_env = DummyVecEnv([env_fn for _ in range(max(1, parallel_envs))])
+    if backend not in _VEC_ENV_BACKENDS:
+        raise SimConfigError(
+            f"training.vec_env must be one of {_VEC_ENV_BACKENDS}, got {backend!r}"
+        )
+    parallel = max(1, int(parallel_envs))
+    vec_env: VecEnv
+    if backend == "subproc" and parallel > 1:
+        # SB3 defaults to forkserver where available and spawn otherwise; both
+        # are thread-safe (plain ``fork`` after torch import can deadlock).
+        vec_env = SubprocVecEnv([env_fn for _ in range(parallel)])
+    else:
+        vec_env = DummyVecEnv([env_fn for _ in range(parallel)])
     vec_env.seed(seed)  # per-env seeds become seed, seed+1, ...
     return VecMonitor(vec_env)
 
@@ -172,9 +227,11 @@ def _train_single_seed(
     seed_dir.mkdir(parents=True, exist_ok=True)
 
     parallel = max(1, int(training.parallel_envs))
+    _pin_thread_env()  # inherited by SubprocVecEnv workers
+    _pin_torch_threads()
     n_steps, batch_size, n_epochs = _derive_rollout(training)
 
-    vec_env = _make_vec_env(env_fn, parallel, seed)
+    vec_env = _make_vec_env(env_fn, parallel, seed, backend=training.vec_env)
     curve_cb = _LearningCurveCallback(training.log_freq_steps)
     callbacks: list[BaseCallback] = [curve_cb]
 

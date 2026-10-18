@@ -163,6 +163,12 @@ class TestTrainingConfig:
         assert tc.total_timesteps == 1_000_000
         assert tc.checkpoint_freq_steps == 100_000
         assert tc.log_freq_steps == 10_000
+        assert tc.vec_env == "dummy"
+
+    def test_vec_env_accepts_subproc_and_rejects_unknown(self) -> None:
+        assert TrainingConfig(vec_env="subproc").vec_env == "subproc"
+        with pytest.raises(SimConfigError, match="vec_env"):
+            TrainingConfig(vec_env="threads")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

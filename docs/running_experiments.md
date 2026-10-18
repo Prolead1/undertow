@@ -103,6 +103,10 @@ split only.
 
 Training time depends on `training.total_timesteps` and `training.parallel_envs`
 in the config (defaults: 1,000,000 timesteps, 4 envs per seed, 5 seeds).
+`training.vec_env = "subproc"` runs each `parallel_envs` slot in its own process
+(true multicore replay); each worker loads its own `MarketView`, so the worker
+count is memory-bound (~4 GB per worker on the pinned dataset). `"dummy"` steps
+the slots sequentially in one process and is only for tiny runs.
 
 ## 4. Evaluate
 

@@ -365,27 +365,28 @@ class TestMissingConfig:
         assert result.returncode != 0
         assert "data config not found" in result.stderr
 
-    def test_data_config_loaded_without_endpoint_credentials(
+    def test_load_market_view_delegates_without_credentials(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """The simulator never fetches: loading a dataset must not need secrets."""
+        """The CLI loader delegates to the shared no-secrets loader path."""
         from undertow.sim import SimConfig
         from undertow.sim.cli import _load_market_view
 
         seen: dict[str, object] = {}
 
-        def fake_load(path: object, **kwargs: object) -> object:
-            seen.update(kwargs)
+        def fake_load(path: object, split_config: object, **kwargs: object) -> object:
+            seen["path"] = path
+            seen["split"] = kwargs.get("split")
             raise RuntimeError("stop after capturing the call")
 
-        monkeypatch.setattr("undertow.sim.cli.load_data_config", fake_load)
+        monkeypatch.setattr("undertow.sim.cli.load_market_view", fake_load)
         config_path = tmp_path / "data.toml"
         config_path.write_text("", encoding="utf-8")
 
         with pytest.raises(CliError):
             _load_market_view(SimConfig(), config_path, "train")
 
-        assert seen == {"expand_endpoints": False}
+        assert seen == {"path": config_path, "split": "train"}
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +587,46 @@ class TestCliInternals:
 
         env = _make_env_factory(tiny_market_view, SimConfig())()
         assert env.is_replay
+
+    def test_train_env_factory_picks_backend_and_rejects_calibrated_eval(
+        self, tiny_market_view: object
+    ) -> None:
+        from types import SimpleNamespace
+
+        from undertow.sim.cli import _train_env_factory
+        from undertow.sim.config import SimConfig, TrainingConfig
+        from undertow.sim.train.envs import EnvFactory
+        from undertow.sim.types import PriceMode
+
+        args = SimpleNamespace(data_config="configs/eth_usdc_3000.toml", split="train")
+
+        dummy = _train_env_factory(args, SimConfig(), tiny_market_view)
+        assert not isinstance(dummy, EnvFactory)
+        assert dummy().is_replay
+
+        subproc = _train_env_factory(
+            args,
+            SimConfig(training=TrainingConfig(vec_env="subproc")),
+            tiny_market_view,
+        )
+        assert isinstance(subproc, EnvFactory)
+        assert subproc._view is tiny_market_view
+        assert subproc.data_config_path == Path("configs/eth_usdc_3000.toml")
+
+        eval_view = dataclasses.replace(
+            tiny_market_view,
+            train=None,
+            eval=tiny_market_view.train,
+            is_train=False,
+            eval_start_utc=tiny_market_view.train_start_utc,
+            eval_end_utc=tiny_market_view.train_end_utc,
+        )
+        calibrated = SimConfig(
+            training=TrainingConfig(vec_env="subproc"),
+            price_mode=PriceMode.CALIBRATED,
+        )
+        with pytest.raises(CliError, match="train split"):
+            _train_env_factory(args, calibrated, eval_view)
 
     def test_load_checkpoint_delegates_to_ppo_load(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
