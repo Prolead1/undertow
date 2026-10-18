@@ -19,10 +19,23 @@ Everything in :class:`TickState`, :class:`PoolState` and the engine is in
 * ``liquidity`` (``L``) is the raw on-chain liquidity, directly comparable to
   the tape's recorded active liquidity.
 
-The step model is discrete: ticks are crossed first and swap fees are then
-accrued over the resulting active liquidity, so a position crossed out during a
-step earns nothing on that step's volume (matching the minute-bar simulator,
-not the backtester's per-segment exact path; S14 quantifies the drift).
+The step model is **exact and piecewise** (ADR-019), a float64 replica of the
+backtester's integer ``FeeGrowthTracker.apply_swap`` (ADR-013): the swap is
+split into the segments bounded by the initialized ticks it crosses, the gross
+input is apportioned across those segments proportionally to their net inputs
+(the last segment absorbing the float remainder), each segment accrues
+``fee_segment = gross_segment * fee_pips / 1_000_000`` over that segment's
+active liquidity, and the boundary tick is crossed **after** its segment's fee
+is applied (the protocol's update-then-cross order).  Ticks are crossed even on
+a zero-volume alignment step, since the price move itself changes the active
+liquidity.
+
+The agent's positions are **marginal** (ADR-019): :meth:`PoolEngine.open_position`
+seeds the position's boundary ticks with the ``liquidity_gross=1,
+liquidity_net=0`` sentinel of ``FeeGrowthReplay.register_position`` and does
+**not** add the agent's ``L`` to ``state.liquidity``.  ``state.liquidity`` is
+therefore the *external* pool liquidity (seeded from the on-chain snapshot),
+which is exactly the denominator the backtester distributes fee growth over.
 
 Fee accrual is therefore ``fees_raw = L * Δfee_growth`` with **no unit
 conversion**.  Humanising the reported token fees is the job of the reporting
@@ -36,10 +49,17 @@ Equation numbers in comments refer to roadmap §10.2.4.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from undertow.sim.core.position import Position
+from undertow.data import (
+    GLOBAL_TICK_SENTINEL,
+    Q96,
+    Q128,
+    tick_to_sqrt_price_x96,
+)
+from undertow.sim.core.position import Position, calc_sqrt_price_a
 from undertow.sim.types import (
     PositionError,
     SqrtPrice,
@@ -56,6 +76,17 @@ __all__ = ["PoolEngine", "PoolState", "TickState"]
 # ``fee = amount_in * fee_pips // 1_000_000``.  (The S07 brief's ``/ 10000``
 # would be 30%, a 100x overcharge.)
 _FEE_DENOMINATOR: float = 1_000_000.0
+
+
+def _as_int(value: object) -> int:
+    """Coerce a snapshot/cell value (decimal string, int or ``None``) to ``int``."""
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    return int(str(value))
 
 
 def _snap_tick(tick: Tick, spacing: int) -> Tick:
@@ -125,6 +156,19 @@ class PoolState:
     fee_growth_global_1: float
     fee_tier_bps: int  # e.g. 3000 for 0.30%
     tick_spacing: int
+    #: Exact Q64.96 sqrt price of the last tape swap, when the caller has one.
+    #: The swap row's integer price is the only representation precise enough to
+    #: place a price exactly on a tick boundary; the float ``sqrt_price`` cannot
+    #: distinguish ``tick_to_sqrt_price_x96(t)`` from a price one raw unit below
+    #: it.  ``None`` for synthetic/fixture states, where crossing falls back to
+    #: the float comparison (ADR-019).
+    sqrt_price_x96: int | None = None
+    #: Packed uint8 protocol-fee split from slot0 (bits 0-3 = fp0 for token0-in
+    #: swaps, bits 4-7 = fp1 for token1-in swaps); ``0`` means protocol fees are
+    #: off and the LP keeps the whole segment fee.  Mirrors
+    #: ``FeeGrowthTracker._fee_protocol`` and is applied *before* fee growth is
+    #: distributed to the LP (ADR-019, reviewer finding 4).
+    fee_protocol: int = 0
 
     # -- Fee-growth inside a range (eqs 4-6 of §10.2.4) -------------------
     def fee_growth_below(
@@ -250,12 +294,12 @@ class PoolState:
 class PoolEngine:
     """Owns the tick lattice and provides the step interface (`CONTRACTS.md` §6).
 
-    ``state.liquidity`` is the pool's **total** active liquidity: it starts at
-    whatever base the caller supplies (the tape's recorded active liquidity in
-    the marginal-agent model) and this engine adds/subtracts the liquidity of
-    the agent-owned positions it manages.  Global fee growth is therefore
-    distributed over ``base + sum(active positions)``, which yields the
-    ``L_agent / L_pool_active`` fee share of the plan.
+    ``state.liquidity`` is the pool's **external** active liquidity (ADR-019).
+    Agent-owned positions are *marginal*: :meth:`open_position` never adds their
+    ``L`` to ``state.liquidity``; it only seeds sentinel boundary ticks (and the
+    per-position inside snapshot) so the agent's ``L * Δfee_growth_inside``
+    entitlement is computed against the external fee-growth denominator, exactly
+    like the backtester's ``FeeGrowthReplay``.
     """
 
     state: PoolState
@@ -265,30 +309,214 @@ class PoolEngine:
         default_factory=dict
     )
     _next_position_id: int = 0
+    #: Memoised ``tick_to_sqrt_price_x96(tick)`` boundaries (the exact path calls
+    #: it per tick per swap; the Decimal conversion is expensive).
+    _tick_sqrt_x96: dict[Tick, int] = field(default_factory=dict)
+
+    def _boundary_x96(self, tick: Tick) -> int:
+        """Exact Q64.96 boundary for ``tick``, memoised."""
+        boundary = self._tick_sqrt_x96.get(tick)
+        if boundary is None:
+            boundary = tick_to_sqrt_price_x96(int(tick))
+            self._tick_sqrt_x96[tick] = boundary
+        return boundary
+
+    # -- Snapshot seeding -------------------------------------------------
+    @classmethod
+    def from_snapshot(
+        cls,
+        state: PoolState,
+        snapshot_rows: Iterable[Mapping[str, object]],
+    ) -> PoolEngine:
+        """Build an engine from a ``FEE_GROWTH_SCHEMA`` snapshot (ADR-018).
+
+        Mirrors ``FeeGrowthReplay.from_snapshot``: the snapshot carries exactly
+        one global sentinel row (``tick == GLOBAL_TICK_SENTINEL``) with the
+        block's globals, ``current_tick``, ``current_liquidity`` and
+        ``fee_protocol``, plus one row per initialized tick.  ``state`` is used
+        as the template for the fee tier / tick spacing (and any other config
+        not carried by the snapshot).  Q128 integers are divided by ``Q128`` so
+        the engine's float convention matches the rest of the sim; the raw sqrt
+        price is recovered from ``current_tick``.
+
+        The snapshot leaves the pre-snapshot sqrt price unknown (it carries only
+        the tick), so the first crossing swap uses the tick-boundary price —
+        the same bounded approximation the exact tracker makes from a snapshot.
+        """
+        rows = list(snapshot_rows)
+        globals_rows = [
+            r for r in rows if _as_int(r.get("tick")) == GLOBAL_TICK_SENTINEL
+        ]
+        if len(globals_rows) != 1:
+            # Mirrors ``FeeGrowthReplay.from_snapshot``, which raises
+            # ``ValueError`` for the same malformed snapshot.
+            raise ValueError(
+                "PoolEngine.from_snapshot: expected exactly one global sentinel "
+                f"row (tick == {GLOBAL_TICK_SENTINEL}), got {len(globals_rows)}"
+            )
+        g = globals_rows[0]
+        ticks: dict[Tick, TickState] = {}
+        for r in rows:
+            tick = _as_int(r.get("tick"))
+            if tick == GLOBAL_TICK_SENTINEL:
+                continue
+            ticks[Tick(tick)] = TickState(
+                fee_growth_outside_0=_as_int(r.get("fee_growth_outside_0_x128")) / Q128,
+                fee_growth_outside_1=_as_int(r.get("fee_growth_outside_1_x128")) / Q128,
+                liquidity_gross=float(_as_int(r.get("liquidity_gross"))),
+                liquidity_net=float(_as_int(r.get("liquidity_net"))),
+                initialized=bool(r.get("initialized", True)),
+            )
+        current_tick = _as_int(g.get("current_tick"))
+        seeded = PoolState(
+            sqrt_price=float(calc_sqrt_price_a(Tick(current_tick))),
+            tick=Tick(current_tick),
+            liquidity=float(_as_int(g.get("current_liquidity"))),
+            fee_growth_global_0=_as_int(g.get("fee_growth_global_0_x128")) / Q128,
+            fee_growth_global_1=_as_int(g.get("fee_growth_global_1_x128")) / Q128,
+            fee_tier_bps=int(state.fee_tier_bps),
+            tick_spacing=int(state.tick_spacing),
+            fee_protocol=_as_int(g.get("fee_protocol")),
+        )
+        return cls(state=seeded, ticks=ticks)
 
     # -- Internal helpers -------------------------------------------------
-    def _adjust_tick(self, tick: Tick, liquidity: float, net_delta: float) -> None:
-        """Add ``liquidity`` to gross and ``net_delta`` to net at ``tick``.
-
-        A tick that does not exist (or was cleaned up) is (re)initialized with
-        its ``fee_growth_outside`` set to ``fee_growth_global`` when the tick is
-        at or below the current tick, else 0 — the Uniswap initialization rule.
-        """
-        tick_state = self.ticks.get(tick)
-        if tick_state is None or not tick_state.initialized:
-            outside_0 = (
-                self.state.fee_growth_global_0 if self.state.tick >= tick else 0.0
-            )
-            outside_1 = (
-                self.state.fee_growth_global_1 if self.state.tick >= tick else 0.0
-            )
-            tick_state = TickState(outside_0, outside_1, 0.0, 0.0, True)
-            self.ticks[tick] = tick_state
-        tick_state.liquidity_gross += liquidity
-        tick_state.liquidity_net += net_delta
-
     def _crossed_ticks(self, old_tick: Tick, new_tick: Tick) -> list[Tick]:
         return _select_crossed_ticks(self.ticks, old_tick, new_tick)
+
+    def _crossed_ticks_exact(
+        self, pre_x96: int, post_x96: int
+    ) -> list[Tick]:
+        """Ticks crossed, compared on exact Q64.96 integers (ADR-019).
+
+        The integer twin of :meth:`_crossed_ticks_by_price`; used whenever the
+        caller can supply the swap's raw ``sqrt_price_x96``.  Exact-integer
+        comparison is what makes the engine agree with the tracker when a price
+        sits exactly on (or one raw unit from) a boundary — a float64 division
+        cannot tell those apart.
+        """
+        upward = post_x96 > pre_x96
+        crossed: list[Tick] = []
+        for tick in sorted(self.ticks):
+            if not self.ticks[tick].initialized:
+                continue
+            boundary = self._boundary_x96(tick)
+            if upward:
+                if pre_x96 < boundary <= post_x96:
+                    crossed.append(tick)
+            elif post_x96 <= boundary < pre_x96:
+                crossed.append(tick)
+        return crossed
+
+    def _crossed_ticks_by_price(
+        self, pre_price: float, post_price: float
+    ) -> list[Tick]:
+        """Initialized ticks crossed by a move from ``pre_price`` to ``post_price``.
+
+        This mirrors ``FeeGrowthTracker.apply_swap`` exactly (ADR-013): the
+        selection is **price**-based, not tick-based, because a swap's recorded
+        ``tick`` can disagree with its ``sqrt_price_x96`` by one at an exact
+        boundary (slot0's tick vs the post-swap ratio).  Upward it selects
+        ``pre_price < price(t) <= post_price``; downward the reverse half-open
+        ``post_price <= price(t) < pre_price``.  ``price(t)`` is
+        ``calc_sqrt_price_a(t)``, the sim's raw float sqrt price.  The returned
+        list is ascending (the caller reverses it for a downward walk).
+        """
+        upward = post_price > pre_price
+        crossed: list[Tick] = []
+        for tick in sorted(self.ticks):
+            if not self.ticks[tick].initialized:
+                continue
+            # The exact Q64.96 boundary divided by ``Q96``, so a tape price that
+            # sits exactly on a boundary compares equal (the tracker compares the
+            # raw integers); ``calc_sqrt_price_a``'s ~1e-6 relative error would
+            # otherwise flip the strict inequality and drop a genuine crossing.
+            boundary = tick_to_sqrt_price_x96(int(tick)) / float(Q96)
+            if upward:
+                if pre_price < boundary <= post_price:
+                    crossed.append(tick)
+            elif post_price <= boundary < pre_price:
+                crossed.append(tick)
+        return crossed
+
+    def _cross_one(self, tick: Tick, upward: bool) -> None:
+        """Cross a single initialized ``tick`` in the exact ``Tick.cross`` order.
+
+        Flips ``fee_growth_outside = fee_growth_global - fee_growth_outside``
+        for both tokens and applies the tick's ``liquidity_net`` to the active
+        liquidity (add upward, subtract downward).  Called after the crossed
+        segment's fee has been added to the global accumulator.
+        """
+        tick_state = self.ticks[tick]
+        tick_state.fee_growth_outside_0 = (
+            self.state.fee_growth_global_0 - tick_state.fee_growth_outside_0
+        )
+        tick_state.fee_growth_outside_1 = (
+            self.state.fee_growth_global_1 - tick_state.fee_growth_outside_1
+        )
+        if upward:
+            self.state.liquidity += tick_state.liquidity_net
+        else:
+            self.state.liquidity -= tick_state.liquidity_net
+
+    # -- External liquidity events ----------------------------------------
+    def apply_liquidity_event(self, row: Mapping[str, object]) -> None:
+        """Apply one ``mint``/``burn`` row to the external lattice (ADR-019).
+
+        Mirrors ``FeeGrowthTracker.apply_liquidity_event``: both boundary ticks
+        get ``liquidity_gross``/``liquidity_net`` updates; a newly initialized
+        tick is seeded with ``fee_growth_outside = fee_growth_global`` when it
+        is at or below the current tick (else 0); a tick whose gross returns to
+        zero is removed; and ``state.liquidity`` moves by the signed delta when
+        the range spans the current tick (half-open ``[lower, upper)``).  A
+        zero-amount event is a fee-collection no-op (the tracker's ``burn(0)``).
+        """
+        event_type = str(row.get("event_type", "")).lower()
+        if event_type not in ("mint", "burn"):
+            raise PositionError(
+                f"apply_liquidity_event expects a mint or burn row, got {event_type!r}"
+            )
+        tick_lower = _as_int(row.get("tick_lower"))
+        tick_upper = _as_int(row.get("tick_upper"))
+        liquidity_amount = _as_int(row.get("liquidity_amount"))
+        delta = liquidity_amount if event_type == "mint" else -liquidity_amount
+        if delta == 0:
+            return
+        # ``liquidity_gross`` moves by the signed amount on *both* ticks (both
+        # reference the same position liquidity); only ``liquidity_net`` differs
+        # in sign, exactly as in ``Tick.update``.  This mirrors the tracker.
+        for tick, net_delta in ((tick_lower, delta), (tick_upper, -delta)):
+            before = self.ticks.get(Tick(tick))
+            gross_before = before.liquidity_gross if before is not None else 0.0
+            gross_after = gross_before + float(delta)
+            if gross_after < 0.0:
+                raise PositionError(
+                    f"{event_type} of liquidity {liquidity_amount} at tick {tick} "
+                    "would drive liquidity_gross negative — the event stream is "
+                    "inconsistent"
+                )
+            if gross_before == 0.0:
+                if self.state.tick >= tick:
+                    outside_0 = self.state.fee_growth_global_0
+                    outside_1 = self.state.fee_growth_global_1
+                else:
+                    outside_0 = 0.0
+                    outside_1 = 0.0
+            else:
+                assert before is not None  # gross_before > 0 implies it exists
+                outside_0 = before.fee_growth_outside_0
+                outside_1 = before.fee_growth_outside_1
+            if gross_after == 0.0:
+                del self.ticks[Tick(tick)]
+            else:
+                net_after = (
+                    before.liquidity_net if before is not None else 0.0
+                ) + float(net_delta)
+                self.ticks[Tick(tick)] = TickState(
+                    outside_0, outside_1, gross_after, net_after, True
+                )
+        if tick_lower <= self.state.tick < tick_upper:
+            self.state.liquidity += float(delta)
 
     # -- Position management ----------------------------------------------
     def open_position(
@@ -297,12 +525,16 @@ class PoolEngine:
         tick_upper: Tick,
         liquidity: float,
     ) -> int:
-        """Register a new position; returns a fresh ``position_id``.
+        """Register a new **marginal** agent position; returns a fresh id.
 
         Bounds are snapped to the nearest tick-spacing multiple before
-        validation (``tick_lower < tick_upper``, ``liquidity > 0``).  The
-        position's bounds become initialized lattice ticks and, when the range
-        straddles the current tick, its ``L`` is added to ``state.liquidity``.
+        validation (``tick_lower < tick_upper``, ``liquidity > 0``).  Each
+        boundary tick is seeded only when absent, with the protocol seeding
+        convention and the sentinel ``liquidity_gross=1, liquidity_net=0`` of
+        ``FeeGrowthReplay.register_position``; the agent's ``L`` is **not** added
+        to ``state.liquidity``.  The ``Position`` and its ``fee_growth_inside``
+        snapshot are recorded as before (``position_fees`` stays
+        ``L_agent * Δfee_growth_inside``).
         """
         spacing = int(self.state.tick_spacing)
         if spacing <= 0:
@@ -315,11 +547,16 @@ class PoolEngine:
             raise PositionError("tick_lower must be < tick_upper after snapping")
 
         amount = float(liquidity)
-        self._adjust_tick(lower, amount, amount)
-        self._adjust_tick(upper, amount, -amount)
-
-        if lower <= self.state.tick < upper:
-            self.state.liquidity += amount
+        for tick in (lower, upper):
+            if tick in self.ticks:
+                continue
+            if self.state.tick >= tick:
+                outside_0 = self.state.fee_growth_global_0
+                outside_1 = self.state.fee_growth_global_1
+            else:
+                outside_0 = 0.0
+                outside_1 = 0.0
+            self.ticks[tick] = TickState(outside_0, outside_1, 1.0, 0.0, True)
 
         position = Position(lower, upper, amount, TickSpacing(spacing))
         position_id = self._next_position_id
@@ -344,36 +581,17 @@ class PoolEngine:
         return position_id
 
     def close_position(self, position_id: int) -> tuple[float, float]:
-        """Remove ``position_id`` and return its accrued raw fees.
+        """Forget a **marginal** position and return its accrued raw fees.
 
-        The position's liquidity is removed from both lattice ticks; if that
-        leaves a tick with no gross liquidity it is marked uninitialized.  The
-        active-liquidity adjustment mirrors :meth:`open_position`.
+        The position never contributed external liquidity, so neither
+        ``state.liquidity`` nor the boundary-tick lattice is touched; the
+        sentinel ticks are deliberately left in place (the backtester's tracker
+        leaves ``register_position`` sentinels too, so a later real mint at the
+        same tick does not re-seed ``fee_growth_outside``).
         """
-        position = self.positions.get(position_id)
-        if position is None:
+        if position_id not in self.positions:
             raise PositionError(f"unknown position_id {position_id}")
-
         fees = self.position_fees(position_id)
-        amount = position.liquidity
-        lower = position.tick_lower
-        upper = position.tick_upper
-
-        lower_ts = self.ticks[lower]
-        upper_ts = self.ticks[upper]
-        lower_ts.liquidity_gross -= amount
-        lower_ts.liquidity_net -= amount
-        upper_ts.liquidity_gross -= amount
-        upper_ts.liquidity_net += amount
-
-        if lower <= self.state.tick < upper:
-            self.state.liquidity -= amount
-
-        for tick_state in (lower_ts, upper_ts):
-            if tick_state.liquidity_gross <= 0.0:
-                tick_state.liquidity_gross = 0.0
-                tick_state.initialized = False
-
         del self.positions[position_id]
         del self.position_fee_snapshots[position_id]
         return fees
@@ -415,36 +633,152 @@ class PoolEngine:
         new_tick: Tick,
         swap_volume_0: float = 0.0,
         swap_volume_1: float = 0.0,
+        *,
+        new_sqrt_price_x96: int | None = None,
     ) -> dict[str, Any]:
-        """Advance the pool by one step.
+        """Advance the pool by one step, mirroring ``apply_swap`` in float64.
 
-        Crosses ticks when the tick changes, then accrues the swap fee at the
-        pool's fee tier over the resulting active liquidity and returns the
-        documented dict: ``fees_accrued`` (per position, raw),
-        ``ticks_crossed``, ``active_liquidity``, ``pool_fee_earned_0/1`` (raw).
+        The input token is the leg whose ``swap_volume_*`` is ``> 0`` and
+        ``gross_in`` is that leg.  Ticks crossed between the current tick and
+        ``new_tick`` bound the swap into segments, each walked with the
+        liquidity active in it; the gross input is apportioned across segments
+        proportionally to their net inputs (the last segment absorbs the float
+        remainder); each segment's fee is ``gross_seg * fee_tier_bps / 1e6``
+        added to the input token's global accumulator over that segment's ``L``;
+        and the segment's boundary tick is crossed **after** the accrual
+        (update-then-cross), so ``fee_growth_outside`` sees the new global.
 
-        ``new_tick`` is expected to be slot0-consistent with ``new_sqrt_price``
-        (the caller's price process is the source of truth), so the state's
-        half-open activity predicate ``lower <= tick < upper`` stays coherent
-        with the crossing set.  If ``state.liquidity == 0`` the nominal
-        ``pool_fee_earned_*`` is still reported, but no fee growth can be
-        attributed to any position (a zero-liquidity swap is not physically
-        realizable; this is a defensive branch).
+        Ticks are still crossed on the caller's zero-volume alignment step when
+        the segment liquidity is non-zero, since the price move itself changes
+        the active liquidity.  Returns the documented dict: ``fees_accrued``
+        (per position, raw), ``ticks_crossed`` (ascending set),
+        ``active_liquidity``, and ``pool_fee_earned_0/1`` (gross raw fee per
+        token, reported even when no liquidity could accrue it).
         """
-        ticks_crossed: list[Tick] = []
-        if new_tick != self.state.tick:
-            ticks_crossed = self._crossed_ticks(self.state.tick, new_tick)
-            self.state.tick_cross(new_tick, self.ticks, crossed=ticks_crossed)
-            self.state.tick = new_tick
+        pre_price = float(self.state.sqrt_price)
+        post_price = float(new_sqrt_price)
+        post_tick = Tick(new_tick)
+        pre_x96 = self.state.sqrt_price_x96
+
+        volume_0 = float(swap_volume_0)
+        volume_1 = float(swap_volume_1)
+        if volume_0 > 0.0:
+            input_token = 0
+            gross_in = volume_0
+        elif volume_1 > 0.0:
+            input_token = 1
+            gross_in = volume_1
+        else:
+            input_token = -1
+            gross_in = 0.0
+
+        fee_pips = self.state.fee_tier_bps
+        pool_fee_0 = gross_in * fee_pips / _FEE_DENOMINATOR if input_token == 0 else 0.0
+        pool_fee_1 = gross_in * fee_pips / _FEE_DENOMINATOR if input_token == 1 else 0.0
+
+        # The set of initialized ticks to cross.  Selection is **price**-based to
+        # mirror the exact tracker (``feegrowth.py``:337): a swap's recorded
+        # ``tick`` can lag its ``sqrt_price_x96`` by one at an exact boundary, so
+        # a tick-derived direction would cross the set with the wrong sign and
+        # silently corrupt ``state.liquidity``.  The physical crossing order is
+        # ascending for an upward move and descending for a downward one, so the
+        # segment walk reverses the (always-ascending) crossed list.  ``pre_tick``
+        # is still the caller's slot0 tick, used only to set the final state tick.
+        post_x96 = int(new_sqrt_price_x96) if new_sqrt_price_x96 is not None else None
+        if pre_x96 is not None and post_x96 is not None:
+            upward = post_x96 > pre_x96
+            ticks_crossed: list[Tick] = self._crossed_ticks_exact(pre_x96, post_x96)
+        else:
+            upward = post_price > pre_price
+            ticks_crossed = self._crossed_ticks_by_price(pre_price, post_price)
+        walk = ticks_crossed if upward else list(reversed(ticks_crossed))
+
+        # Build the segment list: [pre_price, b1] .. [bn, post_price], each with
+        # the liquidity active in it.  We walk the same boundary prices the
+        # lattice exposes (``calc_sqrt_price_a``) and keep ``lo <= hi`` so the
+        # per-segment amount formulas are direction-free.
+        segments: list[tuple[float, float, float]] = []
+        price = pre_price
+        liquidity = float(self.state.liquidity)
+        for tick in walk:
+            boundary = self._boundary_x96(tick) / float(Q96)
+            lo, hi = (price, boundary) if price <= boundary else (boundary, price)
+            segments.append((lo, hi, liquidity))
+            net = float(self.ticks[tick].liquidity_net)
+            liquidity = liquidity + net if upward else liquidity - net
+            price = boundary
+        if post_price != price:
+            lo, hi = (
+                (price, post_price) if price <= post_price else (post_price, price)
+            )
+            segments.append((lo, hi, liquidity))
+
+        # Per-segment net inputs and the proportional gross allocation.  If no
+        # segment has liquidity there is nothing to accrue (and, mirroring the
+        # tracker, no tick to cross: the pool is empty).
+        nets: list[float] = []
+        for lo, hi, liquidity in segments:
+            if input_token == 0:
+                net = liquidity * (1.0 / lo - 1.0 / hi)
+            elif input_token == 1:
+                net = liquidity * (hi - lo)
+            else:
+                net = 0.0
+            nets.append(net)
+        net_total = math.fsum(nets)
+        # Crossings happen whenever a segment has liquidity, independent of the
+        # volume: the caller's zero-volume alignment step still moves the price
+        # and must rebalance the active liquidity.  (For a real swap this is the
+        # tracker's own ``net_total > 0`` gate, since a positive segment net is
+        # equivalent to positive segment liquidity.)
+        has_liquidity = any(liq > 0.0 for _lo, _hi, liq in segments)
+        do_fees = input_token in (0, 1) and net_total > 0.0
+
+        if has_liquidity:
+            fee_protocol = int(self.state.fee_protocol)
+            fp_per_token = (
+                fee_protocol & 0x0F
+                if input_token == 0
+                else (fee_protocol >> 4) & 0x0F
+            )
+            allocated = 0.0
+            for i, ((_lo, _hi, liquidity), net) in enumerate(
+                zip(segments, nets, strict=True)
+            ):
+                if do_fees:
+                    if i == len(segments) - 1:
+                        # The last segment absorbs the float remainder so the
+                        # apportioned gross sums to ``gross_in`` exactly-ish.
+                        gross_seg = gross_in - allocated
+                    else:
+                        gross_seg = gross_in * net / net_total
+                        allocated += gross_seg
+                    fee_seg = gross_seg * fee_pips / _FEE_DENOMINATOR
+                    # Mirror ``FeeGrowthTracker.apply_swap`` (feegrowth.py:339):
+                    # only accrue when the segment has liquidity and the fee is
+                    # positive.  A large swap can exhaust the pool past its last
+                    # initialized tick, leaving a zero-liquidity final segment
+                    # whose float remainder is a tiny (possibly negative)
+                    # non-zero; guarding also floors that remainder to 0.
+                    if liquidity > 0.0 and fee_seg > 0.0:
+                        lp_fee = (
+                            fee_seg - fee_seg // fp_per_token
+                            if fp_per_token > 0
+                            else fee_seg
+                        )
+                        if lp_fee > 0.0:
+                            if input_token == 0:
+                                self.state.fee_growth_global_0 += lp_fee / liquidity
+                            else:
+                                self.state.fee_growth_global_1 += lp_fee / liquidity
+                if i < len(walk):
+                    self._cross_one(walk[i], upward)
+
         # slot0 stores the actual sqrt price on every step, including moves that
         # stay within a tick, so downstream valuation never sees a stale price.
-        self.state.sqrt_price = new_sqrt_price
-
-        fee_0 = swap_volume_0 * self.state.fee_tier_bps / _FEE_DENOMINATOR
-        fee_1 = swap_volume_1 * self.state.fee_tier_bps / _FEE_DENOMINATOR
-        if self.state.liquidity > 0.0:
-            self.state.fee_growth_global_0 += fee_0 / self.state.liquidity
-            self.state.fee_growth_global_1 += fee_1 / self.state.liquidity
+        self.state.tick = post_tick
+        self.state.sqrt_price = post_price
+        self.state.sqrt_price_x96 = new_sqrt_price_x96
 
         fees_accrued = {
             position_id: self.position_fees(position_id)
@@ -454,6 +788,6 @@ class PoolEngine:
             "fees_accrued": fees_accrued,
             "ticks_crossed": ticks_crossed,
             "active_liquidity": self.state.liquidity,
-            "pool_fee_earned_0": fee_0,
-            "pool_fee_earned_1": fee_1,
+            "pool_fee_earned_0": pool_fee_0,
+            "pool_fee_earned_1": pool_fee_1,
         }
