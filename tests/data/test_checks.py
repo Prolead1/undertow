@@ -326,7 +326,9 @@ def test_check_liquidity_conservation_exact_on_delta_only_data() -> None:
         SWAP_SCHEMA,
         [
             _swap_liq_row(1002, "7000000000000000000", -30),  # 5 + 2
-            _swap_liq_row(1004, "5000000000000000000", -60),  # crossed -60: our 3e18 leaves
+            # ADR-021: a down-landing on ``boundary(-60)`` records tick -61 and
+            # crosses -60, so our 3e18 leaves.
+            _swap_liq_row(1004, "5000000000000000000", -61),
         ],
     )
     res = check_liquidity_conservation(swaps, mints, None, fg, start_block=1000)
@@ -346,7 +348,8 @@ def test_check_liquidity_conservation_flags_drift_at_its_block() -> None:
     )
     swaps = _table(
         SWAP_SCHEMA,
-        [_swap_liq_row(1004, "6000000000000000000", -60)],  # corrupted: should be 5e18
+        # tick -61 is the recorded slot0 tick after a down-landing on boundary(-60)
+        [_swap_liq_row(1004, "6000000000000000000", -61)],  # corrupted: should be 5e18
     )
     res = check_liquidity_conservation(swaps, mints, None, fg, start_block=1000)
     assert not res.passed

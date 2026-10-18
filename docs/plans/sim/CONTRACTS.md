@@ -584,8 +584,12 @@ class PoolEngine:
         net input (last segment absorbing the float remainder), each segment's LP
         fee (net of ``fee_protocol``) added over that segment's active ``L``, and
         the boundary crossed **after** its segment's fee (update-then-cross).
-        Crossing direction is **price-derived** (exact Q64.96 when supplied, else
-        float), never tick-derived. Zero-liquidity final segments are guarded so
+        Ticks are crossed on the protocol's half-open **tick** interval
+        ``(min(pre_tick, post_tick), max(pre_tick, post_tick)]`` — the recorded
+        ``slot0.tick`` is authoritative (a downward swap landing exactly on
+        ``boundary(T)`` records ``T-1`` while the price stays on the boundary),
+        so crossing is never price-derived (ADR-021). Zero-liquidity final
+        segments are guarded so
         the step cannot divide by zero. Returns a dict with:
           - fees_accrued: dict[position_id, (fees_0, fees_1)]
           - ticks_crossed: list[Tick]
