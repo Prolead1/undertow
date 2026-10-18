@@ -170,7 +170,7 @@ This dictionary is generated from the canonical schemas in `src/undertow/data/sc
 | `quote_volume` | `double` | quote volume (float64) | no |
 | `trades` | `int64` | number of trades (int64) | no |
 | `symbol` | `string` | 'ETHUSDT' / 'ETHUSDC' | no |
-| `is_gap_filled` | `bool` | true if the bar was forward-filled over an exchange outage (bool) | no |
+| `is_gap_filled` | `bool` | true if the bar was filled (forward- or cross-filled, ADR-017) over an exchange outage (bool) | no |
 
 ### `regime`
 
@@ -298,10 +298,13 @@ dimensionally inconsistent and would label every real window `sideways`. `sigma_
 ### Reference-feed gaps and the USDT proxy assumption
 
 `reference` is Binance 1-minute klines: `ETHUSDT` primary, `ETHUSDC` as the cross-check. Gaps
-(exchange outages, thin pairs, a kline that never printed) are **forward-filled and flagged**,
-never interpolated and never silently dropped: a missing bar after at least one observed bar
-copies the prior close into OHLC, zeroes volume and trades, and sets `is_gap_filled = true`.
-A missing **leading** edge is left absent — back-filling it would be look-ahead. `close_time` is
+(exchange outages, thin pairs, a kline that never printed) are **filled and flagged**,
+never interpolated and never silently dropped. A **secondary** symbol's gap is cross-filled from the
+densest symbol's effective close (median-ratio scaled) when that close was observed at least as
+recently as the secondary's own last bar; otherwise the prior close is copied into OHLC. Either
+way volume and trades are zeroed and `is_gap_filled = true`; the *densest* symbol is never
+cross-filled. A missing **leading** edge with no usable sibling is left absent — back-filling it
+would be look-ahead. `close_time` is
 `open_time + 59.999 s`, and every as-of join uses `close_time <= block_timestamp`. Prices are
 ETH in USD-stable terms, and this pipeline treats **USDT as a USD proxy (1 USDT ≙ 1 USD)** — an
 explicit assumption, not a fact: USDT can deviate from parity under stress (tens of bps within
