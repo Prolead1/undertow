@@ -27,6 +27,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import polars as pl
 import pyarrow as pa
@@ -416,7 +417,7 @@ def capture_pool_state(config: DataConfig) -> StreamPullResult | None:
     ):
         return None
     dataset = build(config)
-    tape = pl.from_arrow(dataset.tape)
+    tape = cast(pl.DataFrame, pl.from_arrow(dataset.tape))
     blocks: list[int] = []
     for start, end in (
         (window.start_utc, window.train_end_utc),
@@ -429,7 +430,7 @@ def capture_pool_state(config: DataConfig) -> StreamPullResult | None:
             # `pool_state_at(B)` is the state AFTER block B, and the backtester
             # replays every row from the lane's first block onwards — so seed at
             # its predecessor, i.e. the state *before* the window's first event.
-            blocks.append(int(lane["block_number"].min()) - 1)
+            blocks.append(cast(int, lane["block_number"].min()) - 1)
     if not blocks:
         return None
     # The snapshot fetches ~600-1000 historical `eth_call`s; a 100-call batch would

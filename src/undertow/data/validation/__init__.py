@@ -26,7 +26,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow as pa
 
 from undertow.data.config import DEFAULT_REFERENCE_SYMBOL
 from undertow.data.storage.manifest import DatasetManifest

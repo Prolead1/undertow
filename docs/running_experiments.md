@@ -13,7 +13,7 @@ that `undertow-data snapshot` already built.
 
 ## Prerequisites
 
-- Python 3.11+ (the project targets 3.11; the pinned venv is 3.14)
+- Python 3.14
 - [`uv`](https://docs.astral.sh/uv/) installed
 - A data snapshot on disk (see below)
 

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow as pa
 
 from undertow.data.config import GLOBAL_TICK_SENTINEL, PoolConfig
 from undertow.data.transforms.feegrowth import (
@@ -35,7 +35,7 @@ from undertow.data.transforms.feegrowth import (
     PositionKey,
     TickState,
 )
-from undertow.data.types import CheckResult, Severity
+from undertow.data.types import BlockNumber, CheckResult, Severity
 from undertow.data.validation import dune_expectations
 from undertow.data.validation.checks import _result
 
@@ -270,6 +270,11 @@ def _find_lifecycles(tape: pa.Table) -> tuple[list[_Lifecycle], int]:
                     key=key,
                     mint_block=int(mint["block"]),
                     liquidity=int(mint["liquidity"]),
+                    burn_block=None,
+                    burn_liquidity=None,
+                    burn0=None,
+                    burn1=None,
+                    burn_tx=None,
                     collect_block=int(collect_rows[0]["block"]),
                     collect0=int(collect_rows[0]["amount0"]),
                     collect1=int(collect_rows[0]["amount1"]),
@@ -349,10 +354,15 @@ def _snapshot_state(fee_growth: pa.Table, block: int) -> FeeGrowthState | None:
                 liquidity_net=_as_int(_py(fee_growth, i, "liquidity_net")),
                 initialized=bool(_py(fee_growth, i, "initialized")),
             )
-    if global_g0 is None or current_tick is None or current_liquidity is None:
+    if (
+        global_g0 is None
+        or global_g1 is None
+        or current_tick is None
+        or current_liquidity is None
+    ):
         return None
     return FeeGrowthState(
-        block_number=block,
+        block_number=BlockNumber(block),
         fee_growth_global_0_x128=global_g0,
         fee_growth_global_1_x128=global_g1,
         current_tick=current_tick,

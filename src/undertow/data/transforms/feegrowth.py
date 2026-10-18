@@ -73,7 +73,7 @@ import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-import pyarrow as pa  # type: ignore[import-untyped]  # no stubs shipped
+import pyarrow as pa  # no stubs shipped
 
 from undertow.data.config import GLOBAL_TICK_SENTINEL, PoolConfig
 from undertow.data.fixedpoint import (

@@ -48,7 +48,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 
@@ -56,6 +56,7 @@ from undertow.sim.backtest import BacktestLedger, run_backtest
 from undertow.sim.backtest.ledger import config_hash
 from undertow.sim.config import SimConfig
 from undertow.sim.policies import HODLPolicy
+from undertow.sim.prices import ReplayPriceProcess
 from undertow.sim.types import ParityError
 
 if TYPE_CHECKING:
@@ -219,7 +220,8 @@ def _sim_step_series(
 ) -> tuple[list[float], list[float], list[float], list[datetime]]:
     """Step a freshly reset HOLD episode, returning per-step fees/IL/PnL/times."""
     episode_length = int(sim_env.episode_length)
-    decision_times = list(sim_env.price_process.close_times)[:episode_length]
+    replay_process = cast(ReplayPriceProcess, sim_env.price_process)
+    decision_times = list(replay_process.close_times)[:episode_length]
     sim_fees: list[float] = []
     sim_il: list[float] = []
     sim_pnl: list[float] = []
@@ -288,8 +290,9 @@ def run_parity_check(
 
     for seed in chosen:
         sim_env.reset(seed=seed)
-        start_seq = int(sim_env.price_process.start_seq)
-        end_seq = int(sim_env.price_process.end_seq)
+        replay_process = cast(ReplayPriceProcess, sim_env.price_process)
+        start_seq = int(replay_process.start_seq)
+        end_seq = int(replay_process.end_seq)
         window = (start_seq, end_seq)
 
         sim_fees, sim_il, sim_pnl, decision_times = _sim_step_series(sim_env)

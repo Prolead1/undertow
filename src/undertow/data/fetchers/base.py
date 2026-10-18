@@ -44,12 +44,17 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 from urllib.parse import urlsplit
 
 import pyarrow as pa
 import requests
 from requests.adapters import HTTPAdapter
+
+if TYPE_CHECKING:
+    # Inline-typed requests keeps its JSON alias in a private module; this is a
+    # type-only import so no runtime dependency on ``requests._types``.
+    from requests._types import JsonType
 
 from undertow.data.config import EndpointConfig, PoolConfig
 from undertow.data.progress import ProgressReporter
@@ -444,7 +449,11 @@ class BaseHttpFetcher:
             try:
                 self._pace()
                 response = self._session.request(
-                    method, url, headers=headers, json=json, timeout=self._timeout
+                    method,
+                    url,
+                    headers=headers,
+                    json=cast("JsonType", json),
+                    timeout=self._timeout,
                 )
             except requests.exceptions.Timeout:
                 self._handle_transient(

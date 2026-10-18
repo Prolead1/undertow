@@ -68,7 +68,7 @@ def per_regime_metrics(
         rows.append(row)
 
     if not rows:
-        schema: dict[str, pl.DataType] = {"regime": pl.Utf8}
+        schema: dict[str, pl.DataType | type[pl.DataType]] = {"regime": pl.Utf8}
         schema.update({name: pl.Float64 for name in metric_names})
         return pl.DataFrame(schema=schema)
 

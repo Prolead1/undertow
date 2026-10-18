@@ -2,7 +2,7 @@
 name = "undertow"
 version = "0.1.0"
 description = "Friction-aware reinforcement learning for concentrated liquidity provision."
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
     "pyarrow>=19",
     "polars>=1.0",
@@ -70,7 +70,7 @@ show_missing = true
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py314"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
@@ -83,7 +83,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "ANN"]
 "tests/**" = ["ANN"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
@@ -91,5 +91,7 @@ module = "undertow.data.*"
 disallow_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = "pyarrow.*"
+# pyarrow ships no usable typing here; tensorboard is an optional SB3 extra
+# that is not installed (the import is guarded).
+module = ["pyarrow.*", "tensorboard"]
 ignore_missing_imports = true
