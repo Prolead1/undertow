@@ -2,7 +2,7 @@
 name = "undertow"
 version = "0.1.0"
 description = "Friction-aware reinforcement learning for concentrated liquidity provision."
-requires-python = ">=3.14"
+requires-python = ">=3.14,<3.15"
 dependencies = [
     "pyarrow>=19",
     "polars>=1.0",
