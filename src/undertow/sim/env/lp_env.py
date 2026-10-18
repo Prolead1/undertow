@@ -46,12 +46,15 @@ same episode window, price stream and observation sequence.
 
 from __future__ import annotations
 
+from bisect import bisect_left
+from collections.abc import Iterator
 from dataclasses import asdict, replace
 from datetime import datetime
 from typing import Any
 
 import gymnasium as gym
 import numpy as np
+import polars as pl
 
 from undertow.data import Q96, sqrt_price_x96_to_tick
 from undertow.sim.config import SimConfig
@@ -81,6 +84,17 @@ DEFAULT_INITIAL_WIDTH: int = 10
 #: Default synthetic swap volume (raw token units) in calibrated mode.
 DEFAULT_CALIBRATED_SWAP_VOLUME_0: float = 1_000_000.0
 DEFAULT_CALIBRATED_SWAP_VOLUME_1: float = 1_000_000.0
+
+#: External-lattice warmup checkpoint stride (events).  The first reset replays
+#: the backed lane once from its ADR-018 boundary snapshot while recording a
+#: lattice snapshot every ``WARMUP_CHECKPOINT_STRIDE`` rows; later resets then
+#: restore the nearest checkpoint and replay at most this many rows to reach
+#: their episode window instead of re-replaying the whole lane (ADR-020).
+#: Tests lower it to exercise the checkpoint path on short fixtures.
+WARMUP_CHECKPOINT_STRIDE: int = 10_000
+
+#: A warmup checkpoint: the lattice state *after* the tape row at ``seq``.
+WarmupCheckpoint = tuple[int, PoolState, dict[Tick, TickState]]
 
 
 class LpEnvironment(gym.Env):
@@ -154,6 +168,9 @@ class LpEnvironment(gym.Env):
         self._start_seq: int = 0
         self._end_seq: int = 0
         self._external_seeded: bool = False
+        self._warmup_checkpoints: list[WarmupCheckpoint] | None = None
+        self._warmup_checkpoint_seqs: list[int] = []
+        self._warmup_source: tuple[pl.DataFrame, ...] | None = None
         self._episode_length: int = 0
         self._step_count: int = 0
         self._bar_k: int = -1
@@ -188,31 +205,119 @@ class LpEnvironment(gym.Env):
     # Construction-time snapshot of the external pool
     # ------------------------------------------------------------------
     def _reset_external_pool(self) -> None:
-        """Rebuild the external lattice for the sampled episode window (ADR-019).
+        """Rebuild the external lattice for the sampled episode window (ADR-019/020).
 
-        When the view carries a boundary pool-state snapshot (ADR-018), seed the
-        engine from it and replay every pre-window warmup row so the external
-        state reaches the window start — the exact same seed+warmup the
-        backtester runs (``_seed_fee_growth_replay``).  Hand-built/fixture views
-        without a snapshot keep the construction-time empty-lattice base.
+        When the view carries a boundary pool-state snapshot (ADR-018), restore
+        the lattice from the nearest warmup checkpoint and replay the remaining
+        pre-window rows — the exact same seed+warmup the backtester runs
+        (``_seed_fee_growth_replay``), but bounded by
+        :data:`WARMUP_CHECKPOINT_STRIDE` events per reset rather than by the
+        distance to the lane start.  Hand-built/fixture views without a snapshot
+        keep the construction-time empty-lattice base.
         """
-        sub = self.market_view.slice(self._start_seq, self._end_seq)
         self._external_seeded = bool(
-            sub.pool_state is not None and sub.pool_state.height > 0
+            self.market_view.pool_state is not None
+            and self.market_view.pool_state.height > 0
         )
         if self._external_seeded:
-            seeded = PoolEngine.from_snapshot(
-                self.pool_engine.state, sub.pool_state.to_dicts()
-            )
-            if sub.warmup is not None and sub.warmup.height > 0:
-                for row in sub.warmup.sort("seq").to_dicts():
-                    self._apply_warmup_row(seeded, row)
-            self._base_state = replace(seeded.state)
-            self._base_ticks = {
-                tick: replace(tick_state)
-                for tick, tick_state in seeded.ticks.items()
-            }
+            self._restore_from_warmup_checkpoint()
         self._restore_pool_base()
+
+    def _restore_from_warmup_checkpoint(self) -> None:
+        """Seed the live engine from the nearest checkpoint and replay the gap."""
+        checkpoints = self._ensure_warmup_checkpoints()
+        if not checkpoints:
+            raise EnvError(
+                "the market view carries a pool_state snapshot but no tape rows "
+                "to warm the external lattice"
+            )
+        # ``bisect_left`` (not ``_right``): a checkpoint holds the state *after*
+        # its row, so a start at the checkpoint's own seq must replay from the
+        # previous checkpoint, not skip the row.
+        index = bisect_left(self._warmup_checkpoint_seqs, self._start_seq) - 1
+        checkpoint_seq, checkpoint_state, checkpoint_ticks = checkpoints[index]
+        # Warm a fresh external-only engine: the live engine still holds the
+        # previous episode's agent positions, and replaying swaps through them
+        # would look up their synthetic boundaries in a lattice they are not on.
+        seeded = PoolEngine(
+            state=replace(checkpoint_state),
+            ticks=self._copy_ticks(checkpoint_ticks),
+        )
+        for row in self._warmup_rows_between(checkpoint_seq, self._start_seq):
+            self._apply_warmup_row(seeded, row)
+        self._base_state = replace(seeded.state)
+        self._base_ticks = self._copy_ticks(seeded.ticks)
+
+    def _ensure_warmup_checkpoints(self) -> list[WarmupCheckpoint]:
+        """Replay the backed lane once, memoising lattice snapshots (ADR-020).
+
+        Checkpoints are spaced by :data:`WARMUP_CHECKPOINT_STRIDE` *events*, not
+        blocks, so each one is the state after the row at its ``seq`` and a reset
+        at ``seq`` needs rows with ``checkpoint_seq < seq < start_seq``.  The
+        initial checkpoint is ``first_seq - 1`` (the raw snapshot), which keeps
+        an episode starting at the lane's first event warmup-free.
+        """
+        if self._warmup_checkpoints is not None:
+            return self._warmup_checkpoints
+        view = self.market_view
+        if view.pool_state is None or view.pool_state.height == 0:
+            self._warmup_checkpoints = []
+            return self._warmup_checkpoints
+
+        engine = PoolEngine.from_snapshot(
+            self.pool_engine.state, view.pool_state.to_dicts()
+        )
+        frames = self._warmup_frames()
+        first_seq = int(frames[0]["seq"][0])
+        checkpoints: list[WarmupCheckpoint] = [
+            (first_seq - 1, replace(engine.state), self._copy_ticks(engine.ticks))
+        ]
+        seqs = [first_seq - 1]
+        seen = 0
+        for frame in frames:
+            for row in frame.iter_rows(named=True):
+                self._apply_warmup_row(engine, row)
+                seen += 1
+                if seen % WARMUP_CHECKPOINT_STRIDE == 0:
+                    seq = int(row["seq"])
+                    seqs.append(seq)
+                    checkpoints.append(
+                        (seq, replace(engine.state), self._copy_ticks(engine.ticks))
+                    )
+        self._warmup_checkpoint_seqs = seqs
+        self._warmup_checkpoints = checkpoints
+        return checkpoints
+
+    def _warmup_frames(self) -> tuple[pl.DataFrame, ...]:
+        """Seq-ordered frames the external lattice replays (warmup + active).
+
+        ``MarketView.slice`` keeps the pre-window rows in ``warmup`` and every
+        one of them precedes the active window, so iterating the two frames in
+        order replays the lane in ``seq`` order without a concat copy.
+        """
+        if self._warmup_source is None:
+            view = self.market_view
+            frames: list[pl.DataFrame] = []
+            if view.warmup is not None and view.warmup.height:
+                frames.append(view.warmup.sort("seq"))
+            frames.append(view.active_split_data().sort("seq"))
+            self._warmup_source = tuple(frames)
+        return self._warmup_source
+
+    def _warmup_rows_between(
+        self, after_seq: int, before_seq: int
+    ) -> Iterator[dict[str, object]]:
+        """Yield pre-window rows with ``after_seq < seq < before_seq``."""
+        for frame in self._warmup_frames():
+            mask = (frame["seq"] > after_seq) & (frame["seq"] < before_seq)
+            sub = frame.filter(mask)
+            if sub.height:
+                yield from sub.iter_rows(named=True)
+
+    @staticmethod
+    def _copy_ticks(ticks: dict[Tick, TickState]) -> dict[Tick, TickState]:
+        """Deep-copy a tick lattice (``TickState`` is mutable)."""
+        return {tick: replace(tick_state) for tick, tick_state in ticks.items()}
 
     @staticmethod
     def _entry_triplet(
