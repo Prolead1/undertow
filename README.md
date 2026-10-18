@@ -57,3 +57,19 @@ This flag is wired up in `tests/conftest.py` (`pytest_addoption` +
 `pytest_collection_modifyitems`); it is not part of pytest's `addopts`, so it
 never collides with a later `-m` selector. Later pipeline tasks use it to run
 their live fetcher checks.
+
+## Test speed and parallelism
+
+The suite runs under `pytest-xdist` by default (`addopts = "-q --strict-markers
+-n auto"`). `tests/conftest.py` pins BLAS/OpenMP/NumExpr to **one thread per
+worker**: the training and backtest tests are small enough that thread-pool
+synchronisation costs more than the work, and without the pin each worker would
+spawn one thread per core and oversubscribe the machine (making `-n auto`
+slower than serial). Set an explicit value (e.g. `OMP_NUM_THREADS=8`) to
+override the pin for a run.
+
+Run serially when you need deterministic ordering or `--pdb`:
+
+```bash
+uv run pytest -n0        # single process, no xdist
+```

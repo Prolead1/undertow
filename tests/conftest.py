@@ -7,7 +7,26 @@ endpoints and are therefore deselected by default (see README).
 
 from __future__ import annotations
 
+import os
+
 import pytest
+
+# Pin BLAS/OpenMP/NumExpr to a single thread per test process. The suite's
+# training and backtest tests are small enough that thread-pool synchronisation
+# costs more than the work; left at the host default, numpy/torch spawn one
+# thread per core and oversubscribe the machine -- badly so under ``-n auto``.
+# Set at import time, before numpy/torch are first imported by any test module,
+# and inherited by the subprocess-based CLI tests. An explicit non-empty value
+# (e.g. ``OMP_NUM_THREADS=8``) is honoured; empty values are treated as unset so
+# a stray ``ENV OMP_NUM_THREADS=`` in a container cannot silently defeat it.
+for _thread_var in (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+):
+    if not os.environ.get(_thread_var):
+        os.environ[_thread_var] = "1"
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
