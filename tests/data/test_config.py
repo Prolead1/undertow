@@ -41,7 +41,8 @@ USDC_WETH_3000 = "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8"
 USDC_WETH_500 = "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"
 
 # A small, valid config used as the template for the load_config rejection tests. graph_url is
-# gateway base + key only; the subgraph id lives in code and _endpoint() appends it. See thegraph.py.
+# gateway base + key only; the subgraph id lives in code and _endpoint() appends it. See
+# thegraph.py.
 GOOD_TOML = """\
 [pool]
 address = "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8"

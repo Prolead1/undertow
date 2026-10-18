@@ -54,7 +54,7 @@ from undertow.data.storage.manifest import (
     write_manifest,
 )
 from undertow.data.storage.parquet import read_stream, write_stream
-from undertow.data.transforms.align import build_event_tape
+from undertow.data.transforms.align import Dataset, build_event_tape
 from undertow.data.transforms.regimes import label_series
 from undertow.data.types import (
     BlockNumber,
@@ -353,10 +353,8 @@ def _compute_regime(config: DataConfig, output_dir: Path) -> StreamPullResult:
 # ---------------------------------------------------------------------------
 
 
-def build(config: DataConfig) -> "Dataset":
+def build(config: DataConfig) -> Dataset:
     """Read all cached streams from parquet and assemble a ``Dataset``."""
-    from undertow.data.transforms.align import Dataset
-
     pool = config.pool
     output_dir = config.output_dir
 

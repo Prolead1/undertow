@@ -17,8 +17,8 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-import pytest
 import pyarrow as pa  # type: ignore[import-untyped]
+import pytest
 
 from tests.data.conftest import POOL, build_tiny_dataset
 from undertow.data.config import WindowConfig

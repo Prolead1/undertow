@@ -116,10 +116,10 @@ def test_registry_sort_keys_pool_scoped_consistency() -> None:
     assert set(SORT_KEYS) == set(SCHEMA_REGISTRY)
     # POOL_SCOPED is the pool-partitioned subset (CONTRACTS §4.0): every entry is a
     # registered stream, and the global streams are exactly the complement.
-    assert POOL_SCOPED <= set(SCHEMA_REGISTRY)
-    assert POOL_SCOPED <= set(SORT_KEYS)
+    assert set(SCHEMA_REGISTRY) >= POOL_SCOPED
+    assert set(SORT_KEYS) >= POOL_SCOPED
     assert set(SCHEMA_REGISTRY) - POOL_SCOPED == GLOBAL_STREAMS
-    assert POOL_SCOPED == {
+    assert {
         "swap",
         "mint",
         "burn",
@@ -127,7 +127,7 @@ def test_registry_sort_keys_pool_scoped_consistency() -> None:
         "flash",
         "fee_growth",
         "event_tape",
-    }
+    } == POOL_SCOPED
 
 
 @pytest.mark.parametrize("stream", sorted(SCHEMA_REGISTRY))
@@ -540,7 +540,8 @@ def test_validate_table_reports_all_mismatches_at_once() -> None:
 
 def test_validate_table_message_format() -> None:
     arrays = _conforming_arrays(SWAP_SCHEMA)
-    del arrays["recipient"]  # trailing column: no order shift, isolates the missing-column violation
+    # trailing column: no order shift, isolates the missing-column violation
+    del arrays["recipient"]
     table = pa.Table.from_arrays(list(arrays.values()), names=list(arrays.keys()))
     with pytest.raises(SchemaViolationError) as exc:
         validate_table(table, SWAP_SCHEMA)

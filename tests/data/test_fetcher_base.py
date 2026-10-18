@@ -19,13 +19,13 @@ from undertow.data.config import EndpointConfig, default_pools
 from undertow.data.fetchers.base import (
     BACKOFF_BASE_SECONDS,
     BACKOFF_CAP_SECONDS,
-    BaseHttpFetcher,
-    PermanentFetchError,
-    RateLimitError,
     TOO_MANY_RESULTS_PATTERNS,
     TRANSIENT_ERROR_PATTERNS,
+    BaseHttpFetcher,
+    FetchRequest,
+    PermanentFetchError,
+    RateLimitError,
 )
-from undertow.data.fetchers.base import FetchRequest
 from undertow.data.types import BlockNumber, Route, TransientNetworkError
 
 POOL_3000 = default_pools()["USDC_WETH_3000"]
@@ -490,7 +490,9 @@ def test_secret_never_in_key_filename_or_disk(mocked_http, tmp_path: Path, caplo
 # ---------------------------------------------------------------------------
 
 
-def test_atomic_write_crash_leaves_no_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_atomic_write_crash_leaves_no_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     f = _maker(tmp_path, max_retries=2)
     req = _req(start=1, end=2)
     key = f._cache_key(req, 1, 2)

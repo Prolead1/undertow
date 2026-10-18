@@ -6,7 +6,7 @@ No network. Uses T11's ``tiny_dataset()`` and monkeypatched fetchers.
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -63,6 +63,7 @@ def _write_tiny_streams(tiny, output_dir: Path) -> DataConfig:
         RegimeConfig,
         WindowConfig,
     )
+    from undertow.data.schemas import SCHEMA_VERSION
     from undertow.data.storage.manifest import (
         DatasetManifest,
         git_commit,
@@ -70,8 +71,7 @@ def _write_tiny_streams(tiny, output_dir: Path) -> DataConfig:
         write_manifest,
     )
     from undertow.data.storage.parquet import write_stream
-    from undertow.data.schemas import SCHEMA_VERSION
-    from undertow.data.types import BlockNumber, Route
+    from undertow.data.types import BlockNumber
 
     stream_manifests: dict[str, object] = {}
     for name, table in tiny.streams.items():
@@ -187,8 +187,7 @@ def test_pull_force_re_fetches(tmp_path: Path, tiny_dataset) -> None:
     report1 = pull(config)
 
     # Now force-re-pull "gas" — but mock the fetcher so it doesn't hit the network.
-    from undertow.data.fetchers.base import FetchRequest, FetchResult
-    from undertow.data.storage.parquet import read_stream
+    from undertow.data.fetchers.base import FetchResult
 
     gas_table = read_stream(output_dir, "gas", pool=tiny_dataset.pool)
 
@@ -237,6 +236,9 @@ def test_build_assembles_dataset(tmp_path: Path, tiny_dataset) -> None:
     config = _write_tiny_streams(tiny_dataset, output_dir)
 
     # Write a manifest so build can find the streams.
+    from datetime import UTC, datetime
+
+    from undertow.data.schemas import SCHEMA_VERSION
     from undertow.data.storage.manifest import (
         DatasetManifest,
         StreamManifest,
@@ -244,8 +246,6 @@ def test_build_assembles_dataset(tmp_path: Path, tiny_dataset) -> None:
         library_versions,
         write_manifest,
     )
-    from undertow.data.schemas import SCHEMA_VERSION
-    from datetime import UTC, datetime
 
     manifest = DatasetManifest(
         schema_version=SCHEMA_VERSION,
@@ -324,6 +324,7 @@ def test_verify_returns_check_results(tmp_path: Path, tiny_dataset) -> None:
     # Write manifest + parquet so verify can build.
     from datetime import UTC, datetime
 
+    from undertow.data.schemas import SCHEMA_VERSION
     from undertow.data.storage.manifest import (
         DatasetManifest,
         StreamManifest,
@@ -331,7 +332,6 @@ def test_verify_returns_check_results(tmp_path: Path, tiny_dataset) -> None:
         library_versions,
         write_manifest,
     )
-    from undertow.data.schemas import SCHEMA_VERSION
 
     manifest = DatasetManifest(
         schema_version=SCHEMA_VERSION,
@@ -597,9 +597,9 @@ def test_snapshot_critical_failure_removes_provisional_manifest(
     with (
         patch("undertow.data.pipeline.pull", return_value=good_report),
         patch("undertow.data.pipeline.verify", return_value=failed),
+        pytest.raises(ValidationError),
     ):
-        with pytest.raises(ValidationError):
-            snapshot(config)
+        snapshot(config)
 
     assert not (output_dir / "manifest.json").exists()
 
@@ -615,9 +615,9 @@ def test_snapshot_exception_removes_provisional_manifest(tmp_path: Path, tiny_da
     with (
         patch("undertow.data.pipeline.pull", return_value=good_report),
         patch("undertow.data.pipeline.verify", side_effect=RuntimeError("boom")),
+        pytest.raises(RuntimeError),
     ):
-        with pytest.raises(RuntimeError):
-            snapshot(config)
+        snapshot(config)
 
     assert not (output_dir / "manifest.json").exists()
 
@@ -665,6 +665,7 @@ def test_info_on_pulled_dataset(tmp_path: Path, tiny_dataset) -> None:
     # Need a manifest for info to read.
     from datetime import UTC, datetime
 
+    from undertow.data.schemas import SCHEMA_VERSION
     from undertow.data.storage.manifest import (
         DatasetManifest,
         StreamManifest,
@@ -672,7 +673,6 @@ def test_info_on_pulled_dataset(tmp_path: Path, tiny_dataset) -> None:
         library_versions,
         write_manifest,
     )
-    from undertow.data.schemas import SCHEMA_VERSION
 
     manifest = DatasetManifest(
         schema_version=SCHEMA_VERSION,
@@ -754,5 +754,5 @@ def test_stream_pull_result_immutable() -> None:
         n_requests=1,
         from_cache=False,
     )
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         spr.row_count = 200  # type: ignore[misc]
