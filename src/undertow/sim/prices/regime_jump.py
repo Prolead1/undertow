@@ -442,7 +442,7 @@ def _fit_from_regime_labels(
 
     return MRSJDParams(
         state_names=_REGIME_ORDER,
-        transition_matrix=_empirical_transition(label_arr),
+        transition_matrix=_empirical_transition(label_arr.tolist()),
         drift=tuple(float(means[i] / dt) for i in range(len(_REGIME_ORDER))),
         diffusion=tuple(float(sigmas[i] / math.sqrt(dt)) for i in range(len(_REGIME_ORDER))),
         jump_intensity=tuple(jump_intensity),

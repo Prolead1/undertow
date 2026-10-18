@@ -50,13 +50,14 @@ from bisect import bisect_left
 from collections.abc import Iterator
 from dataclasses import asdict, replace
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 import gymnasium as gym
 import numpy as np
 import polars as pl
 
 from undertow.data import Q96, sqrt_price_x96_to_tick
+from undertow.sim.coerce import as_float, as_int
 from undertow.sim.config import SimConfig
 from undertow.sim.core.pool import PoolEngine, PoolState, TickState
 from undertow.sim.core.position import DEFAULT_DEC0, DEFAULT_DEC1, Position, initial_deposit
@@ -66,14 +67,17 @@ from undertow.sim.env.observations import (
     ObservationBuilder,
 )
 from undertow.sim.env.reward import RewardBreakdown, compute_reward, normalize_reward
+from undertow.sim.frictions.gas import GasModel
+from undertow.sim.frictions.slippage import SlippageModel
 from undertow.sim.marketview import MarketView
-from undertow.sim.prices.base import human_price_to_triplet
+from undertow.sim.prices.base import PriceProcess, human_price_to_triplet
 from undertow.sim.prices.replay import ReplayPriceProcess
 from undertow.sim.types import (
     Action,
     EnvError,
     SqrtPrice,
     Tick,
+    TickSpacing,
 )
 
 __all__ = ["LpEnvironment"]
@@ -113,9 +117,9 @@ class LpEnvironment(gym.Env):
         self,
         market_view: MarketView,
         pool_engine: PoolEngine,
-        price_process: object,
-        gas_model: object,
-        slippage_model: object,
+        price_process: PriceProcess,
+        gas_model: GasModel,
+        slippage_model: SlippageModel,
         config: SimConfig,
         *,
         initial_width: int = DEFAULT_INITIAL_WIDTH,
@@ -333,10 +337,10 @@ class LpEnvironment(gym.Env):
         x96 = entry_row.get("sqrt_price_x96")
         tick_value = entry_row.get("tick")
         if x96 not in (None, ""):
-            int_x96 = int(x96)
+            int_x96 = as_int(x96)
             sqrt_price = int_x96 / float(Q96)
             tick = (
-                Tick(int(tick_value))
+                Tick(as_int(tick_value))
                 if tick_value is not None
                 else Tick(int(sqrt_price_x96_to_tick(int_x96)))
             )
@@ -349,7 +353,7 @@ class LpEnvironment(gym.Env):
         """The input-side volume of one signed raw amount cell (0 if absent/out)."""
         if value in (None, ""):
             return 0.0
-        raw = float(value)
+        raw = as_float(value)
         return raw if raw > 0.0 else 0.0
 
     @staticmethod
@@ -361,11 +365,11 @@ class LpEnvironment(gym.Env):
             tick_value = row.get("tick")
             exact_x96: int | None = None
             if x96 not in (None, ""):
-                int_x96 = int(x96)
+                int_x96 = as_int(x96)
                 exact_x96 = int_x96
                 sqrt_price = int_x96 / float(Q96)
                 tick = (
-                    Tick(int(tick_value))
+                    Tick(as_int(tick_value))
                     if tick_value is not None
                     else Tick(int(sqrt_price_x96_to_tick(int_x96)))
                 )
@@ -388,8 +392,8 @@ class LpEnvironment(gym.Env):
                 "LpEnvironment requires a pool engine with no agent positions at "
                 "construction; it deploys its own on reset()"
             )
-        self._base_state: PoolState = replace(self.pool_engine.state)
-        self._base_ticks: dict[Tick, TickState] = {
+        self._base_state = replace(self.pool_engine.state)
+        self._base_ticks = {
             tick: replace(tick_state)
             for tick, tick_state in self.pool_engine.ticks.items()
         }
@@ -516,7 +520,7 @@ class LpEnvironment(gym.Env):
         self._last_at_time = None
 
         entry_row = self.market_view.tape_at(self._start_seq)
-        entry_time = entry_row["block_timestamp"]
+        entry_time = cast(datetime, entry_row["block_timestamp"])
         reference_price = self.market_view.reference_close(entry_time)
         if reference_price is None:
             reference_price = self._price_from_sqrt(self.pool_engine.state.sqrt_price)
@@ -539,7 +543,7 @@ class LpEnvironment(gym.Env):
         self._last_tape_row = entry_row
         self._last_at_time = entry_time
 
-        spacing = int(episode.tick_spacing)
+        spacing = TickSpacing(int(episode.tick_spacing))
         deploy = Action(
             action_type="rebalance",
             center_offset=self._initial_center_offset,
@@ -621,7 +625,9 @@ class LpEnvironment(gym.Env):
         il_change = il_total - self._last_il_total
         self._last_il_total = il_total
 
-        position_value = self._position.value(sqrt_price, price)
+        position = self._position
+        assert position is not None, "reset deploys a position before any step"
+        position_value = position.value(sqrt_price, price)
         equity = position_value + self._current_fees_usdc(price)
         self._equity = equity
         self._pnl_history.append(equity)
@@ -682,9 +688,10 @@ class LpEnvironment(gym.Env):
         try:
             price, sqrt_price, tick = self.price_process.step(self._rng)
         except StopIteration:
-            at_time = self._last_at_time or self.market_view.tape_at(
-                self._end_seq - 1
-            )["block_timestamp"]
+            at_time = self._last_at_time or cast(
+                datetime,
+                self.market_view.tape_at(self._end_seq - 1)["block_timestamp"],
+            )
             return (
                 self._entry_price,
                 self.pool_engine.state.sqrt_price,
@@ -708,7 +715,7 @@ class LpEnvironment(gym.Env):
                 volume_0, volume_1 = self._event_volumes(index)
                 raw_x96 = self._ev_sqrt_x96[index]
                 event_x96 = (
-                    int(raw_x96) if raw_x96 not in (None, "") else None
+                    as_int(raw_x96) if raw_x96 not in (None, "") else None
                 )
                 result = self.pool_engine.step(
                     event_sqrt,
@@ -767,7 +774,7 @@ class LpEnvironment(gym.Env):
             for key in ("price_reference", "price_pool"):
                 raw = self._last_tape_row.get(key)
                 if raw not in (None, ""):
-                    mark_price = float(raw)
+                    mark_price = as_float(raw)
                     break
         return (
             mark_price,
@@ -784,9 +791,10 @@ class LpEnvironment(gym.Env):
         try:
             price, sqrt_price, tick = self.price_process.step(self._rng)
         except StopIteration:
-            at_time = self._last_at_time or self.market_view.tape_at(
-                self._end_seq - 1
-            )["block_timestamp"]
+            at_time = self._last_at_time or cast(
+                datetime,
+                self.market_view.tape_at(self._end_seq - 1)["block_timestamp"],
+            )
             return (
                 self._entry_price,
                 self.pool_engine.state.sqrt_price,
@@ -804,7 +812,7 @@ class LpEnvironment(gym.Env):
             self._calibrated_swap_volume_0,
             self._calibrated_swap_volume_1,
         )
-        at_time = tape_row["block_timestamp"]
+        at_time = cast(datetime, tape_row["block_timestamp"])
         self._last_tape_row = tape_row
         self._last_at_time = at_time
         return price, sqrt_price, at_time, tape_row, False
@@ -813,11 +821,11 @@ class LpEnvironment(gym.Env):
         """Raw ``(sqrt_price, tick)`` for a swap tape event (ADR-009)."""
         x96 = self._ev_sqrt_x96[index]
         if x96 not in (None, ""):
-            int_x96 = int(x96)
+            int_x96 = as_int(x96)
             sqrt_price = int_x96 / float(Q96)
             tick_value = self._ev_ticks[index]
             tick = (
-                Tick(int(tick_value))
+                Tick(as_int(tick_value))
                 if tick_value is not None
                 else Tick(int(sqrt_price_x96_to_tick(int_x96)))
             )
@@ -888,7 +896,7 @@ class LpEnvironment(gym.Env):
 
     def _gas_row(self, tape_row: dict[str, object]) -> dict[str, object]:
         """Gas context for a step, preferring the gas feed (as the builder does)."""
-        block_number = int(tape_row.get("block_number", 0) or 0)
+        block_number = as_int(tape_row.get("block_number", 0) or 0)
         row = self.market_view.gas_at_block(block_number)
         return row if row is not None else tape_row
 
@@ -909,7 +917,7 @@ class LpEnvironment(gym.Env):
         """
         if self._position is None or self._position_id is None:
             raise EnvError("rebalance requested with no open position")
-        spacing = int(self.config.episode.tick_spacing)
+        spacing = TickSpacing(int(self.config.episode.tick_spacing))
         lower = action.lower_tick(self.pool_engine.state.tick, spacing)
         upper = action.upper_tick(self.pool_engine.state.tick, spacing)
 
@@ -917,12 +925,12 @@ class LpEnvironment(gym.Env):
         collected = self._current_fees_usdc(price)
 
         gas_row = self._gas_row(tape_row)
-        base_fee = int(gas_row.get("base_fee_per_gas") or 0)
-        priority_fee = int(gas_row.get("priority_fee_p50_wei") or 0)
+        base_fee = as_int(gas_row.get("base_fee_per_gas") or 0)
+        priority_fee = as_int(gas_row.get("priority_fee_p50_wei") or 0)
         gas_cost = float(
             self.gas_model.gas_cost_usdc(
                 "rebalance",
-                int(tape_row.get("block_number", 0) or 0),
+                as_int(tape_row.get("block_number", 0) or 0),
                 base_fee,
                 priority_fee,
                 price,

@@ -18,7 +18,7 @@ import bisect
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Literal, cast
 
 import numpy as np
 import polars as pl
@@ -46,7 +46,7 @@ def _to_polars(table: object) -> pl.DataFrame:
     """Convert a pyarrow ``Table`` (or pass through a polars ``DataFrame``)."""
     if isinstance(table, pl.DataFrame):
         return table
-    return pl.from_arrow(table)  # type: ignore[arg-type]
+    return cast(pl.DataFrame, pl.from_arrow(table))
 
 
 def _sort(df: pl.DataFrame, columns: list[str]) -> pl.DataFrame:
@@ -148,10 +148,12 @@ class MarketView:
                 raise MarketViewError(
                     f"MarketView: reference feed has no '{column}' column"
                 )
-        ref_start = self.reference["open_time"].min()
-        ref_end = self.reference["close_time"].max()
-        if ref_start is None or ref_end is None:
+        ref_start_raw = self.reference["open_time"].min()
+        ref_end_raw = self.reference["close_time"].max()
+        if ref_start_raw is None or ref_end_raw is None:
             raise MarketViewError("MarketView: reference feed has no timestamps")
+        ref_start = cast(datetime, ref_start_raw)
+        ref_end = cast(datetime, ref_end_raw)
         if ref_start > self.active_start_utc or ref_end < self.active_end_utc:
             raise MarketViewError(
                 "MarketView: reference feed does not span the active split "
@@ -175,7 +177,7 @@ class MarketView:
     def _active_range(self) -> tuple[int, int]:
         """Inclusive ``(min_seq, max_seq)`` of the active split."""
         active = self.active_split_data()
-        return int(active["seq"].min()), int(active["seq"].max())
+        return cast(int, active["seq"].min()), cast(int, active["seq"].max())
 
     def _check_time(self, at_time: datetime) -> None:
         """Raise ``LookAheadError`` when ``at_time`` is past the active wall."""
@@ -211,14 +213,17 @@ class MarketView:
                 f"slice [{start_seq}, {end_seq}) produced an empty view"
             )
 
-        sub_start = sub["block_timestamp"].min()
-        sub_end = sub["block_timestamp"].max()
-        if sub_start is None or sub_end is None:
+        sub_start_raw = sub["block_timestamp"].min()
+        sub_end_raw = sub["block_timestamp"].max()
+        if sub_start_raw is None or sub_end_raw is None:
             raise MarketViewError("slice produced rows with no block_timestamp")
+        sub_start = cast(datetime, sub_start_raw)
+        sub_end = cast(datetime, sub_end_raw)
 
         # Keep the parent lane's rows before this window so the backtester can
         # warm its exact fee engine from the lane-start pool_state.
         prior = active.filter(pl.col("seq") < start_seq)
+        warmup: pl.DataFrame | None
         if self.warmup is not None and self.warmup.height:
             warmup = pl.concat([self.warmup, prior]) if prior.height else self.warmup
         else:
@@ -463,7 +468,7 @@ def build_market_view(
         """
         if fee_growth.height == 0 or "block_number" not in fee_growth.columns:
             return None
-        seed_block = int(active["block_number"].min()) - 1
+        seed_block = cast(int, active["block_number"].min()) - 1
         exact = fee_growth.filter(pl.col("block_number") == seed_block)
         if exact.height == 0:
             LOGGER.warning(

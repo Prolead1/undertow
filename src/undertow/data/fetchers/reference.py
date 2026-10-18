@@ -467,7 +467,9 @@ def forward_fill_klines(
     for sym in sorted(symbols):
         observed = observed_by_symbol[sym]
         cross = source_symbol is not None and sym != source_symbol and bool(source_closes)
-        scale = _cross_scale(observed, observed_by_symbol[source_symbol]) if cross else 1.0
+        scale = 1.0
+        if cross and source_symbol is not None:
+            scale = _cross_scale(observed, observed_by_symbol[source_symbol])
         grid: list[dict] = []
         last_close: float | None = None
         last_observed_ms: int | None = None

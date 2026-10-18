@@ -20,5 +20,7 @@ jobs:
         run: uv sync --locked
       - name: Ruff
         run: uv run ruff check .
+      - name: Mypy
+        run: uv run mypy src/undertow
       - name: Tests (coverage floor enforced by pyproject.toml)
         run: uv run pytest

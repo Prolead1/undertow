@@ -298,6 +298,53 @@ def test_crosscheck_unsupported_stream_is_info_skip() -> None:
     assert "skipped" in res.detail
 
 
+def test_find_lifecycles_flags_multiple_collects_as_unsupported() -> None:
+    """A second collect on one key is reported unsupported, not a crash.
+
+    Regression: the unsupported branch built ``_Lifecycle`` without its five
+    required burn fields, which raised ``TypeError``; the 3.14 mypy pin is what
+    surfaced it.
+    """
+    from undertow.data.validation.crosscheck import _find_lifecycles
+
+    events = [
+        _mint(1001, O1, -60, 60, str(L)),
+        _collect(1002, O1, -60, 60, "27000000000000", "0"),
+        _collect(1003, O1, -60, 60, "27000000000000", "0"),
+    ]
+
+    lifecycles, ignored = _find_lifecycles(_tape(events))
+
+    assert ignored == 0
+    assert len(lifecycles) == 1
+    lifecycle = lifecycles[0]
+    assert lifecycle.unsupported == "multiple burn/collect events for one key"
+    assert lifecycle.burn_block is None
+    assert lifecycle.burn_liquidity is None
+    assert lifecycle.burn0 is None
+    assert lifecycle.burn1 is None
+    assert lifecycle.burn_tx is None
+    assert lifecycle.collect_block == 1002
+
+
+def test_reconcile_reports_multiple_collect_lifecycle_as_unsupported() -> None:
+    """The report names the unsupported lifecycle instead of replaying it."""
+    events = [
+        _mint(1001, O1, -60, 60, str(L)),
+        _collect(1002, O1, -60, 60, "27000000000000", "0"),
+        _collect(1003, O1, -60, 60, "27000000000000", "0"),
+    ]
+
+    result = reconcile_fees_against_collect(
+        _tape(events), _table(FEE_GROWTH_SCHEMA, []), POOL
+    )
+
+    assert result.passed
+    assert result.metrics["skipped"] == 1
+    assert result.metrics["lifecycles_replayed"] == 0
+    assert '"status": "unsupported"' in str(result.metrics["lifecycle_details"])
+
+
 # ---------------------------------------------------------------------------
 # reconcile_fees_against_collect — the exactness proofs (hand-computed)
 # ---------------------------------------------------------------------------

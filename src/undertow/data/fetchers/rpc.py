@@ -655,7 +655,7 @@ class RpcFetcher(BaseHttpFetcher):
                 self._handle_transient(exc, attempt)
                 attempt += 1
 
-    def _jsonrpc(self, method: str, params: list[object], context: str = "") -> object:
+    def _jsonrpc(self, method: str, params: Sequence[object], context: str = "") -> object:
         """One JSON-RPC call. Raises the classified FetchError on an error item."""
         payload = {
             "jsonrpc": _JSONRPC_VERSION,
@@ -677,7 +677,7 @@ class RpcFetcher(BaseHttpFetcher):
         return self._with_jsonrpc_retry(once, context)
 
     def _jsonrpc_batch(
-        self, entries: Sequence[tuple[str, list[object], str]], *, batch_context: str = ""
+        self, entries: Sequence[tuple[str, Sequence[object], str]], *, batch_context: str = ""
     ) -> list[object]:
         """Batch several JSON-RPC calls, results in INPUT order.
 
@@ -694,7 +694,7 @@ class RpcFetcher(BaseHttpFetcher):
 
         calls: list[dict[str, object]] = []
         call_ids: list[int] = []
-        by_id: dict[int, tuple[str, list[object], str]] = {}
+        by_id: dict[int, tuple[str, Sequence[object], str]] = {}
         for method, params, context in entries:
             rid = self._next_id()
             by_id[rid] = (method, params, context)

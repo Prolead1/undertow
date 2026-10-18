@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import cast
 
 import polars as pl
 import pyarrow as pa
@@ -51,6 +52,15 @@ from undertow.data.storage.manifest import DatasetManifest
 from undertow.data.types import EventType, Regime, ValidationError
 
 LOGGER = logging.getLogger("undertow.data.transforms.align")
+
+
+def _arrow_frame(table: pa.Table) -> pl.DataFrame:
+    """``pl.from_arrow`` narrowly typed as a ``DataFrame``.
+
+    Polars' stubs return ``DataFrame | Series`` from the overload union even for a
+    ``pyarrow.Table``; every call site here passes a table.
+    """
+    return cast(pl.DataFrame, pl.from_arrow(table))
 
 _LOG_STREAMS: tuple[EventType, ...] = (
     EventType.SWAP,
@@ -282,7 +292,7 @@ def _join_fee_growth_globals(
     # The global accumulators are denormalized on every row, so the per-block
     # distinct set is one row per snapshot block.
     snapshots = (
-        pl.from_arrow(
+        _arrow_frame(
             fee_growth.select(
                 ["block_number", "fee_growth_global_0_x128", "fee_growth_global_1_x128"]
             )
@@ -344,7 +354,7 @@ def _reference_join_frame(reference: pa.Table, reference_symbol: str) -> pl.Data
     if "symbol" in reference.column_names:
         columns = ["symbol", *columns]
     frame = _select_symbol_frame(
-        pl.from_arrow(reference.select(columns)), reference_symbol, "reference"
+        _arrow_frame(reference.select(columns)), reference_symbol, "reference"
     )
     return frame.select(["close_time", "close"]).sort("close_time")
 
@@ -405,10 +415,10 @@ def build_event_tape(
     price_pool = [_price_from_sqrt(s, pool) for s in sqrt_values]
     base = base.append_column("price_pool", pa.array(price_pool, type=pa.float64()))
 
-    frame: pl.DataFrame = pl.from_arrow(base)
+    frame: pl.DataFrame = _arrow_frame(base)
 
     # --- gas: EXACT equi-join on block_number (that block's gas price, §10.2.3) ---
-    gas_join = pl.from_arrow(
+    gas_join = _arrow_frame(
         gas.select(["block_number", "base_fee_per_gas", "priority_fee_p50_wei"])
     )
     frame = frame.join(gas_join, on="block_number", how="left")
@@ -454,9 +464,13 @@ def build_event_tape(
     regime_columns = ["timestamp", "regime"]
     if "symbol" in regime.column_names:
         regime_columns = ["symbol", *regime_columns]
-    regime_join = _select_symbol_frame(
-        pl.from_arrow(regime.select(regime_columns)), reference_symbol, "regime"
-    ).select(["timestamp", "regime"]).sort("timestamp")
+    regime_join = (
+        _select_symbol_frame(
+            _arrow_frame(regime.select(regime_columns)), reference_symbol, "regime"
+        )
+        .select(["timestamp", "regime"])
+        .sort("timestamp")
+    )
     if regime_join.height > 0:
         frame = (
             frame.sort("block_timestamp")

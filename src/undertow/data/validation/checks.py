@@ -35,8 +35,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Final
 
-import pyarrow as pa  # type: ignore[import-untyped]
-import pyarrow.compute as pc  # type: ignore[import-untyped]
+import pyarrow as pa
+import pyarrow.compute as pc
 
 from undertow.data.config import (
     DEFAULT_REFERENCE_SYMBOL,

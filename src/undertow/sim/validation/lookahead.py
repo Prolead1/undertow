@@ -30,13 +30,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import polars as pl
 
 from undertow.sim.core.pool import PoolEngine
-from undertow.sim.env.observations import ObservationBuilder
+from undertow.sim.env.observations import Observation, ObservationBuilder
 from undertow.sim.types import LookAheadError, MarketViewError
 
 if TYPE_CHECKING:
@@ -72,10 +72,10 @@ def _clone_env(env: LpEnvironment, market_view: MarketView) -> LpEnvironment:
     from undertow.sim.prices.replay import ReplayPriceProcess
 
     engine = PoolEngine(
-        state=replace(env._base_state),  # type: ignore[attr-defined]
+        state=replace(env._base_state),
         ticks={
             tick: replace(state)
-            for tick, state in env._base_ticks.items()  # type: ignore[attr-defined]
+            for tick, state in env._base_ticks.items()
         },
     )
     process = ReplayPriceProcess(market_view, 0, market_view.step_count())
@@ -86,8 +86,8 @@ def _clone_env(env: LpEnvironment, market_view: MarketView) -> LpEnvironment:
         env.gas_model,
         env.slippage_model,
         env.config,
-        initial_width=env._initial_width,  # type: ignore[attr-defined]
-        initial_center_offset=env._initial_center_offset,  # type: ignore[attr-defined]
+        initial_width=env._initial_width,
+        initial_center_offset=env._initial_center_offset,
     )
 
 
@@ -185,7 +185,7 @@ class _ProbeSuite:
     # -- helpers ---------------------------------------------------------
     def _active_range(self) -> tuple[int, int]:
         active = self.market_view.active_split_data()
-        return int(active["seq"].min()), int(active["seq"].max())
+        return cast(int, active["seq"].min()), cast(int, active["seq"].max())
 
     def _sample_time(self) -> datetime:
         active = self.market_view.active_split_data()
@@ -257,7 +257,8 @@ class _ProbeSuite:
         if bars.height == 0:
             self._record("reference_bars_clamped", True, "no bars in range")
             return
-        max_close = bars["close_time"].max()
+        max_close_raw = bars["close_time"].max()
+        max_close = cast(datetime, max_close_raw) if max_close_raw is not None else None
         ok = max_close is None or max_close <= self.market_view.active_end_utc
         detail = (
             f"reference_bars clamped at the wall (max close {max_close})"
@@ -349,22 +350,23 @@ class _ProbeSuite:
 
     def _observation_at(
         self, view: MarketView, step: int, at_time: datetime
-    ) -> tuple[object, object]:
+    ) -> tuple[Observation, np.ndarray]:
         """Build the step-``step`` observation from ``view`` + the live env state."""
-        position = self.env._position  # type: ignore[attr-defined]
+        position = self.env._position
+        assert position is not None, "probe runs after reset, which deploys a position"
         pool_engine = self.env.pool_engine
         builder = ObservationBuilder(view)
         observation = builder.build_at(
             at_time=at_time,
-            tape_row=self.env._last_tape_row,  # type: ignore[attr-defined]
+            tape_row=self.env._last_tape_row,
             step_in_episode=step,
             steps_remaining=max(0, int(self.env.episode_length) - 1 - step),
             position=position,
             pool_engine=pool_engine,
             gas_model=self.env.gas_model,
-            entry_price=self.env._entry_price,  # type: ignore[attr-defined]
-            entry_sqrt_price=self.env._entry_sqrt,  # type: ignore[attr-defined]
-            initial_capital=self.env._capital,  # type: ignore[attr-defined]
+            entry_price=self.env._entry_price,
+            entry_sqrt_price=self.env._entry_sqrt,
+            initial_capital=self.env._capital,
         )
         return observation, observation.to_vector()
 
@@ -376,7 +378,7 @@ class _ProbeSuite:
             _obs, _rew, terminated, truncated, _info = self.env.step(0)
             if terminated or truncated:
                 break
-        at_time = self.env._last_at_time  # type: ignore[attr-defined]
+        at_time = self.env._last_at_time
         assert at_time is not None
         original, original_vector = self._observation_at(self.market_view, step, at_time)
         mutated_view = _mutate_future(self.market_view, at_time)
@@ -400,7 +402,7 @@ class _ProbeSuite:
             _obs, _rew, terminated, truncated, _info = self.env.step(0)
             if terminated or truncated:
                 break
-        at_time = self.env._last_at_time  # type: ignore[attr-defined]
+        at_time = self.env._last_at_time
         assert at_time is not None
         sentinel = 1.0e12
         mutated_view = _mutate_future(
@@ -436,7 +438,7 @@ class _ProbeSuite:
         for _ in range(step):
             obs, _rew, terminated, truncated, _info = self.env.step(0)
             original_observations.append(np.asarray(obs, dtype=float))
-            at_time = self.env._last_at_time  # type: ignore[attr-defined]
+            at_time = self.env._last_at_time
             if terminated or truncated:
                 break
         assert at_time is not None
@@ -469,11 +471,11 @@ class _ProbeSuite:
             _obs, _rew, terminated, truncated, _info = self.env.step(0)
             if terminated or truncated:
                 break
-        at_time = self.env._last_at_time  # type: ignore[attr-defined]
+        at_time = self.env._last_at_time
         assert at_time is not None
         active = self.market_view.active_split_data()
         prior = active.filter(pl.col("block_timestamp") <= at_time)
-        cutoff_seq = int(prior["seq"].max())
+        cutoff_seq = cast(int, prior["seq"].max())
         return cutoff_seq, at_time
 
     def _compare_ledgers(
@@ -506,7 +508,7 @@ class _ProbeSuite:
     def probe_backtester_truncation(self) -> None:
         cutoff_seq, _at_time = self._decision_cutoff()
         full = self.backtest_fn(self.market_view)
-        start = int(self.market_view.active_split_data()["seq"].min())
+        start = cast(int, self.market_view.active_split_data()["seq"].min())
         truncated_view = self.market_view.slice(start, cutoff_seq + 1)
         truncated = self.backtest_fn(truncated_view)
         problems = self._compare_ledgers(full, truncated, cutoff_seq)
