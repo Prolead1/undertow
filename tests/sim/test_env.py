@@ -41,7 +41,7 @@ from undertow.sim.marketview import MarketView
 from undertow.sim.prices.base import human_price_to_triplet
 from undertow.sim.prices.regime_jump import CalibratedPriceProcess, MRSJDParams
 from undertow.sim.prices.replay import ReplayPriceProcess
-from undertow.sim.types import Action, EnvError, PriceMode, Tick
+from undertow.sim.types import Action, EnvError, LookAheadError, PriceMode, Tick
 
 _ENTRY_TICK = 196242
 _FEE_TIER_BPS = 3000
@@ -328,6 +328,83 @@ class TestObservationBuilder:
         builder.configure_episode(50, 7)
         assert builder.episode_start == 50
         assert builder.episode_length == 7
+
+    def test_reference_closes_index_matches_filter_semantics(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        """ADR-022: the sorted index returns exactly the filter+sort result,
+        closed on the right (a bar exactly at ``at_time`` is included)."""
+        builder = ObservationBuilder(tiny_market_view)
+        close_times = tiny_market_view.reference["close_time"].sort().to_list()
+        probes = (
+            close_times[0],
+            close_times[5],
+            close_times[5] - timedelta(seconds=1),
+        )
+        for at_time in probes:
+            expected = (
+                tiny_market_view.reference.filter(pl.col("close_time") <= at_time)
+                .sort("close_time")["close"]
+                .to_numpy()
+                .astype(float)
+            )
+            assert np.array_equal(builder._reference_closes_through(at_time), expected)
+
+    def test_regime_index_is_as_of_inclusive_and_wall_checked(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        builder = ObservationBuilder(tiny_market_view)
+        stamps = tiny_market_view.regimes["timestamp"].sort().to_list()
+        assert builder._regime_at(stamps[3]) == tiny_market_view.regime_at(stamps[3])
+        just_after = stamps[3] + timedelta(seconds=1)
+        assert builder._regime_at(just_after) == tiny_market_view.regime_at(just_after)
+        with pytest.raises(LookAheadError):
+            builder._regime_at(tiny_market_view.active_end_utc + timedelta(days=1))
+
+    def test_empty_regime_and_gas_feeds_yield_empty_indexes(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        """Empty regime/gas feeds give the unknown label / tape fallback, no crash."""
+        view = replace(
+            tiny_market_view,
+            regimes=tiny_market_view.regimes.clear(),
+            gas=tiny_market_view.gas.clear(),
+        )
+        builder = ObservationBuilder(view)
+        at_time = tiny_market_view.active_start_utc
+
+        assert builder._regime_at(at_time) == "unknown"
+        total, base, priority = builder._gas_price_recent(
+            {"block_number": 1, "base_fee_per_gas": "7", "priority_fee_p50_wei": "3"}
+        )
+        assert (total, base, priority) == (10.0, 7, 3)
+
+    def test_naive_at_time_is_rejected(self, tiny_market_view: MarketView) -> None:
+        builder = ObservationBuilder(tiny_market_view)
+        with pytest.raises(ValueError, match="timezone-aware"):
+            builder._reference_closes_through(datetime(2022, 1, 1))
+
+    def test_gas_index_prefers_the_feed_and_falls_back_to_the_tape_row(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        builder = ObservationBuilder(tiny_market_view)
+        row = tiny_market_view.gas.row(0, named=True)
+        block = int(row["block_number"])
+
+        _total, base, priority = builder._gas_price_recent({"block_number": block})
+        assert (base, priority) == (
+            int(row["base_fee_per_gas"]),
+            int(row["priority_fee_p50_wei"]),
+        )
+
+        # A block with no gas row falls back to the tape row's own columns.
+        tape_row = {
+            "block_number": block + 10**9,
+            "base_fee_per_gas": "7",
+            "priority_fee_p50_wei": "3",
+        }
+        total, base, priority = builder._gas_price_recent(tape_row)
+        assert (total, base, priority) == (10.0, 7, 3)
 
 
 # ---------------------------------------------------------------------------

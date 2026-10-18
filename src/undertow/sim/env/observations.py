@@ -37,7 +37,7 @@ from undertow.sim.core.pool import PoolEngine
 from undertow.sim.core.position import DEFAULT_DEC0, DEFAULT_DEC1, Position
 from undertow.sim.frictions.gas import GasModel
 from undertow.sim.marketview import MarketView
-from undertow.sim.types import Price, SqrtPrice, Tick, Wealth
+from undertow.sim.types import LookAheadError, Price, Regime, SqrtPrice, Tick, Wealth
 
 __all__ = ["OBSERVATION_VECTOR_LENGTH", "Observation", "ObservationBuilder"]
 
@@ -177,6 +177,68 @@ class ObservationBuilder:
         self.lookback_bars = int(lookback_bars)
         self.episode_start = int(episode_start)
         self.episode_length = int(episode_length)
+        self._build_indexes()
+
+    # -- As-of indexes ----------------------------------------------------
+    def _build_indexes(self) -> None:
+        """Precompute sorted epoch arrays for O(log n) backward lookups.
+
+        Each step needs "reference closes with ``close_time <= at_time``", the
+        as-of regime label and the gas row for a block.  Filtering/sorting the
+        full multi-million-row feeds per step was ~10 ms of the ~11 ms step
+        (the exact replay engine is ~0.15 ms).  Sorted epoch arrays plus
+        ``searchsorted`` make every lookup O(log n), with the reference closes
+        returned as a view into the precomputed array.
+        """
+        reference = self.market_view.reference
+        if reference.height and "close_time" in reference.columns:
+            reference = reference.sort("close_time")
+            # ``dt.epoch("us")`` normalises any datetime unit (and tz) to the
+            # microsecond epoch the probe uses; a raw ``cast(Int64)`` would keep
+            # nanoseconds and silently drop a bar at an exact boundary.
+            self._ref_close_us = reference["close_time"].dt.epoch("us").to_numpy()
+            self._ref_closes = reference["close"].to_numpy().astype(float)
+        else:
+            self._ref_close_us = np.empty(0, dtype=np.int64)
+            self._ref_closes = np.empty(0, dtype=float)
+
+        regimes = self.market_view.regimes
+        if regimes.height and "timestamp" in regimes.columns:
+            regimes = regimes.sort("timestamp")
+            self._regime_us = regimes["timestamp"].dt.epoch("us").to_numpy()
+            self._regime_labels = regimes["regime"].cast(pl.String).to_list()
+        else:
+            self._regime_us = np.empty(0, dtype=np.int64)
+            self._regime_labels = []
+
+        gas = self.market_view.gas
+        if gas.height and "block_number" in gas.columns:
+            gas = gas.sort("block_number")
+            self._gas_blocks = gas["block_number"].to_numpy()
+            self._gas_base = (
+                gas["base_fee_per_gas"].cast(pl.Int64).fill_null(0).to_numpy()
+            )
+            self._gas_priority = (
+                gas["priority_fee_p50_wei"].cast(pl.Int64).fill_null(0).to_numpy()
+            )
+        else:
+            self._gas_blocks = np.empty(0, dtype=np.int64)
+            self._gas_base = np.empty(0, dtype=np.int64)
+            self._gas_priority = np.empty(0, dtype=np.int64)
+
+    @staticmethod
+    def _epoch_us(at_time: datetime) -> int:
+        """Microseconds since epoch (the feeds' datetime resolution).
+
+        Rejects naive datetimes: ``datetime.timestamp()`` would interpret them as
+        machine-local time, silently shifting the probe against the UTC feeds.
+        """
+        if at_time.tzinfo is None:
+            raise ValueError(
+                "at_time must be timezone-aware (the feeds are UTC); "
+                f"got naive {at_time!r}"
+            )
+        return int(at_time.timestamp() * 1_000_000)
 
     def configure_episode(self, start_seq: int, length: int) -> None:
         """Set the episode context used for the time features.
@@ -194,13 +256,10 @@ class ObservationBuilder:
         This is the look-ahead wall in code: a bar whose close is strictly
         after ``at_time`` is excluded, so a jump in the next bar cannot appear.
         """
-        reference = self.market_view.reference
-        if reference.height == 0:
-            return np.empty(0, dtype=float)
-        sub = reference.filter(pl.col("close_time") <= at_time).sort("close_time")
-        if sub.height == 0:
-            return np.empty(0, dtype=float)
-        return sub["close"].to_numpy().astype(float)
+        idx = int(
+            np.searchsorted(self._ref_close_us, self._epoch_us(at_time), side="right")
+        )
+        return self._ref_closes[:idx]
 
     def _gas_price_recent(
         self, tape_row: dict[str, object]
@@ -212,12 +271,28 @@ class ObservationBuilder:
         fixture's gas feed is shorter than its tape).
         """
         block_number = as_int(tape_row.get("block_number", 0) or 0)
-        row = self.market_view.gas_at_block(block_number)
-        if row is None:
-            row = tape_row
-        base = as_int(row.get("base_fee_per_gas") or 0)
-        priority = as_int(row.get("priority_fee_p50_wei") or 0)
+        idx = int(np.searchsorted(self._gas_blocks, block_number))
+        if idx < self._gas_blocks.size and int(self._gas_blocks[idx]) == block_number:
+            base = int(self._gas_base[idx])
+            priority = int(self._gas_priority[idx])
+        else:  # gas feed has no row for this block (short fixture feed)
+            base = as_int(tape_row.get("base_fee_per_gas") or 0)
+            priority = as_int(tape_row.get("priority_fee_p50_wei") or 0)
         return float(base + priority), base, priority
+
+    def _regime_at(self, at_time: datetime) -> str:
+        """As-of regime label from the precomputed index (wall-checked)."""
+        if at_time > self.market_view.active_end_utc:
+            raise LookAheadError(
+                f"time {at_time} is past the active split wall "
+                f"{self.market_view.active_end_utc}"
+            )
+        idx = int(
+            np.searchsorted(self._regime_us, self._epoch_us(at_time), side="right")
+        ) - 1
+        if idx < 0:
+            return Regime.UNKNOWN.value
+        return str(self._regime_labels[idx])
 
     # -- Build -----------------------------------------------------------
     def build(
@@ -347,7 +422,7 @@ class ObservationBuilder:
             pool_fee_tier_bps=int(pool_engine.state.fee_tier_bps),
             gas_price_recent_wei=gas_price_recent,
             eth_usd_price_recent=price,
-            regime=self.market_view.regime_at(at_time),
+            regime=self._regime_at(at_time),
             step_in_episode=int(step_in_episode),
             steps_remaining=int(steps_remaining),
         )
