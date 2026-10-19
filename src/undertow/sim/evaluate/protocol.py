@@ -71,7 +71,7 @@ from undertow.sim.metrics import (
 )
 from undertow.sim.policies import Policy
 from undertow.sim.prices import ReplayPriceProcess
-from undertow.sim.prices.base import human_price_to_triplet
+from undertow.sim.prices.base import PriceProcess, human_price_to_triplet
 from undertow.sim.types import Action, Tick, UndertowSimError
 
 if TYPE_CHECKING:
@@ -304,8 +304,9 @@ def build_replay_env(
     *,
     gas_model: GasModel | None = None,
     slippage_model: SlippageModel | None = None,
+    price_process: PriceProcess | None = None,
 ) -> LpEnvironment:
-    """Construct a replay-mode training environment for a single episode view.
+    """Construct a training environment for a single episode view.
 
     The environment captures the external pool base at construction and deploys
     its own initial position on every :meth:`reset` (S12).  The base external
@@ -313,6 +314,10 @@ def build_replay_env(
     model); the tick lattice is built by the agent's own position, so no
     synthetic background ticks are invented.  Gas replays the tape's per-block
     base fee; slippage is the pinned proportional model.
+
+    ``price_process`` defaults to a :class:`ReplayPriceProcess` over the view's
+    tape.  Calibrated training passes a :class:`CalibratedPriceProcess` instead;
+    the pool engine and frictions are built identically in both modes.
     """
     tape = market_view.active_split_data().sort("seq")
     if tape.height == 0:
@@ -338,11 +343,15 @@ def build_replay_env(
         tick_spacing=int(config.episode.tick_spacing),
     )
     engine = PoolEngine(state=state, ticks={})
-    process = ReplayPriceProcess(
-        market_view,
-        int(tape["seq"][0]),
-        int(tape["seq"][-1]) + 1,
-        step_minutes=int(config.episode.step_minutes),
+    process = (
+        price_process
+        if price_process is not None
+        else ReplayPriceProcess(
+            market_view,
+            int(tape["seq"][0]),
+            int(tape["seq"][-1]) + 1,
+            step_minutes=int(config.episode.step_minutes),
+        )
     )
     gas = gas_model if gas_model is not None else ReplayGasModel(market_view, config.gas)
     slippage = (

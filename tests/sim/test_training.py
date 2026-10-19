@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import shutil
 from collections.abc import Callable
 from pathlib import Path
@@ -453,3 +454,71 @@ class TestRealEnvironmentSmoke:
         PPO.load(str(manifest.checkpoint_path), device="cpu")
         payload = json.loads((tmp_path / "manifest.json").read_text())
         assert payload["learning_curve"]  # at least one evaluation recorded
+
+
+# ---------------------------------------------------------------------------
+# Vector-env backends and thread pinning (ADR-022)
+# ---------------------------------------------------------------------------
+class TestVecEnvBackends:
+    """``dummy`` steps in-process; ``subproc`` runs one process per slot."""
+
+    def test_dummy_backend_uses_dummy_vec_env(self) -> None:
+        from stable_baselines3.common.vec_env import DummyVecEnv
+
+        from undertow.sim.train.ppo_runner import _make_vec_env
+
+        vec = _make_vec_env(_BanditEnv, 2, 0, backend="dummy")
+        try:
+            assert isinstance(vec.venv, DummyVecEnv)
+            assert vec.reset().shape == (2, 2)
+        finally:
+            vec.close()
+
+    @pytest.mark.slow
+    def test_subproc_backend_spawns_worker_processes(self) -> None:
+        from stable_baselines3.common.vec_env import SubprocVecEnv
+
+        from undertow.sim.train.ppo_runner import _make_vec_env
+
+        vec = _make_vec_env(_BanditEnv, 2, 0, backend="subproc")
+        try:
+            assert isinstance(vec.venv, SubprocVecEnv)
+            assert vec.reset().shape == (2, 2)
+            _obs, rewards, _dones, _infos = vec.step([1, 1])
+            assert rewards.tolist() == [_OPTIMAL_REWARD, _OPTIMAL_REWARD]
+        finally:
+            vec.close()
+
+    def test_unknown_backend_raises_config_error(self) -> None:
+        from undertow.sim.train.ppo_runner import _make_vec_env
+        from undertow.sim.types import SimConfigError
+
+        with pytest.raises(SimConfigError, match="vec_env"):
+            _make_vec_env(_BanditEnv, 2, 0, backend="threads")
+
+
+class TestThreadPinning:
+    """N workers must not each spawn N BLAS threads (ADR-022)."""
+
+    def test_pin_thread_env_sets_ones_and_honours_overrides(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from undertow.sim.train.ppo_runner import _THREAD_ENV_VARS, _pin_thread_env
+
+        for var in _THREAD_ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+
+        _pin_thread_env()
+        assert all(os.environ[var] == "1" for var in _THREAD_ENV_VARS)
+
+        monkeypatch.setenv("OMP_NUM_THREADS", "8")
+        _pin_thread_env()
+        assert os.environ["OMP_NUM_THREADS"] == "8"
+
+    def test_pin_torch_threads_sets_one(self) -> None:
+        import torch
+
+        from undertow.sim.train.ppo_runner import _pin_torch_threads
+
+        _pin_torch_threads()
+        assert torch.get_num_threads() == 1

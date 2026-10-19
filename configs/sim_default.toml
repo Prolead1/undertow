@@ -52,6 +52,11 @@ parallel_envs = 4
 total_timesteps = 1000000
 checkpoint_freq_steps = 100000
 log_freq_steps = 10000
+# Run each parallel_envs slot in its own process: the tape replay is Python-bound
+# and DummyVecEnv steps the slots sequentially in one core.  "dummy" is only for
+# tiny/synthetic runs (each worker holds a full MarketView, so workers are
+# memory-bound; ~4 GB each for the pinned dataset).
+vec_env = "subproc"
 
 [backtest]
 compute_decomposition = true

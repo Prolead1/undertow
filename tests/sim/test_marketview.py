@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -348,6 +349,50 @@ class TestQueries:
         assert result["base_fee_per_gas"] == expected["base_fee_per_gas"]
         assert result["gas_used"] == expected["gas_used"]
         assert tiny_market_view.gas_at_block(10_000) is None
+
+    def test_gas_at_block_binary_searches_a_sorted_feed(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        """``gas_at_block`` binary-searches, so ``MarketView.gas`` must be sorted
+        by ``block_number`` (``build_market_view`` sorts; hand-built views must
+        too).  Pins the exact lookup with an interior gap, both bounds and a
+        duplicate block (the first occurrence wins, as with the old filter)."""
+        sparse = tiny_market_view.gas.head(3).with_columns(
+            pl.Series("block_number", [10, 20, 30])
+        )
+        view = replace(tiny_market_view, gas=sparse)
+
+        assert view.gas_at_block(10) is not None
+        assert view.gas_at_block(20) is not None
+        assert view.gas_at_block(30) is not None
+        assert view.gas_at_block(5) is None  # below the first
+        assert view.gas_at_block(15) is None  # interior gap
+        assert view.gas_at_block(31) is None  # above the last
+
+        first = sparse.with_columns(pl.lit("111").alias("base_fee_per_gas"))
+        second = sparse.with_columns(pl.lit("222").alias("base_fee_per_gas"))
+        duplicated = pl.concat([first, second]).sort(
+            "block_number", maintain_order=True
+        )
+        result = replace(tiny_market_view, gas=duplicated).gas_at_block(20)
+        assert result is not None
+        assert result["base_fee_per_gas"] == "111"
+
+    def test_regime_at_is_inclusive_and_as_of_between_labels(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        rows = tiny_market_view.regimes.sort("timestamp")
+        first = rows.row(0, named=True)
+        mid = rows.row(5, named=True)
+        nxt = rows.row(6, named=True)
+
+        assert tiny_market_view.regime_at(first["timestamp"]) == first["regime"]
+        assert (
+            tiny_market_view.regime_at(first["timestamp"] - timedelta(seconds=1))
+            == "unknown"
+        )
+        between = mid["timestamp"] + (nxt["timestamp"] - mid["timestamp"]) / 2
+        assert tiny_market_view.regime_at(between) == mid["regime"]
 
     def test_slice_preserves_feeds_and_narrows_bounds(self, tiny_market_view: MarketView) -> None:
         sub = tiny_market_view.slice(100, 200)
@@ -728,3 +773,42 @@ def test_slice_composes_warmup_across_nested_slices(tiny_market_view: MarketView
     assert sub.warmup is not None
     assert sub.warmup.height == 150
     assert sub.warmup["seq"].to_list() == list(range(150))
+
+
+def test_load_market_view_disables_endpoint_expansion(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The simulator never fetches: the data config loads without credentials."""
+    import undertow.sim.marketview as mv
+    from undertow.sim.config import SimConfig
+
+    seen: dict[str, object] = {}
+    sentinel = object()
+
+    def fake_load(path: object, **kwargs: object) -> object:
+        seen["path"] = path
+        seen.update(kwargs)
+        return sentinel
+
+    def fake_build(
+        data_config: object,
+        split_config: object,
+        *,
+        split: str = "train",
+        episode_config: object = None,
+    ) -> str:
+        assert data_config is sentinel
+        seen["split"] = split
+        return "VIEW"
+
+    monkeypatch.setattr(mv, "load_data_config", fake_load)
+    monkeypatch.setattr(mv, "build_market_view", fake_build)
+
+    result = mv.load_market_view(tmp_path / "data.toml", SimConfig().split, split="train")
+
+    assert result == "VIEW"
+    assert seen == {
+        "path": tmp_path / "data.toml",
+        "expand_endpoints": False,
+        "split": "train",
+    }

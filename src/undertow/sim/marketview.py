@@ -18,6 +18,7 @@ import bisect
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Literal, cast
 
 import numpy as np
@@ -26,6 +27,7 @@ import polars as pl
 from undertow.data import (
     DataConfig,
     PoolConfig,
+    load_data_config,
     load_fee_growth,
     load_gas_feed,
     load_reference_feed,
@@ -35,7 +37,7 @@ from undertow.data import (
 from undertow.sim.config import EpisodeConfig, SplitConfig
 from undertow.sim.types import LookAheadError, MarketViewError, Regime
 
-__all__ = ["MarketView", "build_market_view"]
+__all__ = ["MarketView", "build_market_view", "load_market_view"]
 
 LOGGER = logging.getLogger("undertow.sim.marketview")
 
@@ -317,26 +319,32 @@ class MarketView:
         """Regime label at ``at_time`` (as-of join).
 
         Returns ``"unknown"`` if no label covers ``at_time``. Raises
-        ``LookAheadError`` when ``at_time`` is past the active wall.
+        ``LookAheadError`` when ``at_time`` is past the active wall.  The regime
+        feed is sorted by ``timestamp`` by construction, so this binary-searches
+        instead of re-scanning the full feed (the evaluation's dominant-regime
+        pass and the look-ahead probes call it).
         """
         self._check_time(at_time)
         if self.regimes.height == 0:
             return Regime.UNKNOWN.value
-        sub = self.regimes.filter(pl.col("timestamp") <= at_time).sort("timestamp")
-        if sub.height == 0:
+        idx = int(self.regimes["timestamp"].search_sorted(at_time, side="right")) - 1
+        if idx < 0:
             return Regime.UNKNOWN.value
-        return str(sub["regime"][-1])
+        return str(self.regimes["regime"][idx])
 
     def gas_at_block(self, block_number: int) -> dict[str, object] | None:
         """Gas row for ``block_number``. ``None`` if no gas data for that block.
 
         The gas feed is chain-wide (not split-scoped), so this takes no time/seq
-        argument and needs no wall check.
+        argument and needs no wall check.  The feed is sorted by ``block_number``
+        by construction, so this binary-searches instead of scanning the
+        multi-million-row feed per call (each rebalance asks for it twice).
         """
-        sub = self.gas.filter(pl.col("block_number") == block_number)
-        if sub.height == 0:
-            return None
-        return dict(sub.row(0, named=True))
+        blocks = self.gas["block_number"]
+        idx = int(blocks.search_sorted(block_number))
+        if idx < self.gas.height and int(blocks[idx]) == block_number:
+            return dict(self.gas.row(idx, named=True))
+        return None
 
     def active_split_data(self) -> pl.DataFrame:
         """The event tape for the active split (train or eval), sorted by seq."""
@@ -432,6 +440,29 @@ def _select_primary_symbol(frame: pl.DataFrame, configured: str, stream: str) ->
             f"configured reference_symbol {configured!r} is not among them"
         )
     return frame.filter(pl.col("symbol") == configured)
+
+
+def load_market_view(
+    data_config_path: str | Path,
+    split_config: SplitConfig,
+    *,
+    split: str = "train",
+    episode_config: EpisodeConfig | None = None,
+) -> MarketView:
+    """Load a built dataset snapshot into a :class:`MarketView`.
+
+    The simulator never fetches, so the endpoint ``${ENV_VAR}`` placeholders are
+    left unexpanded (``expand_endpoints=False``): reading a dataset must not
+    require ``GRAPH_API_KEY``/``ETH_RPC_URL``.  ``split`` is validated by
+    :func:`build_market_view`; this wrapper only narrows the type.
+    """
+    data_config = load_data_config(data_config_path, expand_endpoints=False)
+    return build_market_view(
+        data_config,
+        split_config,
+        split=cast(SplitName, split),
+        episode_config=episode_config,
+    )
 
 
 def build_market_view(
