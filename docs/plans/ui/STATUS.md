@@ -13,7 +13,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | U02 registry + schemas + results | merged | `feature-ui-registry` | [#72](https://github.com/Prolead1/undertow/pull/72) | 79 passed; full 1576 passed, 6 skipped (93.92%) | approved | scan runs/, parse results/; rank() = eval-first then Sharpe→worst-regime→reward |
 | U03 telemetry reader + streaming hub | merged | `feature-ui-streaming` | [#73](https://github.com/Prolead1/undertow/pull/73) | 92 passed; full 1589 passed, 6 skipped (93.84%) | approved | tail jsonl → WS |
 | U04 figure builders + dark theme | pr-open | `feature-ui-figures` | [#75](https://github.com/Prolead1/undertow/pull/75) | 50 passed; full 1659 passed, 6 skipped (94.12%) | approved | pure Plotly specs; 6 builders + dark theme |
-| U05 FastAPI app + CLI serve | todo | `feature-ui-api` | — | — | — | REST + WS + static |
+| U05 FastAPI app + CLI serve | pr-open | `feature-ui-api` | [#76](https://github.com/Prolead1/undertow/pull/76) | 205 passed; full 1713 passed, 6 skipped (94.10%) | approved | REST + WS + static; ADR-025; split ws/static/assembly |
 | U06 rollout recorder + reader | merged | `feature-ui-rollouts` | [#74](https://github.com/Prolead1/undertow/pull/74) | 20 passed; full 1596 passed, 6 skipped (93.91%) | approved | parquet sidecar (sim) + reader; costs in raw USDC; ADR-024 |
 | U07 React scaffold + design system | todo | `feature-ui-web` | — | — | — | Vite/TS/Tailwind + generated client |
 | U08 Live Cockpit view | todo | `feature-ui-live` | — | — | — | learning + diagnostics + actions |

@@ -17,13 +17,15 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from undertow.ui.config import UiConfig
 
-__all__ = ["main"]
+__all__ = ["main", "serve"]
 
 PROG = "undertow-ui"
 
@@ -165,11 +167,48 @@ def _cmd_info(config: UiConfig) -> int:
     return EXIT_OK
 
 
-def _cmd_serve(config: UiConfig, *, reload: bool) -> int:
-    """Placeholder for the server; U05 implements the real ``serve`` command."""
-    del config, reload
-    print("serve is implemented in a later task")
-    return EXIT_CONFIG
+def serve(config: UiConfig, *, reload: bool = False) -> int:
+    """Start the dashboard with uvicorn (U05).
+
+    ``--reload`` needs uvicorn's import-string mode, so the resolved config is
+    serialised into the environment and the reload worker builds its own app via
+    :func:`undertow.ui.app.create_app_from_env`.  Without ``--reload`` the app
+    instance is passed directly.  Errors are reported as config errors (exit
+    ``2``) so a typo never leaves a half-started server.
+    """
+    # Local imports keep ``undertow-ui info`` independent of the web stack.
+    import uvicorn
+
+    from undertow.ui.app import CONFIG_ENV_VAR, config_payload, create_app
+
+    if not 0 < config.port < 65536:
+        raise CliError(f"port must be between 1 and 65535, got {config.port}", EXIT_CONFIG)
+    if config.web_dist is not None and not config.web_dist.is_dir():
+        raise CliError(
+            f"web-dist is not a directory: {config.web_dist}", EXIT_CONFIG
+        )
+
+    print(f"Undertow UI serving on http://{config.host}:{config.port}")
+    print(f"  runs dir:    {config.runs_dir}")
+    print(f"  results dir: {config.results_dir}")
+    if config.web_dist is not None:
+        print(f"  web dist:    {config.web_dist}")
+    else:
+        print("  web dist:    API only (no built frontend mounted)")
+
+    if reload:
+        os.environ[CONFIG_ENV_VAR] = json.dumps(config_payload(config))
+        uvicorn.run(
+            "undertow.ui.app:create_app_from_env",
+            factory=True,
+            host=config.host,
+            port=config.port,
+            reload=True,
+        )
+    else:
+        app = create_app(config)
+        uvicorn.run(app, host=config.host, port=config.port, reload=False)
+    return EXIT_OK
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +228,7 @@ def _run(args: argparse.Namespace) -> int:
             port=int(args.port),
             web_dist=Path(args.web_dist) if args.web_dist else None,
         )
-        return _cmd_serve(config, reload=bool(args.reload))
+        return serve(config, reload=bool(args.reload))
     raise CliError(f"unknown command {args.command!r}", EXIT_CONFIG)  # pragma: no cover
 
 

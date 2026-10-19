@@ -21,6 +21,7 @@ import json
 import logging
 import math
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import fmean, pstdev
@@ -219,6 +220,32 @@ def rank(
     return sorted(records, key=sort_key)
 
 
+@dataclass(frozen=True, slots=True)
+class _Snapshot:
+    """One immutable view of a ``runs/`` tree, swapped in atomically by scans.
+
+    Every dict is built fresh during a scan and never mutated afterwards, so a
+    lock-free :meth:`RunRegistry.resolve` that reads ``self._snapshot`` once can
+    never observe a half-updated index (curves keyed by one directory while the
+    records point at another).
+    """
+
+    records: dict[str, RunRecord]
+    entries_by_id: dict[str, tuple[RunRecord, RunDir]]
+    entries_by_alias: dict[str, tuple[RunRecord, RunDir]]
+    #: Every scanned directory paired with its record, in scan order.  Unlike
+    #: ``records`` (canonical only), this keeps duplicate-``run_id``
+    #: directories that lost the dedup, so :meth:`RunRegistry.curve` can
+    #: aggregate the *resolved* directory's experiment rather than the
+    #: canonical namesake's.
+    directories: tuple[tuple[RunRecord, RunDir], ...]
+    #: Learning-curve values keyed by ``str(RunDir.path)`` (never ``run_id``,
+    #: which collides across directories).
+    curves: dict[str, list[float]]
+    #: Telemetry timesteps keyed by ``str(RunDir.path)``.
+    timesteps: dict[str, list[int]]
+
+
 class RunRegistry:
     """Read-only index of the runs under ``runs_dir`` (CONTRACTS §4/§7)."""
 
@@ -231,44 +258,102 @@ class RunRegistry:
         self.runs_dir = Path(runs_dir)
         self.results_dir = Path(results_dir) if results_dir is not None else None
         self.max_points = int(max_points)
-        self._records: dict[str, RunRecord] | None = None
-        self._curves: dict[str, list[float]] = {}
-        self._timesteps: dict[str, list[int]] = {}
-        self._eval_cache: dict[tuple[Path, str | None], EvalMetrics | None] = {}
+        self._snapshot: _Snapshot | None = None
 
     # -- scanning ---------------------------------------------------------
     def scan(self) -> list[RunRecord]:
-        """Rebuild the registry from disk and return the sorted records."""
-        self._curves = {}
-        self._timesteps = {}
-        self._eval_cache = {}
+        """Rebuild the registry from disk and return the sorted records.
+
+        The new index (records, id/alias maps, curves and timesteps) is built
+        entirely in locals and published with a single ``_Snapshot`` assignment,
+        so a concurrent lock-free :meth:`resolve` always sees a coherent view.
+        """
         run_dirs = discover_run_dirs(self.runs_dir)
         # A root-level results/ dir describes one policy; only trust it when the
         # whole tree is a single run, otherwise every record would share it.
         allow_shared_root = len(run_dirs) == 1
-        records = [
-            self._build_record(run_dir, allow_shared_root=allow_shared_root)
+        eval_cache: dict[tuple[Path, str | None], EvalMetrics | None] = {}
+        built = [
+            (
+                *self._build_record(
+                    run_dir, allow_shared_root=allow_shared_root, eval_cache=eval_cache
+                ),
+                run_dir,
+            )
             for run_dir in run_dirs
         ]
-        records.sort(key=lambda record: (-_as_utc(record.updated_at).timestamp(), record.run_id))
-        by_id: dict[str, RunRecord] = {}
-        for record in records:
-            if record.run_id in by_id:
+        built.sort(
+            key=lambda item: (
+                -_as_utc(item[0].updated_at).timestamp(),
+                item[0].run_id,
+            )
+        )
+
+        # A run id resolves to exactly one ``(record, RunDir)`` pair: the same
+        # pair backs ``RunRecord`` and every artifact route, so a duplicate id
+        # can never make ``/api/runs/{id}`` and ``/api/runs/{id}/telemetry``
+        # read different directories.  The canonical
+        # ``[<experiment>/]seed_<n>`` path remains addressable as an escape
+        # hatch (CONTRACTS §7) for colliding ids.
+        records: dict[str, RunRecord] = {}
+        entries_by_id: dict[str, tuple[RunRecord, RunDir]] = {}
+        entries_by_alias: dict[str, tuple[RunRecord, RunDir]] = {}
+        directories: list[tuple[RunRecord, RunDir]] = []
+        curves: dict[str, list[float]] = {}
+        timesteps: dict[str, list[int]] = {}
+        for record, run_timesteps, run_curve, run_dir in built:
+            directories.append((record, run_dir))
+            # Curves/timesteps are keyed by resolved directory, not ``run_id``:
+            # two directories can share a manifest ``run_id`` and keying by
+            # ``run_id`` would let the last-scanned duplicate overwrite the
+            # canonical entry (the record/dir maps below keep the canonical one).
+            key = str(run_dir.path)
+            if run_timesteps:
+                timesteps[key] = run_timesteps
+            if run_curve:
+                curves[key] = run_curve
+            alias = (
+                f"{run_dir.experiment}/seed_{run_dir.seed}"
+                if run_dir.experiment
+                else f"seed_{run_dir.seed}"
+            )
+            entries_by_alias.setdefault(alias, (record, run_dir))
+            if record.run_id in records:
                 logger.warning("duplicate run_id %r; keeping the first record", record.run_id)
                 continue
-            by_id[record.run_id] = record
-        self._records = by_id
-        return list(by_id.values())
+            records[record.run_id] = record
+            entries_by_id[record.run_id] = (record, run_dir)
+
+        self._snapshot = _Snapshot(
+            records=records,
+            entries_by_id=entries_by_id,
+            entries_by_alias=entries_by_alias,
+            directories=tuple(directories),
+            curves=curves,
+            timesteps=timesteps,
+        )
+        return list(records.values())
 
     def refresh(self) -> list[RunRecord]:
         """Re-scan the tree (alias for :meth:`scan`)."""
         return self.scan()
 
-    def _ensure_scanned(self) -> None:
-        if self._records is None:
+    def _snapshot_or_scan(self) -> _Snapshot:
+        """Return the current snapshot, scanning exactly once when empty."""
+        snapshot = self._snapshot
+        if snapshot is None:
             self.scan()
+            snapshot = self._snapshot
+        assert snapshot is not None  # ``scan`` always publishes one
+        return snapshot
 
-    def _build_record(self, run_dir: RunDir, *, allow_shared_root: bool) -> RunRecord:
+    def _build_record(
+        self,
+        run_dir: RunDir,
+        *,
+        allow_shared_root: bool,
+        eval_cache: dict[tuple[Path, str | None], EvalMetrics | None],
+    ) -> tuple[RunRecord, list[int], list[float]]:
         manifest_data = _read_json(run_dir.manifest_path) if run_dir.manifest_path else None
         manifest_bad = run_dir.manifest_path is not None and manifest_data is None
 
@@ -301,8 +386,6 @@ class RunRegistry:
         )
 
         telemetry_points, telemetry_timesteps = _read_telemetry(run_dir.telemetry_path)
-        if telemetry_timesteps:
-            self._timesteps[run_dir.run_id] = telemetry_timesteps
 
         total_timesteps = (
             manifest.total_timesteps
@@ -315,18 +398,17 @@ class RunRegistry:
             else (max(telemetry_timesteps) if telemetry_timesteps else 0)
         )
 
+        curve_values: list[float] = []
         if not manifest_bad and manifest_data is not None:
             curve = manifest_data.get("learning_curve")
             if isinstance(curve, list):
-                values = [
+                curve_values = [
                     float(value)
                     for value in curve
                     if isinstance(value, (int, float)) and not isinstance(value, bool)
                 ]
-                if values:
-                    self._curves[run_dir.run_id] = values
 
-        return RunRecord(
+        record = RunRecord(
             run_id=run_dir.run_id,
             experiment=run_dir.experiment,
             seed=run_dir.seed,
@@ -342,14 +424,21 @@ class RunRegistry:
                 run_dir,
                 policy=manifest.algorithm if manifest is not None else None,
                 allow_shared_root=allow_shared_root,
+                eval_cache=eval_cache,
             ),
             has_telemetry=run_dir.telemetry_path is not None,
             has_rollouts=_has_parquet(run_dir.rollout_dir),
             telemetry_points=telemetry_points,
         )
+        return record, telemetry_timesteps, curve_values
 
     def _find_eval(
-        self, run_dir: RunDir, *, policy: str | None, allow_shared_root: bool
+        self,
+        run_dir: RunDir,
+        *,
+        policy: str | None,
+        allow_shared_root: bool,
+        eval_cache: dict[tuple[Path, str | None], EvalMetrics | None],
     ) -> EvalMetrics | None:
         """Match a run to its ``results/`` artifacts, if any exist."""
         results_root = self.results_dir
@@ -375,8 +464,8 @@ class RunRegistry:
                 logger.warning("ignoring results candidate outside %s: %s", root, candidate)
                 continue
             cache_key = (candidate, policy)
-            if cache_key in self._eval_cache:
-                metrics = self._eval_cache[cache_key]
+            if cache_key in eval_cache:
+                metrics = eval_cache[cache_key]
             else:
                 try:
                     relative = candidate.relative_to(results_root).as_posix()
@@ -384,58 +473,94 @@ class RunRegistry:
                     relative = ""
                 prefix = None if relative in ("", ".") else relative
                 metrics = load_eval_metrics(candidate, source_prefix=prefix, policy=policy)
-                self._eval_cache[cache_key] = metrics
+                eval_cache[cache_key] = metrics
             if metrics is not None:
                 return metrics
         return None
 
     # -- lookups ----------------------------------------------------------
     def get(self, run_id: str) -> RunRecord | None:
-        """Return the record for ``run_id`` (or ``None``)."""
-        self._ensure_scanned()
-        assert self._records is not None
-        return self._records.get(run_id)
+        """Return the canonical record for ``run_id`` (or ``None``)."""
+        return self._snapshot_or_scan().records.get(run_id)
+
+    def resolve(self, run_id: str) -> tuple[RunRecord, RunDir] | None:
+        """Resolve ``run_id`` to one ``(record, RunDir)`` from a single scan.
+
+        The primary key is the manifest ``run_id``.  If that collides, the
+        canonical ``<experiment>/seed_<n>`` (or bare ``seed_<n>``) path is also
+        accepted as a disambiguation escape hatch (CONTRACTS §7).  Callers get
+        the record and its directory together, so REST and WebSocket routes can
+        never disagree about which directory backs an id.
+
+        Reads ``self._snapshot`` exactly once, so it stays lock-free against a
+        concurrent scan that publishes a completely new snapshot.
+        """
+        snapshot = self._snapshot_or_scan()
+        entry = snapshot.entries_by_id.get(run_id)
+        if entry is None:
+            entry = snapshot.entries_by_alias.get(run_id)
+        return entry
 
     def curve(self, run_id: str) -> LearningCurve | None:
-        """Aggregate the per-seed learning curves of ``run_id``'s experiment.
+        """Aggregate the per-seed learning curves of the *resolved* experiment.
 
-        Curves are truncated to their common length and aligned on the reference
-        run's telemetry timesteps (falling back to the evaluation index when no
-        telemetry exists).  Mean/std are computed across seeds and the series is
-        downsampled deterministically to ``max_points``.
+        ``run_id`` may be a raw id or a ``<experiment>/seed_<n>`` alias; the
+        :class:`RunDir` that :meth:`resolve` would return anchors the
+        experiment group, so an alias aggregates **its own** directory's
+        experiment.  This matters when two directories share a manifest
+        ``run_id``: re-canonicalising by ``run_id`` would hand an alias the
+        canonical directory's numbers.  Values and timesteps are looked up by
+        directory path (never by ``run_id``), so no collision can mix them.
+
+        The returned ``run_id`` is the requested id string (canonical requests
+        keep the canonical id, alias requests echo the alias) so a frontend
+        cache key cannot collide with the canonical entry.
+
+        Curves are truncated to their common length and aligned on the resolved
+        directory's telemetry timesteps (falling back to the evaluation index
+        when no telemetry exists).  Mean/std are computed across seeds and the
+        series is downsampled deterministically to ``max_points``.
         """
-        self._ensure_scanned()
-        assert self._records is not None
-        record = self._records.get(run_id)
-        if record is None:
-            return None
+        snapshot = self._snapshot_or_scan()
+        resolved = snapshot.entries_by_id.get(run_id)
+        if resolved is not None:
+            requested_id = resolved[0].run_id
+        else:
+            resolved = snapshot.entries_by_alias.get(run_id)
+            if resolved is None:
+                return None
+            requested_id = run_id
+        resolved_dir = resolved[1]
 
-        group = [
-            candidate
-            for candidate in self._records.values()
-            if candidate.experiment == record.experiment and self._curves.get(candidate.run_id)
-        ]
+        group: list[tuple[RunRecord, list[float]]] = []
+        for candidate, candidate_dir in snapshot.directories:
+            if candidate_dir.experiment != resolved_dir.experiment:
+                continue
+            values = snapshot.curves.get(str(candidate_dir.path))
+            if values:
+                group.append((candidate, values))
         if not group:
             return None
 
-        length = min(len(self._curves[candidate.run_id]) for candidate in group)
+        length = min(len(values) for _, values in group)
         if length == 0:
             return None
 
-        matrix = [self._curves[candidate.run_id][:length] for candidate in group]
+        matrix = [values[:length] for _, values in group]
         mean = [fmean(row[position] for row in matrix) for position in range(length)]
         std = [pstdev(row[position] for row in matrix) for position in range(length)]
 
-        timesteps = _aligned_timesteps(self._timesteps.get(record.run_id, []), length)
+        timesteps = _aligned_timesteps(
+            snapshot.timesteps.get(str(resolved_dir.path), []), length
+        )
 
         per_seed = {
-            str(candidate.seed): list(self._curves[candidate.run_id][:length])
-            for candidate in group
+            str(candidate.seed): list(values[:length]) for candidate, values in group
         }
 
         indices = downsample_indices(length, self.max_points)
         return LearningCurve(
-            run_id=run_id,
+            run_id=requested_id,
             timesteps=[timesteps[index] for index in indices],
             mean=[mean[index] for index in indices],
             std=[std[index] for index in indices],

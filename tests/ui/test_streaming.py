@@ -156,6 +156,29 @@ def test_tail_stops_after_publishing_terminal_status(run_dir) -> None:
     asyncio.run(scenario())
 
 
+def test_subscribe_callback_runs_after_registration(run_dir) -> None:
+    path = run_dir(manifest=False, telemetry=False, status=False, rollouts=0)
+    hub = TelemetryHub(path, run_id=_RUN_ID)
+    seen: list[int] = []
+
+    async def scenario() -> None:
+        frames = hub.subscribe(on_subscribe=lambda: seen.append(hub.subscriber_count))
+        pending = asyncio.create_task(frames.__anext__())
+        await _wait_for_subscribers(hub, 1)
+
+        # The callback ran only after the queue was in the subscriber set, so a
+        # tail started from it cannot publish the initial status into the void.
+        assert seen == [1]
+        hub.publish(build_frame("telemetry", _RUN_ID, {"timestep": 1}))
+        assert json.loads(await pending)["data"]["timestep"] == 1
+
+        await frames.aclose()
+        assert hub.subscriber_count == 0
+        await hub.close()
+
+    asyncio.run(scenario())
+
+
 def test_close_cancels_tail_and_leaves_no_pending_tasks(run_dir) -> None:
     path = run_dir(seed=0, state="running", telemetry_timesteps=[1000])
     hub = TelemetryHub(path, run_id=_RUN_ID, telemetry_poll_seconds=0.01)

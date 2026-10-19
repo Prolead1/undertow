@@ -1,9 +1,11 @@
 """Configuration for ``undertow.ui`` — the live policy cockpit.
 
 Implements `CONTRACTS.md` §3 exactly: one frozen, slotted :class:`UiConfig` plus
-a stdlib-only TOML loader.  Nothing here imports a web framework, so
-``import undertow.ui`` stays cheap and the sim/data packages never acquire a UI
-dependency (`docs/plans/ui/PLAN.md` §0.6).
+a stdlib-only TOML loader.  This module itself imports no web framework, so it
+can be used (and tested) without FastAPI installed.  Importing the package
+``undertow.ui`` does eagerly import the FastAPI factory via ``__init__``; the
+sim/data packages still never acquire a UI dependency (`docs/plans/ui/PLAN.md`
+§0.6).
 """
 
 from __future__ import annotations
