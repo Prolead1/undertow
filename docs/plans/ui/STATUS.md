@@ -8,8 +8,8 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 
 | Task | State | Branch | PR | pytest / typecheck | Reviewer | Notes |
 |---|---|---|---|---|---|---|
-| U00 sim telemetry instrumentation | todo | `feature-sim-telemetry` | — | — | — | telemetry.jsonl + status.json + config flags |
-| U01 ui scaffold + stack ADR | todo | `feature-ui-scaffold` | — | — | — | `undertow.ui` pkg, `ui` extra, `undertow-ui` script, ADR-023 |
+| U00 sim telemetry instrumentation | pr-open | `feature-sim-telemetry` | [#70](https://github.com/Prolead1/undertow/pull/70) | 24 passed; full 1497 passed, 6 skipped (93.64%) | approved | telemetry.jsonl + status.json + config flags; stacked on #68 |
+| U01 ui scaffold + stack ADR | pr-open | `feature-ui-scaffold` | [#69](https://github.com/Prolead1/undertow/pull/69) | 24 passed; full 1497 passed, 6 skipped (93.64%) | approved | `undertow.ui` pkg, `ui` extra, `undertow-ui` script, ADR-023; stacked on #68 |
 | U02 registry + schemas + results | todo | `feature-ui-registry` | — | — | — | scan runs/, parse results/ |
 | U03 telemetry reader + streaming hub | todo | `feature-ui-streaming` | — | — | — | tail jsonl → WS |
 | U04 figure builders + dark theme | todo | `feature-ui-figures` | — | — | — | pure Plotly specs |
@@ -23,9 +23,13 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 
 ## ADRs raised
 
-_(none yet — U01 owns ADR-023 for the UI stack & live server)_
+- **ADR-023** — UI stack & live server: FastAPI + WebSocket backend, React/Vite + Plotly.js frontend, third top-level package `undertow.ui`, backend-owned figure specs, Node quarantined in `web/`, in `docs/decisions/023-ui-stack-and-live-server.md`
 
 ## Blockers / notes
 
+- **PR #68** (`docs-ui-plan`) is the plan itself and is the base for the Wave-0 PRs (#69, #70).
+  Merge it first; the stacked PRs then clean up to their own diff.
 - `feature-sim-report` carries an **uncommitted** `plotly` addition to `pyproject.toml`/`uv.lock`.
   U01 supersedes it with the `ui` extra; do not build on the uncommitted change.
+- Wave 1 (U02, U03, U06) may start once #68 is merged, or by stacking on #70/#69 as noted in each
+  task file.
