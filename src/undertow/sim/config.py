@@ -115,6 +115,14 @@ class TrainingConfig:
     #: its own process (true multicore replay); ``"dummy"`` steps them
     #: sequentially in-process and is what synthetic/test views use.
     vec_env: Literal["dummy", "subproc"] = "dummy"
+    #: Append ``telemetry.jsonl`` + ``status.json`` sidecars during training
+    #: (U00, CONTRACTS.md §1). Additive: defaults keep the existing artifacts
+    #: and only add the sidecars.
+    telemetry: bool = True
+    #: Record deterministic evaluation rollouts to parquet (U06).
+    record_rollouts: bool = False
+    #: Maximum evaluation episodes recorded when ``record_rollouts`` is true (U06).
+    rollout_max_episodes: int = 5
 
     def __post_init__(self) -> None:
         if self.vec_env not in ("dummy", "subproc"):

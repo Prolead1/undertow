@@ -45,6 +45,11 @@ from undertow.sim.train.runs import (
     library_versions,
     write_run_manifest,
 )
+from undertow.sim.train.telemetry import (
+    STATUS_FILENAME,
+    TELEMETRY_FILENAME,
+    TelemetryCallback,
+)
 from undertow.sim.types import SimConfigError
 
 if TYPE_CHECKING:
@@ -232,6 +237,9 @@ def _train_single_seed(
     seed_dir = _resolve_log_dir(seed, log_dir)
     seed_dir.mkdir(parents=True, exist_ok=True)
 
+    config_hash = compute_config_hash(config)
+    run_id = f"ppo_s{seed}_{config_hash}"
+
     parallel = max(1, int(training.parallel_envs))
     _pin_thread_env()  # inherited by SubprocVecEnv workers
     _pin_torch_threads()
@@ -240,6 +248,24 @@ def _train_single_seed(
     vec_env = _make_vec_env(env_fn, parallel, seed, backend=training.vec_env)
     curve_cb = _LearningCurveCallback(training.log_freq_steps)
     callbacks: list[BaseCallback] = [curve_cb]
+
+    # Telemetry sidecars (U00). The callback is optional so
+    # ``telemetry=False`` is byte-for-byte today's behaviour. The
+    # ``_LearningCurveCallback`` is always registered: it feeds the manifest.
+    telemetry_cb: TelemetryCallback | None = None
+    if training.telemetry:
+        telemetry_cb = TelemetryCallback(
+            run_id=run_id,
+            seed=seed,
+            total_timesteps=int(training.total_timesteps),
+            log_freq_steps=int(training.log_freq_steps),
+            status_path=seed_dir / STATUS_FILENAME,
+            telemetry_path=seed_dir / TELEMETRY_FILENAME,
+        )
+        callbacks.append(telemetry_cb)
+        # Initial heartbeat before training starts, so a dashboard can discover
+        # the run even if it never reaches the first log-frequency boundary.
+        telemetry_cb.write_running_status()
 
     checkpoint_freq = int(training.checkpoint_freq_steps)
     if checkpoint_freq > 0:
@@ -272,25 +298,42 @@ def _train_single_seed(
         model.learn(total_timesteps=int(training.total_timesteps), callback=callbacks)
         checkpoint_path = seed_dir / f"ppo_seed_{seed}.zip"
         model.save(str(checkpoint_path))
+
+        curve = list(curve_cb.curve)
+        best_reward = float(max(curve)) if curve else float(curve_cb.mean_reward())
+        manifest = RunManifest(
+            run_id=run_id,
+            seed=seed,
+            config_hash=config_hash,
+            git_commit=current_git_commit(),
+            algorithm=str(training.algorithm),
+            total_timesteps=int(training.total_timesteps),
+            best_reward=best_reward,
+            checkpoint_path=checkpoint_path,
+            library_versions=tuple(sorted(library_versions().items())),
+        )
+        # The manifest/checkpoint bookkeeping stays inside the ``try`` so that a
+        # failure here flips the status to ``failed``: the invariant
+        # "``done`` => artifacts exist" must hold even if the writes fail.
+        write_run_manifest(seed_dir / "manifest.json", manifest, curve)
+        # Re-write the terminal status *after* the manifest/checkpoint exists so
+        # ``state="done"`` guarantees the run's artifacts are on disk (U00 §4).
+        # ``_on_training_end`` already wrote ``done``; re-writing here is a
+        # deliberate, idempotent redundancy that tightens the ordering.
+        if telemetry_cb is not None:
+            telemetry_cb.write_done_status()
+    except BaseException as exc:
+        # A crash must never leave a stale ``running`` status on disk. Guard the
+        # fallback write itself so it cannot mask the original exception.
+        if telemetry_cb is not None:
+            try:
+                telemetry_cb.write_failed_status(str(exc))
+            except Exception:
+                logger.exception("failed to write 'failed' telemetry status")
+        raise
     finally:
         vec_env.close()
 
-    curve = list(curve_cb.curve)
-    best_reward = float(max(curve)) if curve else float(curve_cb.mean_reward())
-    config_hash = compute_config_hash(config)
-
-    manifest = RunManifest(
-        run_id=f"ppo_s{seed}_{config_hash}",
-        seed=seed,
-        config_hash=config_hash,
-        git_commit=current_git_commit(),
-        algorithm=str(training.algorithm),
-        total_timesteps=int(training.total_timesteps),
-        best_reward=best_reward,
-        checkpoint_path=checkpoint_path,
-        library_versions=tuple(sorted(library_versions().items())),
-    )
-    write_run_manifest(seed_dir / "manifest.json", manifest, curve)
     logger.info(
         "seed %d finished: %d timesteps, best_reward=%.4f, checkpoint=%s",
         seed,
