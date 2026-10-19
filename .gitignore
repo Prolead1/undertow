@@ -34,3 +34,9 @@ logs/
 
 # Coverage artifacts
 .coverage
+
+# Frontend (ui-v1) — isolated Node toolchain under web/
+node_modules/
+web/dist/
+web/node_modules/
+*.tsbuildinfo
