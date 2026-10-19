@@ -31,11 +31,10 @@ Do not touch `telemetry.py`, `streaming.py`, `figures/`, `app.py` (later tasks).
 Read `CONTRACTS.md` §4 first — the models are frozen.
 
 1. **`schemas.py`.** All pydantic v2 models from §4 (`TrainMetrics`, `TimeMetrics`,
-   `TelemetryPoint`, `EvalMetrics`, `RunManifestSummary`, `RunRecord`, `LearningCurve`,
-   `RolloutSummary`, `RolloutSeries`), plus re-export of `RunStatus` from
-   `undertow.sim.train.telemetry` (import the sim dataclass and adapt it — do **not** redefine the
-   schema; if importing sim here is undesirable, build a `RunStatusModel` that validates the same
-   fields and document it). Configure `model_config = ConfigDict(extra="allow")` only where forward
+   `TelemetryPoint`, `RunStatusModel`, `EvalMetrics`, `RunManifestSummary`, `RunRecord`,
+   `LearningCurve`, `RolloutSummary`, `RolloutSeries`). **Do not import `undertow.sim`** — the UI is
+   artifact-only (`PLAN.md` §0.6), so `RunStatusModel` mirrors the §1 status schema field-for-field
+   and is parsed from `status.json` directly. Configure `model_config = ConfigDict(extra="allow")` only where forward
    compatibility requires it (telemetry metrics), otherwise forbid extras.
 
 2. **`paths.py`.** Pure functions over a `runs_dir`:

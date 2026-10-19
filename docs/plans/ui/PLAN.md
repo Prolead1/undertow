@@ -30,10 +30,12 @@ the thesis results legible and reproducible, not to change the science.
    the same files on disk. Your task file lists the **files you own**; do not touch files owned by
    another task. Remove your worktree once the branch is pushed.
 5. Update `STATUS.md` (in this directory) when you start and when you finish. It is the handoff board.
-6. **Import boundary is law.** `undertow.ui` imports only the *public* surfaces of `undertow.sim`
-   and `undertow.data`. Neither `undertow.data` nor `undertow.sim` may ever import `undertow.ui` —
-   the dashboard is a pure consumer. The string `from undertow.ui` must not appear anywhere under
-   `src/undertow/data/` or `src/undertow/sim/`. Grep-able.
+6. **Import boundary is law.** The dashboard is a pure, **artifact-only** consumer: `undertow.ui`
+   must **not** import `undertow.sim` or `undertow.data` at runtime. Shared wire schemas are mirrored
+   in `undertow/ui/schemas.py` (see `CONTRACTS.md` §4) so the `ui` extra stays free of the training
+   stack (`stable-baselines3`). The reverse is likewise forbidden: the strings `from undertow.ui` /
+   `import undertow.ui` must not appear anywhere under `src/undertow/data/` or `src/undertow/sim/`.
+   Both directions are AST-checkable and enforced by a test.
 7. **The dashboard never trains, backtests or evaluates.** It reads artifacts (`manifest.json`,
    `telemetry.jsonl`, `status.json`, rollout parquet, results CSV/MD) and serves them. All compute
    that produces those artifacts already lives in `undertow.sim`; U00/U06 only *record* what the
