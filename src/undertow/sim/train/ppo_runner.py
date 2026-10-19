@@ -93,7 +93,13 @@ def _pin_thread_env() -> None:
 
 
 def _pin_torch_threads() -> None:
-    """One torch thread in the parent: the PPO net is tiny and sharding it loses."""
+    """One torch thread in the parent.
+
+    The PPO net is tiny, so thread-pool synchronisation dominates: a sweep on
+    8 CPUs showed 4 threads only trading update time for slower action sampling
+    (same wall, 3x the CPU) and 8 threads ~5x slower overall.  One thread is also
+    what keeps the suite fast under xdist.
+    """
     import torch
 
     torch.set_num_threads(1)

@@ -45,19 +45,36 @@ oversubscribe further. The right fix was algorithmic.
 3. **Pin BLAS/OpenMP to one thread per process** (`OMP_NUM_THREADS` & friends
    before workers start, `torch.set_num_threads(1)` in the parent), so four
    workers do not spawn four thread pools each.
+4. **Binary-search the `MarketView` as-of lookups too.** Re-profiling after (1)
+   showed `_rebalance` still calling `MarketView.gas_at_block` twice per
+   rebalance (once for the gas row, once inside `ReplayGasModel`), each a scan
+   of the 7.6M-row feed.  `regime_at`/`gas_at_block` now use
+   `Series.search_sorted` on the by-construction-sorted feeds instead of
+   filter+sort.
 
 ## Evidence
 
-- Single-env step: **67–95 steps/s → ~700 steps/s** (1.4 ms, hold).
-- Four envs, random actions (PPO exploration): `dummy` 646 → **`subproc`
-  1833 steps/s** (2.8×).
-- Real CLI run: 100,000 steps, one seed, `subproc` = **2m57s**; the default
-  5 × 1M budget is therefore **~1.5–2 hours** (was ~17h).
+- Single-env step: **67–95 steps/s → 6,850 steps/s** hold (0.15 ms) and
+  **1,269 steps/s** with random/rebalance-heavy actions (0.79 ms).
+- Four envs, random actions (PPO exploration): `dummy` 1,112 → **`subproc`
+  2,631 steps/s** (2.4×).
+- Real CLI run: 100,000 steps, one seed, `subproc` = **2m31s** (was 2m57s after
+  step 1 and ~7m before).  That is ~53 s of per-seed startup plus ~98 s of
+  stepping/updates, so a 1M-step seed is roughly 17 min and the default
+  5 × 1M budget **~1.5 h** (a naive linear extrapolation of the 100k wall time,
+  which includes startup, gives ~2 h).  Was ~17 h before this ADR.
 
 ## Consequences
 
 - The replay engine is no longer the bottleneck; a step is Python-bound, so the
-  process backend now gives real multicore scaling.
+  process backend now gives real multicore scaling.  PPO updates are now a
+  meaningful share of the remaining time; using more torch threads trades update
+  time for slower action sampling and does not improve wall-clock (measured), so
+  the parent stays at one thread.
+- `Series.search_sorted` itself costs ~0.2 ms per call (polars builds a lazy
+  selection internally).  It is still much cheaper than the old full scans; a
+  numpy block-index cache on `MarketView` could remove that residual, but the
+  view is frozen/slots and the feeds are memory-bound, so it is not done here.
 - Workers each hold a `MarketView` (~4 GB resident), so the worker count is
   memory-bound: the pinned `parallel_envs = 4` fits in the 30 GB host; raising it
   needs memory headroom (and changes the PPO rollout, since it is `n_steps ×
