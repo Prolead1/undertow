@@ -16,10 +16,12 @@ The library is stable-baselines3 per ``docs/decisions/004-rl-library.md``.
 from __future__ import annotations
 
 from undertow.sim.train.ppo_runner import train_single_seed
+from undertow.sim.train.rollouts import RolloutRecorder
 from undertow.sim.train.runs import RunManifest, TrainingResult, train_ppo
 from undertow.sim.train.telemetry import RunStatus, TelemetryCallback
 
 __all__ = [
+    "RolloutRecorder",
     "RunManifest",
     "RunStatus",
     "TelemetryCallback",

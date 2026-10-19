@@ -578,11 +578,14 @@ class LpEnvironment(gym.Env):
             step_index=0,
         )
         info = self._make_info(
+            at_time=entry_time,
+            observation=observation,
             breakdown=RewardBreakdown(equity=self._equity),
             raw=RewardBreakdown(equity=self._equity),
             action=self._action_lookup[0],
+            action_index=0,
         )
-        return observation, info
+        return observation.to_vector(), info
 
     def step(
         self, action_idx: int
@@ -659,8 +662,15 @@ class LpEnvironment(gym.Env):
             tape_row=tape_row,
             step_index=self._step_count,
         )
-        info = self._make_info(breakdown=breakdown, raw=raw_breakdown, action=action)
-        return observation, float(breakdown.reward), terminated, truncated, info
+        info = self._make_info(
+            at_time=at_time,
+            observation=observation,
+            breakdown=breakdown,
+            raw=raw_breakdown,
+            action=action,
+            action_index=int(action_idx),
+        )
+        return observation.to_vector(), float(breakdown.reward), terminated, truncated, info
 
     # ------------------------------------------------------------------
     # Episode advance (mode-specific)
@@ -971,7 +981,7 @@ class LpEnvironment(gym.Env):
         at_time: datetime,
         tape_row: dict[str, object],
         step_index: int,
-    ) -> np.ndarray:
+    ) -> Observation:
         if self._position is None:
             raise EnvError("cannot observe without an open position")
         observation: Observation = self._builder.build_at(
@@ -986,14 +996,25 @@ class LpEnvironment(gym.Env):
             entry_sqrt_price=self._entry_sqrt,
             initial_capital=self._capital,
         )
-        return observation.to_vector()
+        return observation
 
     def _make_info(
         self,
+        *,
+        at_time: datetime,
+        observation: Observation,
         breakdown: RewardBreakdown,
         raw: RewardBreakdown,
         action: Action,
+        action_index: int,
     ) -> dict[str, Any]:
+        """Assemble the step ``info`` dict.
+
+        ``at_time`` and ``action_index`` are not derivable from the action object
+        alone, so they are passed explicitly.  The market/position fields mirror
+        the observation vector: U06's rollout recorder persists them without
+        peeking at ``LpEnvironment`` internals (CONTRACTS.md §2.1).
+        """
         return {
             "reward_breakdown": asdict(breakdown),
             "reward_breakdown_raw": asdict(raw),
@@ -1016,4 +1037,13 @@ class LpEnvironment(gym.Env):
             "collected_fees_usdc": self._collected_fees_usdc,
             "pool_fee_earned_0": self._last_pool_result.get("pool_fee_earned_0", 0.0),
             "pool_fee_earned_1": self._last_pool_result.get("pool_fee_earned_1", 0.0),
+            # -- U06 rollout fields (CONTRACTS.md §2.1) --
+            "action_index": int(action_index),
+            "timestamp": at_time,
+            "price": float(observation.price),
+            "tick": int(observation.tick),
+            "in_range": bool(observation.position_in_range),
+            "position_value": float(observation.position_value),
+            "regime": observation.regime,
+            "gas_price_wei": float(observation.gas_price_recent_wei),
         }

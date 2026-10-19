@@ -38,6 +38,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv, VecMonitor
 
+from undertow.sim.train.rollouts import RolloutRecorder, rows_from_env
 from undertow.sim.train.runs import (
     RunManifest,
     compute_config_hash,
@@ -70,6 +71,11 @@ PPO_DEVICE: str = "cpu"  # CPU keeps runs bit-reproducible and GPU-free in tests
 
 #: Accepted ``training.vec_env`` backends (validated again by ``TrainingConfig``).
 _VEC_ENV_BACKENDS: tuple[str, ...] = ("dummy", "subproc")
+
+#: Hard cap on decisions in one recorded evaluation episode.  The trainers'
+#: environments terminate after a bounded episode, so this is a defensive guard
+#: against a pathological env hanging the post-training pass, not a budget.
+_MAX_ROLLOUT_STEPS: int = 1_000_000
 
 #: Thread-pool variables pinned before starting worker processes.  Polars
 #: (rayon) reads ``POLARS_MAX_THREADS`` at import, so each worker's one-off
@@ -172,6 +178,64 @@ class _LearningCurveCallback(BaseCallback):
             self.curve.append(self.mean_reward())
             self._next_eval += self.log_freq_steps
         return True
+
+
+def _record_rollouts_pass(
+    env_fn: Callable[[], gym.Env],
+    model: PPO,
+    training: TrainingConfig,
+    run_id: str,
+    seed: int,
+    seed_dir: Path,
+) -> None:
+    """Run deterministic evaluation episodes and persist their trajectories (U06).
+
+    A *fresh* environment is built from ``env_fn``; the training vector env is
+    never stepped here, so the pass cannot perturb the training RNG or the
+    saved model/manifest.  ``model.predict`` is called with
+    ``deterministic=True`` (argmax, no sampling), and each episode is reset with
+    a distinct derived seed (``seed + episode``) so the sampled market windows
+    differ; resetting every episode with the same seed would write identical
+    parquets.  The derived seed keeps the pass reproducible.  Failures
+    propagate to the caller, which logs and continues.
+    """
+    max_episodes = max(0, int(training.rollout_max_episodes))
+    if max_episodes == 0:
+        return
+    recorder = RolloutRecorder(
+        run_id=run_id,
+        seed=seed,
+        out_dir=seed_dir,
+        max_episodes=max_episodes,
+    )
+    env = env_fn()
+    try:
+        for episode in range(max_episodes):
+            observation, info = env.reset(seed=seed + episode)
+            infos: list[dict[str, object]] = [info]
+            done = False
+            for _ in range(_MAX_ROLLOUT_STEPS):
+                action, _state = model.predict(observation, deterministic=True)
+                action_index = int(np.asarray(action).reshape(-1)[0])
+                observation, _reward, terminated, truncated, info = env.step(
+                    action_index
+                )
+                infos.append(info)
+                done = bool(terminated or truncated)
+                if done:
+                    break
+            if not done:
+                raise RuntimeError(
+                    f"rollout episode {episode} did not terminate within "
+                    f"{_MAX_ROLLOUT_STEPS} decisions"
+                )
+            recorder.record_episode(
+                episode,
+                rows_from_env(infos, run_id=run_id, seed=seed, episode=episode),
+            )
+    finally:
+        recorder.close()
+        env.close()
 
 
 def _resolve_log_dir(seed: int, log_dir: Path | None) -> Path:
@@ -298,6 +362,21 @@ def _train_single_seed(
         model.learn(total_timesteps=int(training.total_timesteps), callback=callbacks)
         checkpoint_path = seed_dir / f"ppo_seed_{seed}.zip"
         model.save(str(checkpoint_path))
+
+        # U06: a deterministic, offline evaluation pass over a fresh env. The
+        # pass is best-effort: a recording failure is logged and training
+        # continues with the checkpoint/manifest untouched.
+        if training.record_rollouts:
+            try:
+                _record_rollouts_pass(
+                    env_fn, model, training, run_id, seed, seed_dir
+                )
+            except Exception:
+                logger.exception(
+                    "rollout recording failed for seed %d; training result "
+                    "is unaffected",
+                    seed,
+                )
 
         curve = list(curve_cb.curve)
         best_reward = float(max(curve)) if curve else float(curve_cb.mean_reward())
