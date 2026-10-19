@@ -245,6 +245,18 @@ class TelemetryPoint(BaseModel):
     train: TrainMetrics = TrainMetrics()
     time: TimeMetrics = TimeMetrics()
 
+class RunStatusModel(BaseModel):
+    """Mirrors `undertow.sim.train.telemetry.RunStatus` (CONTRACTS §1); not imported from sim."""
+    schema_version: int = 1
+    run_id: str
+    seed: int
+    state: Literal["running", "done", "failed"]
+    timestep: int
+    total_timesteps: int
+    updated_at: datetime
+    pid: int
+    error: str | None = None
+
 class EvalMetrics(BaseModel):
     """Parsed from a results/ directory when present."""
     sharpe: float | None = None
@@ -308,7 +320,9 @@ class RolloutSeries(BaseModel):
     downsampled: bool = False
 ```
 
-`RunStatus` (from §1) is reused verbatim for the status endpoint.
+`RunStatusModel` mirrors the `RunStatus` schema of §1 **field-for-field** but is defined here (not
+imported from `undertow.sim`) so the `ui` extra never pulls in the training stack. Readers parse
+`status.json` into it directly.
 
 ---
 

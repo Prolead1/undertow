@@ -1,10 +1,10 @@
 # U06 — Rollout recorder (sim) + reader (ui)
 
-**Wave 1 · size M · depends on: U00, U01 · blocks: U05, U09**
+**Wave 1b · size M · depends on: U00, U01, U02 · blocks: U05, U09**
 **Branch:** `feature-ui-rollouts`
 
-> This task edits `train/ppo_runner.py` and `train/__init__.py`, which U00 also edits. Branch off
-> U00's branch and mark the PR `Stacked on #<U00 PR> (branch feature-sim-telemetry). Merge that first.`
+> U02 creates the frozen `schemas.py` (`RolloutSummary`, `RolloutSeries`) the UI reader returns.
+> Branch off U02's branch and mark the PR `Stacked on #<U02 PR> (branch feature-ui-registry). Merge that first.`
 
 ## Why this task exists
 

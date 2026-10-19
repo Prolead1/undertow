@@ -30,10 +30,12 @@ the thesis results legible and reproducible, not to change the science.
    the same files on disk. Your task file lists the **files you own**; do not touch files owned by
    another task. Remove your worktree once the branch is pushed.
 5. Update `STATUS.md` (in this directory) when you start and when you finish. It is the handoff board.
-6. **Import boundary is law.** `undertow.ui` imports only the *public* surfaces of `undertow.sim`
-   and `undertow.data`. Neither `undertow.data` nor `undertow.sim` may ever import `undertow.ui` —
-   the dashboard is a pure consumer. The string `from undertow.ui` must not appear anywhere under
-   `src/undertow/data/` or `src/undertow/sim/`. Grep-able.
+6. **Import boundary is law.** The dashboard is a pure, **artifact-only** consumer: `undertow.ui`
+   must **not** import `undertow.sim` or `undertow.data` at runtime. Shared wire schemas are mirrored
+   in `undertow/ui/schemas.py` (see `CONTRACTS.md` §4) so the `ui` extra stays free of the training
+   stack (`stable-baselines3`). The reverse is likewise forbidden: the strings `from undertow.ui` /
+   `import undertow.ui` must not appear anywhere under `src/undertow/data/` or `src/undertow/sim/`.
+   Both directions are AST-checkable and enforced by a test.
 7. **The dashboard never trains, backtests or evaluates.** It reads artifacts (`manifest.json`,
    `telemetry.jsonl`, `status.json`, rollout parquet, results CSV/MD) and serves them. All compute
    that produces those artifacts already lives in `undertow.sim`; U00/U06 only *record* what the
@@ -172,6 +174,7 @@ Sub-package `__init__.py` ownership: `figures/__init__.py` → U04 (creator); `u
 |---|---|---|---|
 | `pyproject.toml` | exists | U01 only | U01 adds the `ui` extra + dev deps + script; no other UI task touches it. |
 | `src/undertow/sim/config.py` | S01 | U00 (two additive flags), U06 (`rollout_max_episodes`) | Additive fields with defaults only; field order of existing dataclasses is frozen. |
+| `src/undertow/sim/env/lp_env.py` | S12 | U06 (additive `info` keys — ADR-024) | Additive keys only; public gym return types and pre-existing `info` keys/values are unchanged. |
 | `src/undertow/sim/train/__init__.py` | S13 | U00 (re-exports), U06 (re-exports) | Append only. U00 edits `__all__`; U06 appends its own. |
 | `src/undertow/ui/cli.py` | U01 (stub) | U05 (fills the `serve` command) | U01 creates the parser + `info`; U05 adds `serve`. |
 | `src/undertow/ui/__init__.py` | U01 | U05 (appends `create_app`, `serve`) | Append to `__all__` + imports only. |
@@ -209,9 +212,9 @@ wave 6        └────────────► U11 docs + CI + integra
 |---|---|---|---|---|---|
 | **U00** | sim telemetry instrumentation (`telemetry.jsonl`, `status.json`, flags) | — | U02,U03,U04,U05,U08,U09 | 0 | M |
 | **U01** | `undertow.ui` scaffold + repo plumbing + stack ADR | — | all UI | 0 | S |
-| **U02** | run registry, path discovery, schemas, results parsing | U00,U01 | U04,U05,U08,U10 | 1 | M |
-| **U03** | telemetry reader + file-tail streaming hub | U00,U01 | U04,U05,U08 | 1 | M |
-| **U06** | rollout recorder (sim) + reader (ui) | U00,U01 | U05,U09 | 1 | M |
+| **U02** | run registry, path discovery, schemas, results parsing | U00,U01 | U03,U04,U05,U06,U08,U10 | 1a | M |
+| **U03** | telemetry reader + file-tail streaming hub | U00,U01,U02 | U04,U05,U08 | 1b | M |
+| **U06** | rollout recorder (sim) + reader (ui) | U00,U01,U02 | U05,U09 | 1b | M |
 | **U04** | figure builders + Plotly dark theme | U02,U03 (contracts) | U05 | 2 | L |
 | **U05** | FastAPI app: REST + WebSocket + static + CLI `serve` | U02,U03,U04,U06 | U07,U08 | 3 | L |
 | **U07** | React/Vite scaffold, tokens, layout, API client | U05 (OpenAPI) | U08,U09,U10 | 4 | M |
@@ -372,7 +375,8 @@ PR (or is merged).
 ## 10. Launch order
 
 - **Wave 0:** U00, U01 (parallel; disjoint files).
-- **Wave 1:** U02, U03, U06 (parallel).
+- **Wave 1a:** U02 (creates the frozen `schemas.py` everyone else reads).
+- **Wave 1b:** U03, U06 (parallel; both stack on U02 until it merges).
 - **Wave 2:** U04.
 - **Wave 3:** U05.
 - **Wave 4:** U07.

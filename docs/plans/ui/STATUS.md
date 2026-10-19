@@ -8,13 +8,13 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 
 | Task | State | Branch | PR | pytest / typecheck | Reviewer | Notes |
 |---|---|---|---|---|---|---|
-| U00 sim telemetry instrumentation | pr-open | `feature-sim-telemetry` | [#70](https://github.com/Prolead1/undertow/pull/70) | 24 passed; full 1497 passed, 6 skipped (93.64%) | approved | telemetry.jsonl + status.json + config flags; stacked on #68 |
-| U01 ui scaffold + stack ADR | pr-open | `feature-ui-scaffold` | [#69](https://github.com/Prolead1/undertow/pull/69) | 24 passed; full 1497 passed, 6 skipped (93.64%) | approved | `undertow.ui` pkg, `ui` extra, `undertow-ui` script, ADR-023; stacked on #68 |
-| U02 registry + schemas + results | todo | `feature-ui-registry` | — | — | — | scan runs/, parse results/ |
-| U03 telemetry reader + streaming hub | todo | `feature-ui-streaming` | — | — | — | tail jsonl → WS |
+| U00 sim telemetry instrumentation | merged | `feature-sim-telemetry` | [#70](https://github.com/Prolead1/undertow/pull/70) | 24 passed; full 1497 passed, 6 skipped (93.64%) | approved | telemetry.jsonl + status.json + config flags |
+| U01 ui scaffold + stack ADR | merged | `feature-ui-scaffold` | [#69](https://github.com/Prolead1/undertow/pull/69) | 24 passed; full 1497 passed, 6 skipped (93.64%) | approved | `undertow.ui` pkg, `ui` extra, `undertow-ui` script, ADR-023 |
+| U02 registry + schemas + results | pr-open | `feature-ui-registry` | [#72](https://github.com/Prolead1/undertow/pull/72) | 79 passed; full 1576 passed, 6 skipped (93.92%) | approved | scan runs/, parse results/; rank() = eval-first then Sharpe→worst-regime→reward; stacked on #71 |
+| U03 telemetry reader + streaming hub | pr-open | `feature-ui-streaming` | [#73](https://github.com/Prolead1/undertow/pull/73) | 92 passed; full 1589 passed, 6 skipped (93.84%) | approved | tail jsonl → WS; stacked on #72 |
 | U04 figure builders + dark theme | todo | `feature-ui-figures` | — | — | — | pure Plotly specs |
 | U05 FastAPI app + CLI serve | todo | `feature-ui-api` | — | — | — | REST + WS + static |
-| U06 rollout recorder + reader | todo | `feature-ui-rollouts` | — | — | — | parquet sidecar (sim) + reader |
+| U06 rollout recorder + reader | pr-open | `feature-ui-rollouts` | [#74](https://github.com/Prolead1/undertow/pull/74) | 20 passed; full 1596 passed, 6 skipped (93.91%) | approved | parquet sidecar (sim) + reader; costs in raw USDC; ADR-024; stacked on #72 |
 | U07 React scaffold + design system | todo | `feature-ui-web` | — | — | — | Vite/TS/Tailwind + generated client |
 | U08 Live Cockpit view | todo | `feature-ui-live` | — | — | — | learning + diagnostics + actions |
 | U09 Policy Replay view | todo | `feature-ui-replay` | — | — | — | ribbon + filmstrip + inspector |
@@ -24,12 +24,10 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 ## ADRs raised
 
 - **ADR-023** — UI stack & live server: FastAPI + WebSocket backend, React/Vite + Plotly.js frontend, third top-level package `undertow.ui`, backend-owned figure specs, Node quarantined in `web/`, in `docs/decisions/023-ui-stack-and-live-server.md`
+- **ADR-024** — additive `info` fields on `LpEnvironment` for rollout recording (`timestamp`, `price`, `tick`, `position_value`, `in_range`, `regime`, `gas_price_wei`, `action_index`); public return types and existing keys unchanged, in `docs/decisions/024-env-info-rollout-fields.md`
 
 ## Blockers / notes
 
-- **PR #68** (`docs-ui-plan`) is the plan itself and is the base for the Wave-0 PRs (#69, #70).
-  Merge it first; the stacked PRs then clean up to their own diff.
-- `feature-sim-report` carries an **uncommitted** `plotly` addition to `pyproject.toml`/`uv.lock`.
-  U01 supersedes it with the `ui` extra; do not build on the uncommitted change.
-- Wave 1 (U02, U03, U06) may start once #68 is merged, or by stacking on #70/#69 as noted in each
-  task file.
+- **Smart ordering:** U02 first (it owns the frozen `schemas.py`); U03 and U06 are stacked on it. Wave-0 and the boundary fix are merged/in PR.
+- **UI-wide follow-up (U11):** readers must reject a higher `schema_version` major with a typed error (CONTRACTS §0). Not yet implemented in `telemetry.py`/`rollouts.py`/`registry.py`; assigned to U11.
+- `feature-sim-report` carries an **uncommitted** `plotly` addition to `pyproject.toml`/`uv.lock` (now stashed). U01 superseded it with the `ui` extra; do not build on the uncommitted change.
