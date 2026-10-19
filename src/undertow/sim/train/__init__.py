@@ -17,9 +17,12 @@ from __future__ import annotations
 
 from undertow.sim.train.ppo_runner import train_single_seed
 from undertow.sim.train.runs import RunManifest, TrainingResult, train_ppo
+from undertow.sim.train.telemetry import RunStatus, TelemetryCallback
 
 __all__ = [
     "RunManifest",
+    "RunStatus",
+    "TelemetryCallback",
     "TrainingResult",
     "train_ppo",
     "train_single_seed",
