@@ -1,10 +1,10 @@
 # U03 — Telemetry reader + live streaming hub
 
-**Wave 1 · size M · depends on: U00, U01 · blocks: U04, U05, U08**
+**Wave 1b · size M · depends on: U00, U01, U02 · blocks: U04, U05, U08**
 **Branch:** `feature-ui-streaming`
 
-> If U00's PR is not merged yet, branch off U00's branch and mark this PR
-> `Stacked on #<U00 PR> (branch feature-sim-telemetry). Merge that first.`
+> U02 creates the frozen `schemas.py` (`TelemetryPoint`, `RunStatusModel`) this task returns. Branch
+> off U02's branch and mark this PR `Stacked on #<U02 PR> (branch feature-ui-registry). Merge that first.`
 
 ## Why this task exists
 

@@ -211,9 +211,9 @@ wave 6        └────────────► U11 docs + CI + integra
 |---|---|---|---|---|---|
 | **U00** | sim telemetry instrumentation (`telemetry.jsonl`, `status.json`, flags) | — | U02,U03,U04,U05,U08,U09 | 0 | M |
 | **U01** | `undertow.ui` scaffold + repo plumbing + stack ADR | — | all UI | 0 | S |
-| **U02** | run registry, path discovery, schemas, results parsing | U00,U01 | U04,U05,U08,U10 | 1 | M |
-| **U03** | telemetry reader + file-tail streaming hub | U00,U01 | U04,U05,U08 | 1 | M |
-| **U06** | rollout recorder (sim) + reader (ui) | U00,U01 | U05,U09 | 1 | M |
+| **U02** | run registry, path discovery, schemas, results parsing | U00,U01 | U03,U04,U05,U06,U08,U10 | 1a | M |
+| **U03** | telemetry reader + file-tail streaming hub | U00,U01,U02 | U04,U05,U08 | 1b | M |
+| **U06** | rollout recorder (sim) + reader (ui) | U00,U01,U02 | U05,U09 | 1b | M |
 | **U04** | figure builders + Plotly dark theme | U02,U03 (contracts) | U05 | 2 | L |
 | **U05** | FastAPI app: REST + WebSocket + static + CLI `serve` | U02,U03,U04,U06 | U07,U08 | 3 | L |
 | **U07** | React/Vite scaffold, tokens, layout, API client | U05 (OpenAPI) | U08,U09,U10 | 4 | M |
@@ -374,7 +374,8 @@ PR (or is merged).
 ## 10. Launch order
 
 - **Wave 0:** U00, U01 (parallel; disjoint files).
-- **Wave 1:** U02, U03, U06 (parallel).
+- **Wave 1a:** U02 (creates the frozen `schemas.py` everyone else reads).
+- **Wave 1b:** U03, U06 (parallel; both stack on U02 until it merges).
 - **Wave 2:** U04.
 - **Wave 3:** U05.
 - **Wave 4:** U07.
