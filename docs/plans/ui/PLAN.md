@@ -174,6 +174,7 @@ Sub-package `__init__.py` ownership: `figures/__init__.py` → U04 (creator); `u
 |---|---|---|---|
 | `pyproject.toml` | exists | U01 only | U01 adds the `ui` extra + dev deps + script; no other UI task touches it. |
 | `src/undertow/sim/config.py` | S01 | U00 (two additive flags), U06 (`rollout_max_episodes`) | Additive fields with defaults only; field order of existing dataclasses is frozen. |
+| `src/undertow/sim/env/lp_env.py` | S12 | U06 (additive `info` keys — ADR-024) | Additive keys only; public gym return types and pre-existing `info` keys/values are unchanged. |
 | `src/undertow/sim/train/__init__.py` | S13 | U00 (re-exports), U06 (re-exports) | Append only. U00 edits `__all__`; U06 appends its own. |
 | `src/undertow/ui/cli.py` | U01 (stub) | U05 (fills the `serve` command) | U01 creates the parser + `info`; U05 adds `serve`. |
 | `src/undertow/ui/__init__.py` | U01 | U05 (appends `create_app`, `serve`) | Append to `__all__` + imports only. |

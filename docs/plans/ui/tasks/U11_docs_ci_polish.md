@@ -55,6 +55,12 @@ owning task's branch instead.
    every panel, no console errors, no `NaN` in any figure JSON, and the dark theme applied on every
    route. Fix small issues directly; file anything structural back to the owning task.
 
+6. **Close the schema-version follow-up.** CONTRACTS §0 requires readers to reject a higher
+   `schema_version` major with a **typed** error. Add a shared `SchemaVersionError` (in
+   `undertow/ui/schemas.py`) plus a `check_schema_version()` helper, and use it in `telemetry.py`,
+   `rollouts.py` and `registry.py` (replacing the ad-hoc `ValueError`). Add tests for a `schema_version: 2`
+   artifact being rejected. This is a UI-wide contract gap flagged by review; it must not ship open.
+
 ## Definition of done
 
 - `docs/running_the_dashboard.md` works verbatim from a fresh clone (state the command you ran).
