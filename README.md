@@ -25,6 +25,7 @@ uv sync
 
 - [x] Data pipeline scaffolding (T00)
 - [x] AMM simulator scaffolding
+- [x] Live policy cockpit dashboard (ui-v1)
 
 ## `undertow.sim` — Simulator, Backtester & RL Environment
 
@@ -41,6 +42,23 @@ uv sync
 
 **Quickstart:** `uv sync && uv run undertow-sim info`
 **Full guide:** [`docs/running_experiments.md`](docs/running_experiments.md)
+
+## Dashboard — live policy cockpit
+
+The read-only `undertow.ui` dashboard serves the artifacts a training run already
+writes (no training, backtesting or mutation):
+
+```bash
+uv sync && uv run undertow-ui serve --runs runs/ --results results/   # http://127.0.0.1:8050
+```
+
+Three views: **Live Cockpit** (`/live`) streams the learning curve, PPO
+diagnostics and action heatmap while a policy trains; **Policy Replay**
+(`/replay`) replays a checkpoint's position path against price, step by step;
+**Leaderboard / Compare** (`/leaderboard`, `/compare`) ranks runs by held-out
+eval Sharpe and overlays policies.
+
+**Full guide:** [`docs/running_the_dashboard.md`](docs/running_the_dashboard.md)
 
 ## Running network-flavoured tests
 

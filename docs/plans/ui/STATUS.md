@@ -19,7 +19,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | U08 Live Cockpit view | pr-open | `feature-ui-live` | [#79](https://github.com/Prolead1/undertow/pull/79) | 32 tests; typecheck/build/lint green | approved | learning + diagnostics + actions; view-local state |
 | U09 Policy Replay view | pr-open | `feature-ui-replay` | [#80](https://github.com/Prolead1/undertow/pull/80) | 37 tests; typecheck/build/lint green | approved | ribbon + filmstrip + inspector; replay theme/rows modules |
 | U10 Leaderboard + Compare view | pr-open | `feature-ui-leaderboard` | [#78](https://github.com/Prolead1/undertow/pull/78) | 38 tests; typecheck/build/lint green | approved | ranking + overlay; URL-only pins; ADR-027 |
-| U11 docs + CI + integration smoke | todo | `feature-ui-polish` | — | — | — | `running_the_dashboard.md`, `ui.yml` |
+| U11 docs + CI + integration smoke | in-review | `feature-ui-polish` | — | pytest green; web typecheck/test/build/lint green; `scripts/smoke_ui.sh` PASS | running | `running_the_dashboard.md`, `ui.yml`, schema-version close-out, lazy Plotly split |
 
 ## ADRs raised
 
@@ -31,6 +31,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 
 ## Blockers / notes
 
-- **Smart ordering:** U02 first (it owns the frozen `schemas.py`); U03 and U06 are stacked on it. Wave-0 and the boundary fix are merged/in PR.
-- **UI-wide follow-up (U11):** readers must reject a higher `schema_version` major with a typed error (CONTRACTS §0). Not yet implemented in `telemetry.py`/`rollouts.py`/`registry.py`; assigned to U11.
+- **Smart ordering:** U02 first (it owns the frozen `schemas.py`); U03 and U06 are stacked on it. Wave-0 through wave-5 are merged.
+- **UI-wide follow-up (U11): CLOSED.** `SchemaVersionError` + `check_schema_version()` live in `ui/schemas.py`, used by `telemetry.py` (`read_status`, `read_points`), `rollouts.py` (reader) and `registry.py` (degrades to `unknown`); REST surfaces `422` via a FastAPI exception handler. Tests cover `schema_version: 2` rejection and version-1/missing tolerance for telemetry, status, rollouts and registry.
+- **U11 final state:** `docs/running_the_dashboard.md`, `.github/workflows/ui.yml` (non-blocking, separate from `quality.yml`), `README.md` Dashboard section + Status line, `scripts/smoke_ui.sh` + committed fixture, route-level `React.lazy` Plotly split (entry chunk ~226 kB, Plotly deferred to a 4.85 MB on-demand chunk), `.gitignore` symlink-safe `node_modules` entries. Python `quality` remains the merge gate.
 - `feature-sim-report` carries an **uncommitted** `plotly` addition to `pyproject.toml`/`uv.lock` (now stashed). U01 superseded it with the `ui` extra; do not build on the uncommitted change.

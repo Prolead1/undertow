@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "run_id": "ppo_s0_smoke00000000",
+  "seed": 0,
+  "config_hash": "smoke0000",
+  "git_commit": "smoketest",
+  "algorithm": "ppo",
+  "total_timesteps": 3000,
+  "best_reward": 0.42,
+  "checkpoint_path": "checkpoints/ppo_s0_smoke00000000.zip",
+  "library_versions": {
+    "stable_baselines3": "2.9",
+    "gymnasium": "1.0"
+  },
+  "learning_curve": [0.1, 0.25, 0.42]
+}

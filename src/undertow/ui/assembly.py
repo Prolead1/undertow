@@ -16,6 +16,8 @@ import logging
 from collections.abc import Sequence
 from pathlib import Path
 
+import polars as pl
+
 from undertow.ui.figures.actions import action_heatmap_figure
 from undertow.ui.figures.compare import compare_equity_figure
 from undertow.ui.figures.diagnostics import DIAGNOSTIC_METRICS, diagnostics_figure
@@ -25,8 +27,14 @@ from undertow.ui.figures.ribbon import ribbon_figure
 from undertow.ui.figures.theme import FigureSpec, empty_figure
 from undertow.ui.paths import RunDir
 from undertow.ui.registry import RunRegistry
-from undertow.ui.rollouts import list_rollouts, read_rollout
-from undertow.ui.schemas import RolloutSeries, RunRecord, TelemetryPoint
+from undertow.ui.rollouts import read_rollout
+from undertow.ui.schemas import (
+    RolloutSeries,
+    RunRecord,
+    SchemaVersionError,
+    TelemetryPoint,
+    check_schema_version,
+)
 from undertow.ui.telemetry import count_lines, read_points
 
 __all__ = [
@@ -93,16 +101,32 @@ def read_telemetry_points(run_dir: RunDir, *, max_points: int) -> list[Telemetry
 def _select_rollout_path(
     run_dir: RunDir, *, seed: int | None, episode: int | None
 ) -> Path | None:
-    """Pick the rollout parquet matching the optional ``(seed, episode)`` filter."""
-    if run_dir.rollout_dir is None:
+    """Pick the rollout parquet matching the optional ``(seed, episode)`` filter.
+
+    Selection reads only the identity columns directly (not via
+    :func:`list_rollouts`, which intentionally skips incompatible files) so a
+    matching rollout carrying a newer major ``schema_version`` raises
+    :class:`SchemaVersionError` (→ HTTP 422) rather than being silently ignored
+    and rendering an empty figure (CONTRACTS §0).
+    """
+    if run_dir.rollout_dir is None or not run_dir.rollout_dir.is_dir():
         return None
-    for summary in list_rollouts(run_dir.rollout_dir):
-        if seed is not None and summary.seed != seed:
+    for path in sorted(run_dir.rollout_dir.glob("*.parquet")):
+        try:
+            head = pl.read_parquet(
+                path, columns=["seed", "episode", "schema_version"]
+            )
+        except Exception:  # noqa: BLE001 - an unreadable file is handled by read_rollout
             continue
-        if episode is not None and summary.episode != episode:
+        if head.height == 0:
             continue
-        path = run_dir.rollout_dir / f"episode_{summary.episode}.parquet"
-        return path if path.is_file() else None
+        row = head.row(0, named=True)
+        if seed is not None and row.get("seed") != seed:
+            continue
+        if episode is not None and row.get("episode") != episode:
+            continue
+        check_schema_version(row.get("schema_version"), source=str(path))
+        return path
     return None
 
 
@@ -114,6 +138,12 @@ def _load_rollout_series(
         return None
     try:
         return read_rollout(path, max_points=max_points)
+    except SchemaVersionError as exc:
+        # A newer major is a schema incompatibility, not a corrupt file: re-raise
+        # so the figure route answers 422 (CONTRACTS §0) instead of silently
+        # rendering the empty state.
+        logger.warning("incompatible rollout schema %s: %s", path, exc)
+        raise
     except ValueError as exc:
         logger.warning("skipping unreadable rollout %s: %s", path, exc)
         return None
@@ -262,6 +292,11 @@ def compare_series(
             continue
         try:
             rollout = read_rollout(path, max_points=max_points)
+        except SchemaVersionError as exc:
+            # A schema incompatibility propagates (the API answers 422), unlike a
+            # merely unreadable file which is skipped so the overlay still plots.
+            logger.warning("incompatible rollout schema %s: %s", path, exc)
+            raise
         except ValueError as exc:
             logger.warning("skipping unreadable rollout %s: %s", path, exc)
             continue

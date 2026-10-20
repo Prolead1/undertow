@@ -1,0 +1,41 @@
+name: ui
+
+# Frontend-only gate. This job is intentionally SEPARATE from `quality.yml`:
+# the Python `quality` job (ruff + mypy + pytest) remains the required merge gate
+# and is never conditioned on the Node toolchain. See PLAN.md §8 (React toolchain
+# flakiness) and §7 (Node quarantined under `web/`).
+on:
+  pull_request:
+    paths:
+      - "web/**"
+      - "src/undertow/ui/**"
+      - ".github/workflows/ui.yml"
+  workflow_dispatch:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    # NON-BLOCKING for now: this becomes required once the frontend stabilises.
+    # Remove `continue-on-error` (or set it to false) at that point.
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm run test
+      - name: Build
+        run: npm run build
+      - name: Lint
+        run: npm run lint

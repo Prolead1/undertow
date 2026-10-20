@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "run_id": "ppo_s0_smoke00000000",
+  "seed": 0,
+  "state": "done",
+  "timestep": 3000,
+  "total_timesteps": 3000,
+  "updated_at": "2026-10-19T18:12:00Z",
+  "pid": 51234,
+  "error": null
+}

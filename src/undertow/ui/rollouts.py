@@ -26,16 +26,21 @@ from typing import cast
 import polars as pl
 
 from undertow.ui.registry import downsample_indices
-from undertow.ui.schemas import RolloutSeries, RolloutSummary
+from undertow.ui.schemas import (
+    SCHEMA_VERSION,
+    RolloutSeries,
+    RolloutSummary,
+    SchemaVersionError,
+    check_schema_version,
+)
 
 __all__ = ["list_rollouts", "read_rollout", "SCHEMA_VERSION"]
 
 logger = logging.getLogger("undertow.ui.rollouts")
 
-#: Major schema version this reader understands (CONTRACTS.md §0/§2).  Mirrored
-#: rather than imported from ``undertow.sim`` — the parquet schema is the
-#: contract and ``ui`` must not depend on the training stack.
-SCHEMA_VERSION: int = 1
+# ``SCHEMA_VERSION`` is re-exported from :mod:`undertow.ui.schemas` so the UI
+# package has a single canonical major version (the value is mirrored from
+# ``undertow.sim`` rather than imported — CONTRACTS §0/§2).
 
 #: Glob matching :class:`undertow.sim.train.rollouts.RolloutRecorder` output.
 _PARQUET_GLOB: str = "episode_*.parquet"
@@ -59,19 +64,17 @@ def _iso_z(moment: datetime) -> str:
     return moment.isoformat().replace("+00:00", "Z")
 
 
-def _schema_version_of(frame: pl.DataFrame) -> int:
+def _schema_version_of(frame: pl.DataFrame, source: str) -> int:
     """Major ``schema_version`` of a frame, tolerating a missing/odd value.
 
-    CONTRACTS.md §0: a reader rejects a *higher* major version.  A missing or
-    unparseable version is treated as compatible so old/foreign artifacts do not
-    take down the whole listing.
+    CONTRACTS.md §0: a reader rejects a *higher* major version with a typed
+    :class:`~undertow.ui.schemas.SchemaVersionError`.  A missing or unparseable
+    version is treated as compatible so old/foreign artifacts do not take down
+    the whole listing.
     """
     if "schema_version" not in frame.columns or frame.height == 0:
         return SCHEMA_VERSION
-    try:
-        return int(frame["schema_version"][0])
-    except (TypeError, ValueError):
-        return SCHEMA_VERSION
+    return check_schema_version(frame["schema_version"][0], source=source)
 
 
 def _wire(value: object) -> object:
@@ -114,15 +117,12 @@ def list_rollouts(rollout_dir: Path | str) -> list[RolloutSummary]:
             logger.warning("skipping empty rollout %s", path)
             continue
         ordered = frame.sort("step")
-        version = _schema_version_of(ordered)
-        if version > SCHEMA_VERSION:
-            logger.warning(
-                "skipping rollout %s with unsupported schema_version %d (reader "
-                "understands %d)",
-                path,
-                version,
-                SCHEMA_VERSION,
-            )
+        try:
+            _schema_version_of(ordered, str(path))
+        except SchemaVersionError as exc:
+            # A newer major schema is rejected (CONTRACTS §0); the *listing*
+            # still survives so one future artifact cannot hide every episode.
+            logger.warning("skipping rollout %s: %s", path, exc)
             continue
         summaries.append(
             RolloutSummary(
@@ -150,12 +150,8 @@ def read_rollout(path: Path | str, *, max_points: int = 2000) -> RolloutSeries:
     frame = pl.read_parquet(source)
     if frame.height == 0:
         raise ValueError(f"rollout {source} contains no rows")
-    version = _schema_version_of(frame)
-    if version > SCHEMA_VERSION:
-        raise ValueError(
-            f"rollout {source} has unsupported schema_version {version} "
-            f"(this reader understands {SCHEMA_VERSION})"
-        )
+    # Raises ``SchemaVersionError`` for a newer major (CONTRACTS §0).
+    _schema_version_of(frame, str(source))
 
     columns = list(frame.columns)
     indices = downsample_indices(frame.height, int(max_points))

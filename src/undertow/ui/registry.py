@@ -37,6 +37,8 @@ from undertow.ui.schemas import (
     RunManifestSummary,
     RunRecord,
     RunStatusModel,
+    SchemaVersionError,
+    check_schema_version,
 )
 
 __all__ = ["RunRegistry", "downsample_indices", "rank"]
@@ -83,14 +85,20 @@ def _infer_updated_at(run_dir: RunDir) -> datetime:
 
 
 def _read_telemetry(path: Path | None) -> tuple[int, list[int]]:
-    """Return ``(valid_point_count, timesteps)`` tolerating torn/bad lines."""
+    """Return ``(valid_point_count, timesteps)`` tolerating torn/bad lines.
+
+    A line carrying a newer major ``schema_version`` is an incompatibility, not
+    a valid point, so it is skipped exactly as the telemetry reader would reject
+    it (CONTRACTS §0).  That keeps ``RunRecord.telemetry_points`` consistent with
+    ``GET .../telemetry``, which answers ``422`` for such an artifact.
+    """
     if path is None or not path.is_file():
         return 0, []
     count = 0
     timesteps: list[int] = []
     try:
         with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
+            for index, line in enumerate(handle):
                 stripped = line.strip()
                 if not stripped:
                     continue
@@ -99,6 +107,19 @@ def _read_telemetry(path: Path | None) -> tuple[int, list[int]]:
                 except ValueError:
                     continue
                 if not isinstance(point, dict):
+                    continue
+                try:
+                    check_schema_version(
+                        point.get("schema_version"),
+                        source=f"{path}:{index + 1}",
+                    )
+                except SchemaVersionError as exc:
+                    logger.warning(
+                        "skipping incompatible telemetry line %d in %s: %s",
+                        index + 1,
+                        path,
+                        exc,
+                    )
                     continue
                 count += 1
                 timestep = point.get("timestep")
@@ -357,6 +378,19 @@ class RunRegistry:
         manifest_data = _read_json(run_dir.manifest_path) if run_dir.manifest_path else None
         manifest_bad = run_dir.manifest_path is not None and manifest_data is None
 
+        if manifest_data is not None:
+            try:
+                check_schema_version(
+                    manifest_data.get("schema_version"),
+                    source=str(run_dir.manifest_path),
+                )
+            except SchemaVersionError as exc:
+                # CONTRACTS §0: reject a newer major.  ``scan`` still survives
+                # (robustness is also a contract) by degrading to ``unknown``.
+                logger.warning("rejecting manifest %s: %s", run_dir.manifest_path, exc)
+                manifest_bad = True
+                manifest_data = None
+
         manifest: RunManifestSummary | None = None
         if manifest_data is not None:
             try:
@@ -368,6 +402,15 @@ class RunRegistry:
 
         status: RunStatusModel | None = None
         status_data = _read_json(run_dir.status_path) if run_dir.status_path else None
+        if status_data is not None:
+            try:
+                check_schema_version(
+                    status_data.get("schema_version"),
+                    source=str(run_dir.status_path),
+                )
+            except SchemaVersionError as exc:
+                logger.warning("rejecting status %s: %s", run_dir.status_path, exc)
+                status_data = None
         if status_data is not None:
             try:
                 status = RunStatusModel.model_validate(status_data)

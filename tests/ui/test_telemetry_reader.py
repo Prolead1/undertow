@@ -6,7 +6,9 @@ import json
 import logging
 from pathlib import Path
 
-from undertow.ui.schemas import RunStatusModel, TelemetryPoint
+import pytest
+
+from undertow.ui.schemas import RunStatusModel, SchemaVersionError, TelemetryPoint
 from undertow.ui.telemetry import (
     count_lines,
     read_curve_points,
@@ -169,6 +171,36 @@ def test_unknown_metric_keys_survive_round_trip(tmp_path: Path) -> None:
     assert dumped["time"]["future_clock"] == 3
 
 
+def test_complete_non_object_lines_are_skipped_and_offset_advances(
+    tmp_path: Path, caplog
+) -> None:
+    path = tmp_path / "telemetry.jsonl"
+    _write_lines(
+        path,
+        [
+            json.dumps(_point(timestep=1000)),
+            "42",
+            '"a string"',
+            "[1, 2]",
+            "true",
+            "null",
+            json.dumps(_point(timestep=2000)),
+        ],
+    )
+
+    with caplog.at_level(logging.WARNING, logger="undertow.ui.telemetry"):
+        points, next_offset = read_points(path)
+
+    assert [point.timestep for point in points] == [1000, 2000]
+    assert next_offset == 7
+    assert "skipping invalid telemetry line 2" in caplog.text
+
+    # The valid trailing line still parses from a later offset (no wedged tail).
+    tail, tail_offset = read_points(path, since=6)
+    assert [point.timestep for point in tail] == [2000]
+    assert tail_offset == 7
+
+
 def test_complete_invalid_json_line_is_skipped_and_bad_status_is_rejected(
     tmp_path: Path, caplog
 ) -> None:
@@ -191,6 +223,44 @@ def test_complete_invalid_json_line_is_skipped_and_bad_status_is_rejected(
     status_path.write_text(json.dumps(_status_payload() | {"state": "exploded"}), encoding="utf-8")
     assert read_status(status_path) is None
     assert "invalid status sidecar" in caplog.text
+
+
+def test_read_status_rejects_newer_schema_version(tmp_path: Path) -> None:
+    path = tmp_path / "status.json"
+    path.write_text(
+        json.dumps(_status_payload() | {"schema_version": 2}), encoding="utf-8"
+    )
+
+    with pytest.raises(SchemaVersionError, match="schema_version 2"):
+        read_status(path)
+
+
+def test_read_points_rejects_newer_schema_version(tmp_path: Path) -> None:
+    path = tmp_path / "telemetry.jsonl"
+    _write_lines(path, [json.dumps(_point(timestep=1000, schema_version=2))])
+
+    with pytest.raises(SchemaVersionError, match="schema_version 2"):
+        read_points(path)
+    # ``read_curve_points`` shares the same path, so it rejects too.
+    with pytest.raises(SchemaVersionError, match="schema_version 2"):
+        read_curve_points(path)
+
+
+def test_readers_tolerate_missing_and_version_one_schema(tmp_path: Path) -> None:
+    status_path = tmp_path / "status.json"
+    missing_version = _status_payload()
+    del missing_version["schema_version"]
+    status_path.write_text(json.dumps(missing_version), encoding="utf-8")
+    assert read_status(status_path) is not None
+
+    telemetry_path = tmp_path / "telemetry.jsonl"
+    point = _point(timestep=1000)
+    del point["schema_version"]
+    _write_lines(telemetry_path, [json.dumps(point)])
+
+    points, next_offset = read_points(telemetry_path)
+    assert next_offset == 1
+    assert [p.timestep for p in points] == [1000]
 
 
 def test_offset_beyond_end_and_zero_limit_are_stable(tmp_path: Path) -> None:
