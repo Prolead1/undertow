@@ -333,6 +333,21 @@ describe("CostWaterfall", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 4b. Pool over time + policy summary wiring
+// ---------------------------------------------------------------------------
+describe("PolicyReplay pool panels", () => {
+  it("mounts the pool chart and policy summary below the replay panels", async () => {
+    renderView("/replay?run_id=run-1&seed=0&episode=0");
+
+    expect(await screen.findByText("Pool over time")).toBeTruthy();
+    // The fixture predates the pool-state columns, so the chart explains itself
+    // instead of drawing a flat zero line.
+    expect(screen.getByText("Pool state not recorded for this run")).toBeTruthy();
+    expect(screen.getByText("What this policy captured")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 5. Filmstrip
 // ---------------------------------------------------------------------------
 describe("EpisodeFilmstrip", () => {

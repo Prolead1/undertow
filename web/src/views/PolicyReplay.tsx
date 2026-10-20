@@ -15,6 +15,8 @@ import { Panel } from "../components/Panel";
 import { CostWaterfall } from "../components/replay/CostWaterfall";
 import { EpisodeFilmstrip, type FilmstripTile } from "../components/replay/EpisodeFilmstrip";
 import { EquityVsHodl } from "../components/replay/EquityVsHodl";
+import { PolicySummary } from "../components/replay/PolicySummary";
+import { PoolChart } from "../components/replay/PoolChart";
 import { RibbonChart } from "../components/replay/RibbonChart";
 import { dominantRegime, parseRolloutRows } from "../components/replay/rows";
 import { StateInspector } from "../components/replay/StateInspector";
@@ -362,6 +364,9 @@ export default function PolicyReplay() {
             onSelect={(nextSeed, nextEpisode) => updateSelection(nextSeed, nextEpisode)}
           />
         </div>
+
+        <PoolChart rows={rows} cursorIndex={cursorIndex} />
+        <PolicySummary rows={rows} />
       </div>
     );
   }
