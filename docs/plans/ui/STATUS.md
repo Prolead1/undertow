@@ -15,17 +15,19 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | U04 figure builders + dark theme | pr-open | `feature-ui-figures` | [#75](https://github.com/Prolead1/undertow/pull/75) | 50 passed; full 1659 passed, 6 skipped (94.12%) | approved | pure Plotly specs; 6 builders + dark theme |
 | U05 FastAPI app + CLI serve | pr-open | `feature-ui-api` | [#76](https://github.com/Prolead1/undertow/pull/76) | 205 passed; full 1713 passed, 6 skipped (94.10%) | approved | REST + WS + static; ADR-025; split ws/static/assembly |
 | U06 rollout recorder + reader | merged | `feature-ui-rollouts` | [#74](https://github.com/Prolead1/undertow/pull/74) | 20 passed; full 1596 passed, 6 skipped (93.91%) | approved | parquet sidecar (sim) + reader; costs in raw USDC; ADR-024 |
-| U07 React scaffold + design system | pr-open | `feature-ui-web` | [#77](https://github.com/Prolead1/undertow/pull/77) | 17 tests; typecheck/lint/build green; Python 1713 passed, 6 skipped (94.10%) | approved | Vite/TS/Tailwind + generated client; ADR-026 |
-| U08 Live Cockpit view | todo | `feature-ui-live` | — | — | — | learning + diagnostics + actions |
-| U09 Policy Replay view | todo | `feature-ui-replay` | — | — | — | ribbon + filmstrip + inspector |
-| U10 Leaderboard + Compare view | todo | `feature-ui-leaderboard` | — | — | — | ranking + overlay |
+| U07 React scaffold + design system | merged | `feature-ui-web` | [#77](https://github.com/Prolead1/undertow/pull/77) | 17 tests; typecheck/lint/build green; Python 1713 passed, 6 skipped (94.10%) | approved | Vite/TS/Tailwind + generated client; ADR-026 |
+| U08 Live Cockpit view | pr-open | `feature-ui-live` | [#79](https://github.com/Prolead1/undertow/pull/79) | 32 tests; typecheck/build/lint green | approved | learning + diagnostics + actions; view-local state |
+| U09 Policy Replay view | pr-open | `feature-ui-replay` | [#80](https://github.com/Prolead1/undertow/pull/80) | 37 tests; typecheck/build/lint green | approved | ribbon + filmstrip + inspector; replay theme/rows modules |
+| U10 Leaderboard + Compare view | pr-open | `feature-ui-leaderboard` | [#78](https://github.com/Prolead1/undertow/pull/78) | 38 tests; typecheck/build/lint green | approved | ranking + overlay; URL-only pins; ADR-027 |
 | U11 docs + CI + integration smoke | todo | `feature-ui-polish` | — | — | — | `running_the_dashboard.md`, `ui.yml` |
 
 ## ADRs raised
 
 - **ADR-023** — UI stack & live server: FastAPI + WebSocket backend, React/Vite + Plotly.js frontend, third top-level package `undertow.ui`, backend-owned figure specs, Node quarantined in `web/`, in `docs/decisions/023-ui-stack-and-live-server.md`
 - **ADR-024** — additive `info` fields on `LpEnvironment` for rollout recording (`timestamp`, `price`, `tick`, `position_value`, `in_range`, `regime`, `gas_price_wei`, `action_index`); public return types and existing keys unchanged, in `docs/decisions/024-env-info-rollout-fields.md`
+- **ADR-025** — UI API surface: single-scan registry with the `(RunRecord, RunDir)` invariant + `<experiment>/seed_<n>` alias, per-directory leased WS hubs, `FigureSpecModel` response typing, additive `refresh`/`metric`/heartbeat, in `docs/decisions/025-ui-api-surface.md`
 - **ADR-026** — frontend state management for U07: React state + typed client now, Zustand/TanStack Query deferred to U08; `gen:api` reads the committed `web/openapi.json` (offline/reproducible) with `gen:api:live` for a running server, in `docs/decisions/026-frontend-state-management.md`
+- **ADR-027** — leaderboard contract gaps: `n_rebalances` absent from the frozen `EvalMetrics` read defensively with an `annualized_return` fallback; URL-only pin selection (App sidebar tray intentionally unwired, cross-view store deferred), in `docs/decisions/027-leaderboard-contract-gaps.md`
 
 ## Blockers / notes
 
