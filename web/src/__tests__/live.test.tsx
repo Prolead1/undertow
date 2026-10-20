@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter } from "../router";
 
 import type {
   FigureSpec,
@@ -168,7 +168,6 @@ function renderCockpit(entry = "/live?run_id=run-1"): ReturnType<typeof render> 
   return render(
     <MemoryRouter
       initialEntries={[entry]}
-      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
     >
       <LiveCockpit />
     </MemoryRouter>,

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams } from "../router";
 
 import {
   ApiError,
@@ -12,7 +12,8 @@ import { EmptyState } from "../components/EmptyState";
 import { Panel } from "../components/Panel";
 import { PlotlyFigure } from "../components/PlotlyFigure";
 import { MAX_COMPARE_RUNS, parsePinnedIds, serializePinnedIds, togglePinnedId } from "../components/leaderboard/pinned";
-import { PolicyFingerprint, SERIES_COLORS } from "../components/leaderboard/PolicyFingerprint";
+import { PolicyFingerprint } from "../components/leaderboard/PolicyFingerprint";
+import { SERIES_COLORS } from "../components/leaderboard/fingerprint";
 import { rankRuns } from "../components/leaderboard/ranking";
 
 /** Stable identity so memo dependencies do not churn while no compare is loaded. */

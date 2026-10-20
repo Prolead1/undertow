@@ -1,20 +1,17 @@
 import { lazy, Suspense, type ReactNode } from "react";
-import { createBrowserRouter, type RouteObject } from "react-router-dom";
 
 import App from "./App";
-import { RedirectToLive } from "./components/RedirectToLive";
+import { Navigate, useLocation } from "./router/primitives";
 
 /**
- * Chart-heavy views are route-split (`React.lazy`) so the ~5 MB Plotly bundle
- * is not part of the initial chunk. `App`, the run rail and the redirect are
- * eager because they are tiny and always visible.
+ * App routes (CONTRACTS §8). Chart-heavy views are `React.lazy` so the Plotly
+ * bundle stays out of the initial chunk; `App` (the shell) is eager.
  */
 const LiveCockpit = lazy(() => import("./views/LiveCockpit"));
 const PolicyReplay = lazy(() => import("./views/PolicyReplay"));
 const Leaderboard = lazy(() => import("./views/Leaderboard"));
 const Compare = lazy(() => import("./views/Compare"));
 
-/** Shared Suspense fallback; kept as an element so this file exports no component. */
 const ROUTE_FALLBACK = (
   <div
     role="status"
@@ -25,29 +22,34 @@ const ROUTE_FALLBACK = (
   </div>
 );
 
-/** Wrap a lazy route element in the shared Suspense boundary. */
-function deferred(element: ReactNode) {
-  return <Suspense fallback={ROUTE_FALLBACK}>{element}</Suspense>;
+const ROUTES: Record<string, ReactNode> = {
+  "/live": <LiveCockpit />,
+  "/replay": <PolicyReplay />,
+  "/leaderboard": <Leaderboard />,
+  "/compare": <Compare />,
+};
+
+/** The app shell plus the view for the current path; unknown paths go to `/live`. */
+export function AppRouter() {
+  const { pathname, search } = useLocation();
+  const view = ROUTES[pathname];
+  if (view === undefined) {
+    return <Navigate to={`/live${search}`} replace />;
+  }
+  return (
+    <App>
+      <Suspense fallback={ROUTE_FALLBACK}>{view}</Suspense>
+    </App>
+  );
 }
 
-/** CONTRACTS §8 route table; every route lives inside the shared App shell. */
-export const appRoutes: RouteObject[] = [
-  {
-    path: "/",
-    element: <App />,
-    children: [
-      { index: true, element: <RedirectToLive /> },
-      { path: "live", element: deferred(<LiveCockpit />) },
-      { path: "replay", element: deferred(<PolicyReplay />) },
-      { path: "leaderboard", element: deferred(<Leaderboard />) },
-      { path: "compare", element: deferred(<Compare />) },
-      { path: "*", element: <RedirectToLive /> },
-    ],
-  },
-];
-
-export function createAppRouter() {
-  return createBrowserRouter(appRoutes, {
-    future: { v7_relativeSplatPath: true },
-  });
-}
+export {
+  BrowserRouter,
+  Link,
+  MemoryRouter,
+  Navigate,
+  useLocation,
+  useNavigate,
+  useSearchParams,
+} from "./router/primitives";
+export type { LinkProps, Location, NavigateOptions, To } from "./router/primitives";

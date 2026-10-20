@@ -1,6 +1,6 @@
 # Undertow web UI
 
-React 18 + Vite + TypeScript (strict) frontend for the live policy cockpit. This directory is an
+React 19 + Vite + TypeScript (strict) frontend for the live policy cockpit. This directory is an
 isolated Node toolchain: `uv run pytest` never needs Node, and `web/node_modules` / `web/dist` stay
 out of git.
 
@@ -31,9 +31,21 @@ unset for the same-origin/proxy workflow.
 | `npm run preview` | Serve the production build |
 | `npm run typecheck` | Strict TypeScript check (`tsc --noEmit`) |
 | `npm run test` | Vitest (jsdom) one-shot |
-| `npm run lint` | ESLint over `src/` |
 | `npm run gen:api` | Regenerate `src/api/types.ts` from the committed `openapi.json` |
 | `npm run gen:api:live` | Regenerate from a running server at `127.0.0.1:8050` |
+
+## Dependencies
+
+Kept deliberately minimal — this is a read-only dashboard, so we avoid framework/tooling sprawl:
+
+- **Runtime (3):** `react`, `react-dom`, `plotly.js-dist-min`.
+- **Build/test/types:** `vite`, `@vitejs/plugin-react`, `typescript`, `@types/*`, `tailwindcss`,
+  `@tailwindcss/vite`, `vitest`, `jsdom`, `@testing-library/react`, `openapi-typescript`.
+
+Deliberately **not** used: `react-router-dom` (a ~180-line built-in router in `src/router/` covers
+four static routes + query-string selection), `react-plotly.js` (`PlotlyFigure` calls
+`Plotly.react` directly), and an ESLint/Prettier stack (strict `tsc` + tests + review are the gate).
+No lint script: run `npm run typecheck` and `npm run test`.
 
 ## Generated API types
 
@@ -56,7 +68,8 @@ commit `openapi.json` + `types.ts` whenever U05's wire contract changes.
 ```
 src/
   App.tsx                 shell: left rail run selector + nav, top bar connection badge + pin tray
-  router.tsx              CONTRACTS §8 routes, preserving ?run_id=&seed=&episode=
+  router.tsx              CONTRACTS §8 routes (built-in router); preserves ?run_id=&seed=&episode=
+  router/primitives.tsx   dependency-free history/query router (BrowserRouter, MemoryRouter, hooks)
   theme/tokens.css        CONTRACTS §9 CSS-variable dark tokens
   api/client.ts           typed fetch wrapper (getRuns/getRun/getCurve/getTelemetry/...)
   api/useLiveStream.ts    one WebSocket, backoff reconnect, REST-tail fallback, live merge
@@ -74,8 +87,8 @@ becomes `degraded`, the app falls back to polling `GET /api/runs` (rail refresh)
 (1 s, 2 s, 4 s … capped at 30 s). The fallback runs as a single poll chain: `startPolling` is a
 no-op while a request is outstanding or already scheduled, an `AbortController` cancels the
 in-flight request on reconnect/unmount, and a generation guard stops a late response from
-rescheduling a dead chain. `PlotlyFigure` bumps Plotly's `revision` only when the figure `data`
-changes, so live updates preserve zoom/selection state.
+rescheduling a dead chain. `PlotlyFigure` memoises the figure `data`/`layout`/`config` by their JSON
+signature and calls `Plotly.react`, so live updates preserve zoom/selection state.
 
 ### Design tokens
 

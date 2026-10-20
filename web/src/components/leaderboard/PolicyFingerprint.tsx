@@ -1,15 +1,5 @@
 import { cn } from "../cn";
-import { normalizeValues } from "./fingerprint";
-
-/** Fixed palette so a run keeps the same colour across charts (CONTRACTS §9). */
-export const SERIES_COLORS = [
-  "#22d3ee", // accent
-  "#a78bfa", // accent-2
-  "#34d399", // bull
-  "#f87171", // bear
-  "#fbbf24", // high-vol
-  "#94a3b8", // sideways
-] as const;
+import { normalizeValues, SERIES_COLORS } from "./fingerprint";
 
 export interface FingerprintSeries {
   label: string;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams } from "../router";
 
 import { ApiError, getCurve, getRuns, type RunRecord } from "../api/client";
 import { EmptyState } from "../components/EmptyState";

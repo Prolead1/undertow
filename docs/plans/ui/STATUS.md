@@ -28,6 +28,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 - **ADR-025** — UI API surface: single-scan registry with the `(RunRecord, RunDir)` invariant + `<experiment>/seed_<n>` alias, per-directory leased WS hubs, `FigureSpecModel` response typing, additive `refresh`/`metric`/heartbeat, in `docs/decisions/025-ui-api-surface.md`
 - **ADR-026** — frontend state management for U07: React state + typed client now, Zustand/TanStack Query deferred to U08; `gen:api` reads the committed `web/openapi.json` (offline/reproducible) with `gen:api:live` for a running server, in `docs/decisions/026-frontend-state-management.md`
 - **ADR-027** — leaderboard contract gaps: `n_rebalances` absent from the frozen `EvalMetrics` read defensively with an `annualized_return` fallback; URL-only pin selection (App sidebar tray intentionally unwired, cross-view store deferred), in `docs/decisions/027-leaderboard-contract-gaps.md`
+- **ADR-028** — minimal frontend dependencies: drop `react-router-dom` (built-in `src/router/`), `react-plotly.js` (direct `Plotly.react`), and the ESLint/Prettier stack (strict `tsc` + tests + review); runtime deps are `react`, `react-dom`, `plotly.js-dist-min`; TypeScript held at 5.x, in `docs/decisions/028-minimal-frontend-dependencies.md`
 
 ## Blockers / notes
 

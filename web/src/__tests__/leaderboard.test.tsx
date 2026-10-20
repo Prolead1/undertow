@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter } from "../router";
 
 import type { RunRecord } from "../api/client";
 import { CSV_HEADER, runsToCsv } from "../components/leaderboard/csv";
@@ -311,7 +311,7 @@ describe("Leaderboard view", () => {
     });
 
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter>
         <Leaderboard />
       </MemoryRouter>,
     );
@@ -344,7 +344,7 @@ describe("Leaderboard view", () => {
 
     try {
       render(
-        <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <MemoryRouter>
           <Leaderboard />
         </MemoryRouter>,
       );
@@ -382,7 +382,6 @@ describe("Compare view", () => {
     render(
       <MemoryRouter
         initialEntries={["/compare?run_ids=run-a,run-b"]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <Compare />
       </MemoryRouter>,
@@ -404,7 +403,6 @@ describe("Compare view", () => {
     render(
       <MemoryRouter
         initialEntries={["/compare?run_ids=a,b,c,d,e,f,g"]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <Compare />
       </MemoryRouter>,
@@ -431,7 +429,6 @@ describe("Compare view", () => {
     render(
       <MemoryRouter
         initialEntries={["/compare?run_ids=run-a,run-b"]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <Compare />
       </MemoryRouter>,
@@ -453,7 +450,6 @@ describe("Compare view", () => {
     render(
       <MemoryRouter
         initialEntries={["/compare?run_ids=run-a,run-b"]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <Compare />
       </MemoryRouter>,
@@ -468,7 +464,6 @@ describe("Compare view", () => {
     render(
       <MemoryRouter
         initialEntries={["/compare?run_ids=only-one"]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <Compare />
       </MemoryRouter>,

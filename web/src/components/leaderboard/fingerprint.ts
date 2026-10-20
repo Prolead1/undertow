@@ -2,6 +2,16 @@
  * Metric normalisation for the policy fingerprint (pure, no React).
  */
 
+/** Fixed palette so a run keeps the same colour across charts (CONTRACTS §9). */
+export const SERIES_COLORS = [
+  "#22d3ee", // accent
+  "#a78bfa", // accent-2
+  "#34d399", // bull
+  "#f87171", // bear
+  "#fbbf24", // high-vol
+  "#94a3b8", // sideways
+] as const;
+
 /**
  * Normalise a metric across the selected set with min-max scaling.
  * Finite values map to `[0, 1]`; when every value is equal (including a single

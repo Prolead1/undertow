@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Link, useLocation, type LinkProps } from "react-router-dom";
+import { Link, useLocation, type LinkProps } from "../router";
 
 import { withPreservedSearch } from "../navigation";
 

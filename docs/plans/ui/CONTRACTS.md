@@ -439,7 +439,7 @@ developer to run the Vite dev server.
   are ignored; the chart re-renders only the last window plus a full re-render every N points.
 - **Empty/error states:** every panel renders `EmptyState` (no runs / no telemetry / no rollouts) or
   an inline error with the failing path — never a blank canvas.
-- **Perf:** memoise figure payloads; `react-plotly.js` `revision` bumped only when data changes.
+- **Perf:** memoise figure payloads by JSON signature; `PlotlyFigure` calls `Plotly.react` directly and preserves view state via the layout's `uirevision` (ADR-028).
 
 ---
 
