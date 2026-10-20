@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -129,18 +129,25 @@ class TelemetryHub:
         """Number of tail tasks still owned by the hub (for shutdown checks)."""
         return len(self._tasks)
 
-    async def subscribe(self) -> AsyncIterator[str]:
+    async def subscribe(
+        self, *, on_subscribe: Callable[[], None] | None = None
+    ) -> AsyncIterator[str]:
         """Yield JSON frames until :meth:`close` sends the end-of-stream marker.
 
         Registering is lazy (the generator body runs on first iteration), which
         matches how a WebSocket route consumes it.  The queue is removed in
-        ``finally`` so a disconnected client cannot leak memory.
+        ``finally`` so a disconnected client cannot leak memory.  ``on_subscribe``
+        runs after the queue is registered but before the first ``await``; the
+        WebSocket route uses it to start the tail only once it can receive the
+        initial status frame (avoiding a lost-status race).
         """
         if self._closed:
             return
         queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=self.max_queue)
         self._subscribers.add(queue)
         try:
+            if on_subscribe is not None:
+                on_subscribe()
             while True:
                 frame = await queue.get()
                 if frame is None:

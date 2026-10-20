@@ -10,6 +10,8 @@ U01 ships the config surface; U05 appends ``create_app`` and ``serve``.
 
 from __future__ import annotations
 
+from undertow.ui.app import create_app
+from undertow.ui.cli import serve
 from undertow.ui.config import UiConfig
 
-__all__ = ["UiConfig"]
+__all__ = ["UiConfig", "create_app", "serve"]

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -423,6 +425,159 @@ def test_scan_deduplicates_duplicate_run_ids(tmp_path: Path, run_dir) -> None:
 
     assert [record.run_id for record in records] == ["dup"]
     assert records[0].experiment == "exp_a"
+
+
+def test_resolve_pairs_each_id_with_its_own_directory(tmp_path: Path, run_dir) -> None:
+    path_a = run_dir(
+        experiment="exp_a", seed=0, run_id="dup", updated_at="2026-03-01T00:00:00Z"
+    )
+    path_b = run_dir(
+        experiment="exp_b", seed=0, run_id="dup", updated_at="2026-01-01T00:00:00Z"
+    )
+    registry = RunRegistry(tmp_path)
+    registry.scan()
+
+    primary = registry.resolve("dup")
+    assert primary is not None
+    assert primary[1].path == path_a
+
+    alias_a = registry.resolve("exp_a/seed_0")
+    alias_b = registry.resolve("exp_b/seed_0")
+    assert alias_a is not None and alias_a[1].path == path_a
+    assert alias_b is not None and alias_b[1].path == path_b
+    assert alias_a[0].run_id == alias_b[0].run_id == "dup"
+    assert registry.resolve("exp_c/seed_0") is None
+
+
+def test_curve_resolves_each_id_to_its_own_directory_on_duplicate_run_id(
+    tmp_path: Path, run_dir
+) -> None:
+    run_dir(
+        experiment="exp_a",
+        seed=0,
+        run_id="dup",
+        learning_curve=(0.1, 0.2, 0.3),
+        telemetry_timesteps=(1000,),
+        updated_at="2026-03-01T00:00:00Z",
+    )
+    run_dir(
+        experiment="exp_b",
+        seed=0,
+        run_id="dup",
+        learning_curve=(9.0, 9.0, 9.0),
+        telemetry_timesteps=(2000,),
+        updated_at="2026-01-01T00:00:00Z",
+    )
+    registry = RunRegistry(tmp_path)
+    registry.scan()
+
+    # The raw id resolves to the canonical exp_a directory.
+    curve = registry.curve("dup")
+    assert curve is not None
+    assert curve.run_id == "dup"
+    assert curve.mean == [0.1, 0.2, 0.3]
+    assert curve.timesteps == [1000, 2000, 3000]
+    assert curve.per_seed == {"0": [0.1, 0.2, 0.3]}
+
+    # Each alias aggregates its *own* directory's experiment (and echoes the
+    # alias as its run_id), so a duplicate run_id never leaks exp_a's numbers
+    # into exp_b's curve.
+    alias_b_curve = registry.curve("exp_b/seed_0")
+    assert alias_b_curve is not None
+    assert alias_b_curve.run_id == "exp_b/seed_0"
+    assert alias_b_curve.mean == [9.0, 9.0, 9.0]
+    assert alias_b_curve.timesteps == [2000, 4000, 6000]
+    assert alias_b_curve.per_seed == {"0": [9.0, 9.0, 9.0]}
+
+    alias_a_curve = registry.curve("exp_a/seed_0")
+    assert alias_a_curve is not None
+    assert alias_a_curve.run_id == "exp_a/seed_0"
+    assert alias_a_curve.mean == [0.1, 0.2, 0.3]
+    assert alias_a_curve.timesteps == [1000, 2000, 3000]
+
+
+def test_curve_aggregates_every_seed_of_the_resolved_experiment(
+    tmp_path: Path, run_dir
+) -> None:
+    """A duplicate run_id inside one experiment must not drop a seed.
+
+    The raw id resolves to the canonical directory, but the curve is still the
+    experiment's per-seed aggregate, so every seed directory contributes —
+    including the duplicate whose record lost the canonical dedup.
+    """
+    run_dir(
+        experiment="exp",
+        seed=0,
+        run_id="dup",
+        learning_curve=(2.0, 2.0),
+        telemetry_timesteps=(100,),
+        updated_at="2026-03-01T00:00:00Z",
+    )
+    run_dir(
+        experiment="exp",
+        seed=1,
+        run_id="dup",
+        learning_curve=(4.0, 4.0),
+        telemetry_timesteps=(100,),
+        updated_at="2026-01-01T00:00:00Z",
+    )
+    registry = RunRegistry(tmp_path)
+    registry.scan()
+
+    curve = registry.curve("dup")
+
+    assert curve is not None
+    assert curve.run_id == "dup"
+    assert curve.per_seed == {"0": [2.0, 2.0], "1": [4.0, 4.0]}
+    assert curve.mean == [3.0, 3.0]
+    assert curve.timesteps == [100, 200]
+
+
+def test_concurrent_scan_and_resolve_never_tear_the_index(
+    tmp_path: Path, run_dir
+) -> None:
+    """A reader must never see one scan's records teamed with another's curves."""
+    path = run_dir(
+        experiment="exp_a",
+        seed=0,
+        run_id="dup",
+        learning_curve=(0.1, 0.2, 0.3),
+    )
+    registry = RunRegistry(tmp_path)
+    registry.scan()
+    errors: list[str] = []
+    stop = threading.Event()
+    deadline = time.monotonic() + 0.3
+
+    def writer() -> None:
+        while not stop.is_set():
+            try:
+                registry.refresh()
+            except Exception as exc:  # pragma: no cover - defensive thread guard
+                errors.append(f"refresh failed: {exc}")
+                return
+
+    def reader() -> None:
+        while time.monotonic() < deadline:
+            resolved = registry.resolve("dup")
+            if resolved is None or resolved[1].path != path:
+                errors.append(f"incoherent resolve: {resolved}")
+                continue
+            curve = registry.curve("dup")
+            if curve is None or curve.mean != [0.1, 0.2, 0.3]:
+                errors.append(f"torn curve: {None if curve is None else curve.mean}")
+
+    writers = [threading.Thread(target=writer) for _ in range(2)]
+    readers = [threading.Thread(target=reader) for _ in range(4)]
+    for thread in [*writers, *readers]:
+        thread.start()
+    for thread in readers:
+        thread.join()
+    stop.set()
+    for thread in writers:
+        thread.join()
+
+    assert errors == []
 
 
 def test_parse_run_dir_falls_back_for_unconventional_name(tmp_path: Path) -> None:

@@ -13,11 +13,13 @@ from __future__ import annotations
 import ast
 import dataclasses
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import uvicorn
 
 import undertow.ui
 from undertow.ui.cli import (
@@ -252,15 +254,121 @@ def test_ui_config_is_frozen() -> None:
         config.port = 9001  # type: ignore[misc]
 
 
-def test_ui_package_exports_only_uiconfig() -> None:
-    assert undertow.ui.__all__ == ["UiConfig"]
+def test_ui_package_exports_public_surface() -> None:
+    assert undertow.ui.__all__ == ["UiConfig", "create_app", "serve"]
+    assert callable(undertow.ui.create_app)
+    assert callable(undertow.ui.serve)
 
 
-def test_serve_is_a_stub(capsys: pytest.CaptureFixture[str]) -> None:
-    code = main(["serve"])
+def test_serve_runs_uvicorn_with_the_app(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[tuple[object, dict[str, object]]] = []
+
+    def fake_run(app: object, **kwargs: object) -> None:
+        calls.append((app, kwargs))
+
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+
+    code = main(
+        [
+            "serve",
+            "--runs",
+            str(tmp_path),
+            "--results",
+            str(tmp_path),
+            "--port",
+            "9001",
+        ]
+    )
+
+    assert code == EXIT_OK
+    captured = capsys.readouterr()
+    assert "http://127.0.0.1:9001" in captured.out
+    assert str(tmp_path) in captured.out
+    assert len(calls) == 1
+    app, kwargs = calls[0]
+    assert kwargs == {"host": "127.0.0.1", "port": 9001, "reload": False}
+    assert type(app).__name__ == "FastAPI"
+
+
+def test_serve_reload_uses_the_env_factory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[tuple[object, dict[str, object]]] = []
+
+    def fake_run(app: object, **kwargs: object) -> None:
+        calls.append((app, kwargs))
+
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    monkeypatch.delenv("UNDERTOW_UI_CONFIG_JSON", raising=False)
+
+    code = main(["serve", "--runs", str(tmp_path), "--reload"])
+
+    assert code == EXIT_OK
+    assert len(calls) == 1
+    app, kwargs = calls[0]
+    assert app == "undertow.ui.app:create_app_from_env"
+    assert kwargs["factory"] is True
+    assert kwargs["reload"] is True
+    payload = json.loads(os.environ["UNDERTOW_UI_CONFIG_JSON"])
+    assert payload["runs_dir"] == str(tmp_path)
+    monkeypatch.delenv("UNDERTOW_UI_CONFIG_JSON", raising=False)
+
+
+def test_serve_rejects_bad_port(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    called: list[object] = []
+    monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: called.append(args))
+
+    code = main(["serve", "--runs", str(tmp_path), "--port", "70000"])
 
     assert code == EXIT_CONFIG
-    assert "later task" in capsys.readouterr().out
+    assert called == []
+    assert "port must be" in capsys.readouterr().err
+
+
+def test_serve_rejects_missing_web_dist(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    called: list[object] = []
+    monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: called.append(args))
+
+    code = main(
+        ["serve", "--runs", str(tmp_path), "--web-dist", str(tmp_path / "missing")]
+    )
+
+    assert code == EXIT_CONFIG
+    assert called == []
+    assert "web-dist is not a directory" in capsys.readouterr().err
+
+
+def test_serve_prints_the_configured_web_dist(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    dist = tmp_path / "web"
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    calls: list[object] = []
+    monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: calls.append(args))
+
+    code = main(
+        [
+            "serve",
+            "--runs",
+            str(tmp_path),
+            "--results",
+            str(tmp_path),
+            "--web-dist",
+            str(dist),
+        ]
+    )
+
+    assert code == EXIT_OK
+    out = capsys.readouterr().out
+    assert f"web dist:    {dist}" in out
+    assert len(calls) == 1
 
 
 def test_info_runs_path_not_a_directory(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
