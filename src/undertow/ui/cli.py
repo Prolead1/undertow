@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import importlib.util
 import json
 import os
 import sys
@@ -167,6 +168,23 @@ def _cmd_info(config: UiConfig) -> int:
     return EXIT_OK
 
 
+def _websocket_library_available() -> bool:
+    """True when uvicorn has a WebSocket implementation to negotiate upgrades.
+
+    uvicorn only speaks the WebSocket protocol when ``websockets`` or
+    ``wsproto`` is installed (the ``uvicorn[standard]`` extra). Without one,
+    every ``/api/stream`` upgrade is rejected and the dashboard silently falls
+    back to REST polling, so :func:`serve` warns loudly instead.
+    """
+    for name in ("websockets", "wsproto"):
+        try:
+            if importlib.util.find_spec(name) is not None:
+                return True
+        except ValueError:  # pragma: no cover - broken partial import in sys.modules
+            continue
+    return False
+
+
 def serve(config: UiConfig, *, reload: bool = False) -> int:
     """Start the dashboard with uvicorn (U05).
 
@@ -186,6 +204,13 @@ def serve(config: UiConfig, *, reload: bool = False) -> int:
     if config.web_dist is not None and not config.web_dist.is_dir():
         raise CliError(
             f"web-dist is not a directory: {config.web_dist}", EXIT_CONFIG
+        )
+    if not _websocket_library_available():
+        print(
+            "Warning: no WebSocket library installed; the live stream at "
+            "/api/stream will be rejected and the UI will fall back to REST "
+            "polling. Install 'uvicorn[standard]' (or 'websockets') to enable it.",
+            file=sys.stderr,
         )
 
     print(f"Undertow UI serving on http://{config.host}:{config.port}")
