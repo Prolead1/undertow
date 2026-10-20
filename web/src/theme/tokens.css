@@ -1,0 +1,83 @@
+@import "tailwindcss";
+@config "../../tailwind.config.ts";
+
+/*
+ * Undertow design tokens — CONTRACTS.md §9.
+ * Dark only: no light-mode fallback, no media-query overrides.
+ */
+:root {
+  color-scheme: dark;
+
+  --bg-base: #0b0e14;
+  --bg-surface: #11161f;
+  --bg-elevated: #161b26;
+  --border: #232a38;
+  --text-primary: #e6eaf2;
+  --text-muted: #8b93a7;
+  --grid: #1a2130;
+  --accent: #22d3ee;
+  --accent-2: #a78bfa;
+  --bull: #34d399;
+  --bear: #f87171;
+  --sideways: #94a3b8;
+  --high-vol: #fbbf24;
+  --hold: #64748b;
+  --rebalance: #38bdf8;
+
+  --font-ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+  --radius-panel: 8px;
+  --radius-control: 6px;
+  --shadow-hairline: 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+@theme inline {
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-mono);
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+code,
+kbd,
+pre,
+.tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--text-primary);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
