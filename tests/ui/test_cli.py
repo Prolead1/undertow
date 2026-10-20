@@ -405,3 +405,58 @@ def test_debug_reraises_unexpected_failure(
 
     with pytest.raises(RuntimeError, match="kaboom"):
         main(["--debug", "info", "--runs", str(tmp_path)])
+
+
+# ---------------------------------------------------------------------------
+# WebSocket support detection (uvicorn[standard])
+# ---------------------------------------------------------------------------
+def test_websocket_library_available_true_when_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    from undertow.ui.cli import _websocket_library_available
+
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name: object() if name == "websockets" else None,
+    )
+    assert _websocket_library_available() is True
+
+
+def test_websocket_library_available_false_when_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    from undertow.ui.cli import _websocket_library_available
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    assert _websocket_library_available() is False
+
+
+def test_serve_warns_when_websocket_library_is_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr("undertow.ui.cli._websocket_library_available", lambda: False)
+
+    code = main(["serve", "--runs", str(tmp_path)])
+
+    assert code == EXIT_OK
+    assert calls != []  # the warning must not block startup
+    assert "no WebSocket library installed" in capsys.readouterr().err
+
+
+def test_serve_does_not_warn_when_websocket_library_is_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr("undertow.ui.cli._websocket_library_available", lambda: True)
+
+    code = main(["serve", "--runs", str(tmp_path)])
+
+    assert code == EXIT_OK
+    assert "WebSocket" not in capsys.readouterr().err

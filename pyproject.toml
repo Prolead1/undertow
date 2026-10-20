@@ -45,7 +45,10 @@ dev = [
     # ui-v1 (ADR-023): the ``ui`` extra is dev-installable so the plain
     # ``uv run pytest`` can exercise the backend tests without opting in.
     "fastapi>=0.115",
-    "uvicorn>=0.30",
+    # ``[standard]`` pulls the websockets/wsproto implementation uvicorn needs
+    # to negotiate ``/api/stream`` upgrades; without it the dashboard silently
+    # degrades to REST polling (the dev group is what plain ``uv sync`` installs).
+    "uvicorn[standard]>=0.30",
     "plotly>=6.0",
     # FastAPI's TestClient dependency (U05).
     "httpx>=0.27",

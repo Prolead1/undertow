@@ -1376,7 +1376,7 @@ dev = [
     { name = "responses" },
     { name = "ruff" },
     { name = "stable-baselines3" },
-    { name = "uvicorn" },
+    { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.metadata]
@@ -1410,7 +1410,7 @@ dev = [
     { name = "responses", specifier = ">=0.25" },
     { name = "ruff", specifier = ">=0.6" },
     { name = "stable-baselines3", specifier = ">=2.9" },
-    { name = "uvicorn", specifier = ">=0.30" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 
 [[package]]
