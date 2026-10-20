@@ -3,7 +3,14 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import {
+  createMemoryRouter,
+  MemoryRouter,
+  Route,
+  RouterProvider,
+  Routes,
+  useLocation,
+} from "react-router-dom";
 
 import {
   ApiError,
@@ -25,6 +32,7 @@ import {
 import { PlotlyFigure } from "../components/PlotlyFigure";
 import { QueryLink } from "../components/QueryLink";
 import { withPreservedSearch } from "../navigation";
+import { appRoutes } from "../router";
 
 const mocks = vi.hoisted(() => ({
   getRuns: vi.fn(),
@@ -488,6 +496,19 @@ describe("router", () => {
     expect(withPreservedSearch("/compare", "?run_id=r&seed=1&episode=0")).toBe(
       "/compare?run_id=r&seed=1&episode=0",
     );
+  });
+
+  it("renders the eager shell and resolves a lazily-loaded view", async () => {
+    const router = createMemoryRouter(appRoutes, {
+      initialEntries: ["/live"],
+      future: { v7_relativeSplatPath: true },
+    });
+    render(<RouterProvider router={router} />);
+
+    // The App shell is eager: it renders before the route chunk resolves.
+    expect(screen.getByText("Policy cockpit")).toBeTruthy();
+    // The lazy `LiveCockpit` view resolves and renders its empty state.
+    expect(await screen.findByText("Select a run")).toBeTruthy();
   });
 });
 

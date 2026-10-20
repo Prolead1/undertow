@@ -138,6 +138,107 @@ def test_status_route_and_missing_sidecar(run_dir, tmp_path: Path) -> None:
     assert absent.status_code == 404
 
 
+def test_status_route_rejects_newer_schema_version(run_dir, tmp_path: Path) -> None:
+    path = run_dir(run_id=_RUN_ID)
+    status_path = path / "status.json"
+    status_path.write_text(
+        json.dumps(
+            json.loads(status_path.read_text(encoding="utf-8")) | {"schema_version": 2}
+        ),
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(_config(tmp_path))) as client:
+        response = client.get(f"/api/runs/{_RUN_ID}/status")
+
+    assert response.status_code == 422
+    assert "schema_version 2" in response.json()["detail"]
+
+
+def test_telemetry_route_rejects_newer_schema_version(run_dir, tmp_path: Path) -> None:
+    path = run_dir(run_id=_RUN_ID)
+    line = json.loads(_telemetry_line(_RUN_ID, 4000))
+    line["schema_version"] = 2
+    with (path / "telemetry.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(line) + "\n")
+
+    with TestClient(create_app(_config(tmp_path))) as client:
+        response = client.get(f"/api/runs/{_RUN_ID}/telemetry")
+
+    assert response.status_code == 422
+    assert "schema_version 2" in response.json()["detail"]
+
+
+def test_status_and_telemetry_tolerate_missing_schema_version(
+    run_dir, tmp_path: Path
+) -> None:
+    path = run_dir(run_id=_RUN_ID, telemetry_timesteps=[1000, 2000])
+
+    status_path = path / "status.json"
+    status_payload = json.loads(status_path.read_text(encoding="utf-8"))
+    del status_payload["schema_version"]
+    status_path.write_text(json.dumps(status_payload), encoding="utf-8")
+
+    telemetry_path = path / "telemetry.jsonl"
+    lines = [
+        json.loads(line)
+        for line in telemetry_path.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    for line in lines:
+        del line["schema_version"]
+    telemetry_path.write_text(
+        "\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8"
+    )
+
+    with TestClient(create_app(_config(tmp_path))) as client:
+        status = client.get(f"/api/runs/{_RUN_ID}/status")
+        telemetry = client.get(f"/api/runs/{_RUN_ID}/telemetry")
+        runs = client.get("/api/runs")
+
+    assert status.status_code == 200
+    assert status.json()["run_id"] == _RUN_ID
+    assert telemetry.status_code == 200
+    assert [point["timestep"] for point in telemetry.json()["points"]] == [1000, 2000]
+    assert runs.status_code == 200
+    assert runs.json()[0]["telemetry_points"] == 2
+
+
+@pytest.mark.parametrize("name", ["actions", "ribbon"])
+def test_rollout_figure_rejects_newer_schema_version(
+    name: str, run_dir, tmp_path: Path
+) -> None:
+    path = run_dir(run_id=_RUN_ID, rollouts=1)
+    rollout = path / "rollouts" / "episode_0.parquet"
+    frame = pl.read_parquet(rollout)
+    frame.with_columns(
+        pl.lit(2, dtype=pl.Int16).alias("schema_version")
+    ).write_parquet(rollout)
+
+    with TestClient(create_app(_config(tmp_path))) as client:
+        response = client.get(f"/api/runs/{_RUN_ID}/figures/{name}")
+
+    assert response.status_code == 422
+    assert "schema_version 2" in response.json()["detail"]
+
+
+def test_compare_rejects_newer_schema_version_rollout(
+    run_dir, tmp_path: Path
+) -> None:
+    path = run_dir(run_id=_RUN_ID, rollouts=1)
+    rollout = path / "rollouts" / "episode_0.parquet"
+    frame = pl.read_parquet(rollout)
+    frame.with_columns(
+        pl.lit(2, dtype=pl.Int16).alias("schema_version")
+    ).write_parquet(rollout)
+
+    with TestClient(create_app(_config(tmp_path))) as client:
+        response = client.post("/api/compare", json={"run_ids": [_RUN_ID]})
+
+    assert response.status_code == 422
+    assert "schema_version 2" in response.json()["detail"]
+
+
 # 4. ------------------------------------------------ telemetry offsets / tail
 def test_telemetry_offsets_and_done_flag(run_dir, tmp_path: Path) -> None:
     run_dir(
@@ -277,6 +378,21 @@ def test_curve_route_and_absent_curve(run_dir, tmp_path: Path) -> None:
 
 
 # 6. --------------------------------------------------------------- rollouts
+def test_rollout_series_rejects_newer_schema_version(run_dir, tmp_path: Path) -> None:
+    path = run_dir(run_id=_RUN_ID, rollouts=1)
+    rollout = path / "rollouts" / "episode_0.parquet"
+    frame = pl.read_parquet(rollout)
+    frame.with_columns(pl.lit(2, dtype=pl.Int16).alias("schema_version")).write_parquet(
+        rollout
+    )
+
+    with TestClient(create_app(_config(tmp_path))) as client:
+        response = client.get(f"/api/rollouts/{_RUN_ID}/0/0")
+
+    assert response.status_code == 422
+    assert "schema_version 2" in response.json()["detail"]
+
+
 def test_rollouts_listing_and_series(run_dir, tmp_path: Path) -> None:
     run_dir(run_id=_RUN_ID, seed=0, rollouts=2)
 

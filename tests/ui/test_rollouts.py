@@ -8,7 +8,9 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from undertow.ui import rollouts as rollouts_module
 from undertow.ui.rollouts import list_rollouts, read_rollout
+from undertow.ui.schemas import SCHEMA_VERSION, SchemaVersionError
 
 _SCHEMA: dict[str, pl.DataType] = {
     "schema_version": pl.Int16,
@@ -90,6 +92,10 @@ def _write_episode(
     return path
 
 
+def test_rollouts_schema_version_is_the_single_ui_source() -> None:
+    assert rollouts_module.SCHEMA_VERSION == SCHEMA_VERSION
+
+
 def test_list_rollouts_missing_directory_returns_empty(tmp_path: Path) -> None:
     assert list_rollouts(tmp_path / "does-not-exist") == []
 
@@ -156,20 +162,34 @@ def test_list_rollouts_skips_corrupt_parquet(tmp_path: Path) -> None:
 
 def test_read_rollout_rejects_newer_schema_version(tmp_path: Path) -> None:
     directory = tmp_path / "rollouts"
-    path = _write_episode(
-        directory, seed=0, episode=0, schema_version=2
-    )
-    with pytest.raises(ValueError, match="schema_version 2"):
+    path = _write_episode(directory, seed=0, episode=0, schema_version=2)
+    # CONTRACTS §0: the rejection must be the *typed* error, not a bare ValueError.
+    with pytest.raises(SchemaVersionError, match="schema_version 2"):
         read_rollout(path, max_points=10)
 
 
-def test_list_rollouts_skips_newer_schema_version(tmp_path: Path) -> None:
+def test_read_rollout_accepts_missing_and_version_one_schema(tmp_path: Path) -> None:
+    directory = tmp_path / "rollouts"
+    path = _write_episode(directory, seed=0, episode=0, schema_version=1)
+    assert read_rollout(path, max_points=10).seed == 0
+
+    # Drop the ``schema_version`` column entirely: old/foreign artifacts are
+    # tolerated (CONTRACTS §0).
+    frame = pl.read_parquet(path).drop("schema_version")
+    frame.write_parquet(path)
+    assert read_rollout(path, max_points=10).seed == 0
+
+
+def test_list_rollouts_skips_newer_schema_version(tmp_path: Path, caplog) -> None:
     directory = tmp_path / "rollouts"
     _write_episode(directory, seed=0, episode=0)
     _write_episode(directory, seed=0, episode=1, schema_version=2)
 
-    summaries = list_rollouts(directory)
+    with caplog.at_level("WARNING", logger="undertow.ui.rollouts"):
+        summaries = list_rollouts(directory)
+
     assert [(s.seed, s.episode) for s in summaries] == [(0, 0)]
+    assert "schema_version 2" in caplog.text
 
 
 def test_read_rollout_empty_file_raises(tmp_path: Path) -> None:

@@ -35,8 +35,10 @@ logs/
 # Coverage artifacts
 .coverage
 
-# Frontend (ui-v1) — isolated Node toolchain under web/
-node_modules/
-web/dist/
-web/node_modules/
+# Frontend (ui-v1) — isolated Node toolchain under web/.
+# No trailing slash: `web/node_modules` is commonly a symlink to the main
+# checkout, and a trailing slash only matches a real directory, not a symlink.
+node_modules
+web/node_modules
+web/dist
 *.tsbuildinfo

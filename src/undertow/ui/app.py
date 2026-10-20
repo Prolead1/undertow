@@ -41,8 +41,9 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from undertow.ui.assembly import (
@@ -62,6 +63,7 @@ from undertow.ui.schemas import (
     RolloutSummary,
     RunRecord,
     RunStatusModel,
+    SchemaVersionError,
     TelemetryPoint,
 )
 from undertow.ui.static import mount_spa
@@ -248,6 +250,14 @@ def create_app(config: UiConfig) -> FastAPI:
     app.state.hubs = hubs
     app.state.registry_lock = threading.Lock()
     app.state.registry_scanned_at = time.monotonic()
+
+    # CONTRACTS.md §0/§4: a newer-major artifact is rejected with the typed
+    # error; surface it as a ``422`` with the offending path, never a 500.
+    @app.exception_handler(SchemaVersionError)
+    async def _schema_version_error(
+        request: Request, exc: SchemaVersionError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
 
     if config.cors_origins:
         app.add_middleware(

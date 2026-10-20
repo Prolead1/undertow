@@ -24,7 +24,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from undertow.ui.schemas import RunStatusModel, TelemetryPoint
+from undertow.ui.schemas import RunStatusModel, TelemetryPoint, check_schema_version
 
 __all__ = [
     "count_lines",
@@ -61,12 +61,19 @@ def read_status(path: Path | str) -> RunStatusModel | None:
 
     A missing file returns ``None`` silently (the run may not have written its
     first heartbeat yet); malformed JSON or a schema-invalid payload logs a
-    warning and returns ``None``.  Readers never raise.
+    warning and returns ``None``.  A well-formed artifact with a newer major
+    ``schema_version`` is the one exception: it raises
+    :class:`~undertow.ui.schemas.SchemaVersionError` (CONTRACTS §0).
     """
     status_path = Path(path)
     payload = _read_json_object(status_path)
     if payload is None:
         return None
+    # CONTRACTS §0: reject a newer major schema with the typed error.  This
+    # propagates (it is not a malformed-file case) so the API can answer 422.
+    check_schema_version(
+        payload.get("schema_version"), source=str(status_path)
+    )
     try:
         return RunStatusModel.model_validate(payload)
     except ValidationError as exc:
@@ -111,9 +118,16 @@ def _read_points(
                 try:
                     payload = json.loads(stripped)
                 except ValueError:
+                    # A malformed line and a valid JSON value that is not an
+                    # object are handled together below: neither can be a
+                    # telemetry record.
+                    payload = None
+                if not isinstance(payload, dict):
                     if complete:
-                        # A complete but syntactically invalid line is a
-                        # permanent bad record: skip it and advance.
+                        # A complete but invalid line is a permanent bad record:
+                        # skip it and advance so it cannot wedge the tail.  A
+                        # scalar/array/``null`` line lands here too rather than
+                        # crashing on ``payload.get``.
                         logger.warning(
                             "skipping invalid telemetry line %d in %s", index + 1, path
                         )
@@ -123,6 +137,13 @@ def _read_points(
                     # poll re-reads it once the writer finishes the line.
                     logger.debug("ignoring torn telemetry line %d in %s", index + 1, path)
                     break
+
+                # A newer major schema is a typed rejection, not a bad line to
+                # skip: let ``SchemaVersionError`` (a ``ValueError``) propagate
+                # so the caller reports the incompatibility (CONTRACTS §0).
+                check_schema_version(
+                    payload.get("schema_version"), source=f"{path}:{index + 1}"
+                )
 
                 try:
                     point = TelemetryPoint.model_validate(payload)
@@ -161,7 +182,9 @@ def read_points(
     complete line that fails JSON/schema validation is skipped with the cursor
     advanced past it (CONTRACTS §5).
 
-    A missing/unreadable file yields ``([], since)`` rather than raising.
+    A missing/unreadable file yields ``([], since)`` rather than raising.  A
+    record carrying a newer major ``schema_version`` raises
+    :class:`~undertow.ui.schemas.SchemaVersionError` (CONTRACTS §0).
     """
     return _read_points(Path(path), since=since, limit=limit)
 

@@ -146,6 +146,49 @@ def test_schema_invalid_status_missing_state_is_unknown_without_raising(
     assert records[0].config_hash == "deadbeef"
 
 
+def test_newer_manifest_schema_version_degrades_to_unknown(
+    tmp_path: Path, run_dir, caplog
+) -> None:
+    path = run_dir(seed=0)
+    (path / "manifest.json").write_text(
+        json.dumps(
+            json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+            | {"schema_version": 2}
+        ),
+        encoding="utf-8",
+    )
+
+    with caplog.at_level("WARNING", logger="undertow.ui.registry"):
+        records = RunRegistry(tmp_path).scan()
+
+    assert len(records) == 1
+    assert records[0].state == "unknown"
+    assert records[0].manifest is None
+    assert "schema_version 2" in caplog.text
+
+
+def test_newer_status_schema_version_degrades_to_unknown(
+    tmp_path: Path, run_dir, caplog
+) -> None:
+    path = run_dir(seed=0)
+    (path / "status.json").write_text(
+        json.dumps(
+            json.loads((path / "status.json").read_text(encoding="utf-8"))
+            | {"schema_version": 2}
+        ),
+        encoding="utf-8",
+    )
+
+    with caplog.at_level("WARNING", logger="undertow.ui.registry"):
+        records = RunRegistry(tmp_path).scan()
+
+    assert len(records) == 1
+    assert records[0].state == "unknown"
+    # The manifest is still trusted, so provenance survives.
+    assert records[0].config_hash == "deadbeef"
+    assert "schema_version 2" in caplog.text
+
+
 def test_scan_order_is_updated_at_desc_then_run_id(tmp_path: Path, run_dir) -> None:
     run_dir(seed=0, run_id="ppo_a", updated_at="2026-01-01T00:00:00Z")
     run_dir(seed=1, run_id="ppo_b", updated_at="2026-03-01T00:00:00Z")
@@ -324,6 +367,50 @@ def test_telemetry_tolerates_corrupt_lines_and_uses_max_timestep(tmp_path: Path,
     assert records[0].telemetry_points == 2
     assert records[0].latest_timestep == 900
     assert records[0].state == "unknown"
+
+
+def test_telemetry_count_skips_newer_schema_version(
+    tmp_path: Path, run_dir, caplog
+) -> None:
+    path = run_dir(seed=0, telemetry_timesteps=(1000, 2000, 3000))
+    telemetry_path = path / "telemetry.jsonl"
+    lines = [
+        json.loads(line)
+        for line in telemetry_path.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    for line in lines:
+        line["schema_version"] = 2
+    telemetry_path.write_text(
+        "\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8"
+    )
+
+    with caplog.at_level("WARNING", logger="undertow.ui.registry"):
+        records = RunRegistry(tmp_path).scan()
+
+    assert records[0].telemetry_points == 0
+    assert "schema_version 2" in caplog.text
+
+
+def test_telemetry_count_tolerates_missing_schema_version(
+    tmp_path: Path, run_dir
+) -> None:
+    path = run_dir(seed=0, telemetry_timesteps=(1000, 2000, 3000))
+    telemetry_path = path / "telemetry.jsonl"
+    lines = [
+        json.loads(line)
+        for line in telemetry_path.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    for line in lines:
+        del line["schema_version"]
+    telemetry_path.write_text(
+        "\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8"
+    )
+
+    records = RunRegistry(tmp_path).scan()
+
+    assert records[0].telemetry_points == 3
 
 
 def test_run_id_and_seed_fall_back_to_status_then_path(tmp_path: Path, run_dir) -> None:

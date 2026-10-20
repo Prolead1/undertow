@@ -29,10 +29,78 @@ __all__ = [
     "RunManifestSummary",
     "RunRecord",
     "RunStatusModel",
+    "SCHEMA_VERSION",
+    "SchemaVersionError",
     "TelemetryPoint",
     "TimeMetrics",
     "TrainMetrics",
+    "check_schema_version",
 ]
+
+#: Major schema version this package reads/writes (CONTRACTS.md §0).
+SCHEMA_VERSION: int = 1
+
+
+class SchemaVersionError(ValueError):
+    """A persisted artifact was written by a newer, unsupported UI schema.
+
+    CONTRACTS.md §0 requires readers to *reject* a higher major
+    ``schema_version`` with a typed error rather than silently misinterpreting
+    fields that may have changed meaning.  This is the typed error; callers
+    translate it into a ``422`` (REST) or degrade the affected record.
+    """
+
+    def __init__(
+        self,
+        version: int,
+        *,
+        supported: int = SCHEMA_VERSION,
+        source: str | None = None,
+    ) -> None:
+        self.version = int(version)
+        self.supported = int(supported)
+        self.source = source
+        location = f" in {source}" if source else ""
+        super().__init__(
+            f"unsupported schema_version {self.version}{location}: this reader "
+            f"understands up to {self.supported}; upgrade the UI package"
+        )
+
+
+def check_schema_version(
+    version: object,
+    *,
+    supported: int = SCHEMA_VERSION,
+    source: str | None = None,
+) -> int:
+    """Validate a persisted artifact's major ``schema_version``.
+
+    Returns the coerced integer version.  Missing, ``None``, boolean or
+    non-integer values are tolerated as *compatible* — this preserves the
+    existing forward/backward tolerance for old or foreign artifacts and keeps
+    readers from taking down a whole listing over an odd field.  A version
+    strictly greater than ``supported`` raises :class:`SchemaVersionError`
+    (CONTRACTS.md §0).
+    """
+    if version is None or isinstance(version, bool):
+        return supported
+    if isinstance(version, int):
+        parsed = version
+    elif isinstance(version, float):
+        try:
+            parsed = int(version)
+        except (ValueError, OverflowError):
+            return supported
+    elif isinstance(version, str):
+        try:
+            parsed = int(version)
+        except ValueError:
+            return supported
+    else:
+        return supported
+    if parsed > supported:
+        raise SchemaVersionError(parsed, supported=supported, source=source)
+    return parsed
 
 
 class _TelemetryMetrics(BaseModel):
