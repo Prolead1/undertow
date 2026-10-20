@@ -114,7 +114,8 @@ class TestTrainingConfigAdditions:
     def test_telemetry_flags_default_additively(self) -> None:
         config = TrainingConfig()
         assert config.telemetry is True
-        assert config.record_rollouts is False
+        # Rollouts are on by default so the replay views have data (U06/U11).
+        assert config.record_rollouts is True
         assert config.rollout_max_episodes == 5
 
     def test_telemetry_flag_is_constructible(self) -> None:

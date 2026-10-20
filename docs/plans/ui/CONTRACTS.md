@@ -41,7 +41,7 @@ Added to `TrainingConfig` (additive, defaults preserve current behaviour except 
 class TrainingConfig:
     ...
     telemetry: bool = True            # write telemetry.jsonl + status.json per seed
-    record_rollouts: bool = False     # write rollouts/*.parquet (U06)
+    record_rollouts: bool = True      # write rollouts/*.parquet (U06; on by default)
     rollout_max_episodes: int = 5     # U06; only read when record_rollouts is True
 ```
 
@@ -176,6 +176,10 @@ class RolloutRecorder:
 | `reward` | `Float64` | normalised env reward |
 | `regime` | `Utf8` | as-of regime label |
 | `gas_price_wei` | `Float64` | recent base + priority |
+| `pool_active_liquidity` | `Float64` | pool raw `L` (ADR-028 §2.1 extension) |
+| `position_liquidity` | `Float64` | agent position raw `L` |
+| `pool_fee_earned_0` | `Float64` | pool fees generated this step, token0 (raw) |
+| `pool_fee_earned_1` | `Float64` | pool fees generated this step, token1 (raw) |
 
 Empty episodes are invalid: `record_episode` raises `ValueError` on an empty row sequence.
 
@@ -319,6 +323,12 @@ class RolloutSeries(BaseModel):
     rows: list[dict[str, object]]          # already downsampled to <= max_points
     downsampled: bool = False
 ```
+
+`undertow-sim evaluate` additionally writes a policy-keyed
+`summary.json` (`{"policies": {name: {"sharpe": float, "total_pnl": float,
+"annualized_return": float, "max_drawdown": float}}}`); the UI reads it into
+`EvalMetrics` when a run's eval artifacts exist. Its schema is versioned by
+`schema_version` like every other sidecar.
 
 `RunStatusModel` mirrors the `RunStatus` schema of §1 **field-for-field** but is defined here (not
 imported from `undertow.sim`) so the `ui` extra never pulls in the training stack. Readers parse

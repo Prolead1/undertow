@@ -40,7 +40,7 @@ not a known deterministic baseline, :func:`run_ablations` raises
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -52,6 +52,7 @@ from undertow.sim.evaluate.protocol import (
     REGIME_LABELS,
     EpisodeRecord,
     EvaluationError,
+    aggregate_metrics,
     episode_metrics,
     evaluate_episodes,
     per_regime_frame,
@@ -321,6 +322,9 @@ class RegimeMatrix:
     policy_name: str
     regimes: list[str]
     metrics_per_regime: pl.DataFrame
+    #: Mean/std/n per metric over every episode and seed (additive extension;
+    #: consumed by the report writer's machine-readable ``summary.json``).
+    overall: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 def regime_matrix_wide(matrix: RegimeMatrix) -> pl.DataFrame:
@@ -389,6 +393,7 @@ def run_regime_evaluation(
                 policy_name=name,
                 regimes=list(REGIME_LABELS) + observed,
                 metrics_per_regime=frame,
+                overall=aggregate_metrics(records),
             )
         )
     return results

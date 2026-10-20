@@ -116,22 +116,22 @@ npm run gen:api:live     # from a running server at 127.0.0.1:8050
 `src/api/types.ts` is generated — never hand-edit it. Commit both
 `web/openapi.json` and the regenerated `types.ts` in the same change.
 
-## 5. Enabling replay data (`rollouts`)
+## 5. Replay data (`rollouts`)
 
 Live and leaderboard views need only telemetry/manifests. **Policy Replay** needs
-per-episode rollouts, which are recorded **off by default** because a parquet per
-evaluation episode is not free. Turn them on in the training config:
+per-episode rollouts, which are recorded **by default** (a handful of
+evaluation episodes per seed). The config knobs are:
 
 ```toml
 # configs/sim_default.toml
 [training]
 telemetry = true
-record_rollouts = true          # write rollouts/episode_<k>.parquet
+record_rollouts = true          # write rollouts/episode_<k>.parquet (default)
 rollout_max_episodes = 5        # cap on recorded evaluation episodes
 ```
 
-Re-run training, then open `/replay` and pick a seed/episode. A run without
-rollouts renders the replay panel's empty state instead of failing.
+Set `record_rollouts = false` only when those extra episodes must be avoided;
+a run without rollouts renders the replay panel's empty state instead of failing.
 
 ## 6. Artifact layout
 
@@ -147,7 +147,7 @@ runs/
         ├── status.json                         # heartbeat: running|done|failed
         ├── ppo_seed_0.zip                       # checkpoint
         └── rollouts/
-            └── episode_0.parquet               # replay rows (opt-in)
+            └── episode_0.parquet               # replay rows (on by default)
 results/
 └── …                                           # ablation/regime/gap artifacts
 ```

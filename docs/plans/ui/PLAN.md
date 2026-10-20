@@ -317,7 +317,7 @@ so in `STATUS.md` and stop.
 | Node toolchain | isolated in `web/`; own CI job; never required by `uv run pytest` | core Python gate unaffected |
 | "Best" ranking | **held-out eval Sharpe**, tiebreak worst-regime PnL; fall back to `best_reward` when no eval exists | matches the thesis' honest-evaluation stance; ranking is always explainable |
 | Telemetry default | **on** (`training.telemetry = true`) | cheap JSONL; required for the live view |
-| Rollout recording | **off** (`training.record_rollouts = false`) | parquet per episode is not free; opt in for replay runs |
+| Rollout recording | **on** (`training.record_rollouts = true`) | the replay view and action heatmap need episode parquet; set false to skip the extra evaluation episodes |
 | Downsampling | uniform stride by default; LTTB optional | simple, testable, deterministic |
 | Host binding | `127.0.0.1` only | research tool; no auth in v1 |
 | Polling fallback | REST `GET .../telemetry?since=` mirrors the WS payload | works behind proxies / when WS blocked |

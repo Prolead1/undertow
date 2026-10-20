@@ -147,11 +147,16 @@ def parse_regime_pnl(text: str, *, policy: str | None = None) -> dict[str, float
     return result
 
 
-def parse_summary_json(text: str) -> dict[str, float | None]:
+def parse_summary_json(
+    text: str, *, policy: str | None = None
+) -> dict[str, float | None]:
     """Map ``summary.json`` onto the :class:`EvalMetrics` metric fields.
 
     The backtest writer nests the numbers under ``"result"``; a flat payload is
-    accepted as well.  Malformed JSON yields an all-``None`` dict.
+    accepted as well.  ``undertow-sim evaluate`` additionally writes a
+    policy-keyed ``{"policies": {"<name>": {...}}}`` payload, so when
+    ``policy`` is given that policy's entry is consulted first.  Malformed JSON
+    yields an all-``None`` dict.
     """
     metrics: dict[str, float | None] = dict.fromkeys(_METRIC_KEYS, None)
     try:
@@ -161,8 +166,13 @@ def parse_summary_json(text: str) -> dict[str, float | None]:
     if not isinstance(payload, dict):
         return metrics
 
-    nested = payload.get("result")
     sources: list[dict[str, object]] = []
+    policies = payload.get("policies")
+    if policy is not None and isinstance(policies, dict):
+        selected = policies.get(policy)
+        if isinstance(selected, dict):
+            sources.append(selected)
+    nested = payload.get("result")
     if isinstance(nested, dict):
         sources.append(nested)
     sources.append(payload)
@@ -277,7 +287,7 @@ def load_eval_metrics(
     if summary_json_path is not None:
         summary_text = _read_text(summary_json_path)
         if summary_text is not None:
-            raw = parse_summary_json(summary_text)
+            raw = parse_summary_json(summary_text, policy=policy)
         if source is None:
             source = _relative(directory, summary_json_path, source_prefix)
     if summary_md_path is not None and any(value is None for value in raw.values()):

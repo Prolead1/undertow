@@ -119,8 +119,11 @@ class TrainingConfig:
     #: (U00, CONTRACTS.md §1). Additive: defaults keep the existing artifacts
     #: and only add the sidecars.
     telemetry: bool = True
-    #: Record deterministic evaluation rollouts to parquet (U06).
-    record_rollouts: bool = False
+    #: Record deterministic evaluation rollouts to parquet (U06). ON by default:
+    #: the Policy Replay view and the action heatmap need them, and skipping the
+    #: post-training pass is not worth the loss of observability. Set to false
+    #: only when the extra ~5 evaluation episodes must be avoided.
+    record_rollouts: bool = True
     #: Maximum evaluation episodes recorded when ``record_rollouts`` is true (U06).
     rollout_max_episodes: int = 5
 

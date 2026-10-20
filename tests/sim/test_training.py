@@ -109,6 +109,10 @@ def _training_config(
             log_freq_steps=log_freq_steps,
             checkpoint_freq_steps=checkpoint_freq_steps,
             parallel_envs=parallel_envs,
+            # Training-mechanics tests isolate the PPO loop from the post-training
+            # rollout recording (which needs a full env `info` and is covered in
+            # tests/sim/test_rollouts.py).
+            record_rollouts=False,
         ),
     )
 

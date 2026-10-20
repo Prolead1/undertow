@@ -1107,6 +1107,7 @@ class RegimeMatrix:
     policy_name: str
     regimes: list[str]
     metrics_per_regime: pl.DataFrame  # regime × metric → value (mean ± std over seeds)
+    overall: dict[str, dict[str, float]]  # metric → {mean, std, n} over all episodes (additive)
 
 @dataclass(frozen=True, slots=True)
 class GapReport:
@@ -1136,7 +1137,7 @@ def write_results(ablation: list[AblationResult],
                   regime: list[RegimeMatrix],
                   gap: GapReport,
                   output_dir: Path) -> None:
-    """Write markdown/CSV artifacts."""
+    """Write markdown/CSV artifacts plus the policy-keyed ``summary.json`` the UI reads."""
     ...
 ```
 

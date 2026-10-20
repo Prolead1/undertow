@@ -16,6 +16,7 @@ gap on that fixture is the honest result (PLAN.md §8 risk register).
 from __future__ import annotations
 
 import dataclasses
+import json
 from pathlib import Path
 
 import numpy as np
@@ -419,6 +420,13 @@ class TestRegimeEvaluation:
             # Every regime has at least one episode on the tiny fixture.
             counts = frame.filter(pl.col("metric") == "total_pnl")["n"].to_list()
             assert all(count > 0 for count in counts)
+            # `overall` (episode-mean per metric) is what `evaluate` writes to
+            # summary.json; its n must equal the per-regime n summed over regimes.
+            overall = matrix.overall
+            total_n = int(frame.filter(pl.col("metric") == "total_pnl")["n"].sum())
+            assert overall["total_pnl"]["n"] == total_n
+            assert np.isfinite(overall["total_pnl"]["mean"])
+            assert overall["sharpe"]["n"] == total_n
 
     def test_unknown_regime_is_reported_not_dropped(
         self, tiny_market_view: MarketView
@@ -528,8 +536,43 @@ class TestWriteResults:
             "gap_report.md",
             "gap_report.csv",
             "results_summary.md",
+            "summary.json",
         }
         assert {path.name for path in tmp_path.iterdir()} == expected
+
+    def test_writes_policy_keyed_summary_json(self, tmp_path: Path) -> None:
+        frame = pl.DataFrame(
+            {
+                "regime": ["bull"],
+                "metric": ["total_pnl"],
+                "mean": [1.0],
+                "std": [0.0],
+                "n": [1],
+            }
+        )
+        matrices = [
+            RegimeMatrix(
+                "ppo_seed_1",
+                list(REGIME_LABELS),
+                frame,
+                overall={
+                    "sharpe": {"mean": 1.5, "std": 0.1, "n": 3},
+                    "total_pnl": {"mean": 42.0, "std": 1.0, "n": 3},
+                    "annualized_return": {"mean": 0.2, "std": 0.0, "n": 3},
+                    "max_drawdown": {"mean": -0.1, "std": 0.0, "n": 3},
+                },
+            )
+        ]
+        gap = GapReport("ppo_seed_1", 1.0, 1.0, 0.0, {})
+        write_results([], matrices, gap, tmp_path)
+
+        payload = json.loads((tmp_path / "summary.json").read_text())
+        assert payload["policies"]["ppo_seed_1"] == {
+            "sharpe": 1.5,
+            "total_pnl": 42.0,
+            "annualized_return": 0.2,
+            "max_drawdown": -0.1,
+        }
 
     def test_markdown_tables_are_well_formed(self, tmp_path: Path) -> None:
         ablations, matrices, gap = self._artifacts()

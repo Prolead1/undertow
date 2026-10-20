@@ -24,7 +24,7 @@ per-run tail**, because U03 ships a `TelemetryHub` that watches exactly one run 
 The UI is a pure artifact consumer (`PLAN.md` §0.6): it has readers for telemetry, status and rollout
 parquet, and a `results.py` parser for eval metrics — but **no equity reader**. The only per-step
 equity series the package can read is the `equity` column of a rollout parquet (`CONTRACTS.md` §2.1),
-and those exist only when a run was trained with `training.record_rollouts = true` (off by default).
+and those exist only when a run was trained with `training.record_rollouts = true` (on by default).
 
 The U05 brief also asks for `undertow-ui serve --reload`, but uvicorn only reloads when the app is an
 import string; a resolved `UiConfig` cannot ride along inside an app instance into a fresh worker.

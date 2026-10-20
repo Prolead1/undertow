@@ -122,6 +122,7 @@ def run_dir(tmp_path: Path) -> Callable[..., Path]:
         git_commit: str = "abc1234",
         learning_curve: Sequence[float] = (0.1, 0.2, 0.3),
         telemetry_timesteps: Sequence[int] | None = None,
+        checkpoint_stem: str | None = None,
         manifest: bool = True,
         telemetry: bool = True,
         status: bool = True,
@@ -146,7 +147,7 @@ def run_dir(tmp_path: Path) -> Callable[..., Path]:
                         "algorithm": "ppo",
                         "total_timesteps": total_timesteps,
                         "best_reward": best_reward,
-                        "checkpoint_path": f"checkpoints/{rid}.zip",
+                        "checkpoint_path": f"checkpoints/{checkpoint_stem or rid}.zip",
                         "library_versions": {"stable_baselines3": "2.9"},
                         "learning_curve": [float(value) for value in learning_curve],
                     }
