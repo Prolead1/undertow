@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Outlet, useLocation, useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useLocation, useNavigate } from "./router";
 
 import { useLiveStream, type ConnectionStatus } from "./api/useLiveStream";
 import type { RunRecord } from "./api/client";
@@ -42,7 +42,7 @@ function ConnectionBadge({ status, live = false }: { status: ConnectionStatus; l
   );
 }
 
-export default function App() {
+export default function App({ children }: { children: ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
@@ -225,7 +225,7 @@ export default function App() {
           </header>
 
           <main id="main" className="min-w-0 flex-1 p-4">
-            <Outlet />
+            {children}
           </main>
         </div>
       </div>

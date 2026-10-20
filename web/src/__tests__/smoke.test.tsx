@@ -3,14 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
-import {
-  createMemoryRouter,
-  MemoryRouter,
-  Route,
-  RouterProvider,
-  Routes,
-  useLocation,
-} from "react-router-dom";
+import { AppRouter, MemoryRouter, useLocation } from "../router";
 
 import {
   ApiError,
@@ -32,12 +25,12 @@ import {
 import { PlotlyFigure } from "../components/PlotlyFigure";
 import { QueryLink } from "../components/QueryLink";
 import { withPreservedSearch } from "../navigation";
-import { appRoutes } from "../router";
 
 const mocks = vi.hoisted(() => ({
   getRuns: vi.fn(),
   getTelemetry: vi.fn(),
-  plotlyRender: vi.fn(),
+  plotlyReact: vi.fn(),
+  plotlyPurge: vi.fn(),
 }));
 
 vi.mock("../api/client", async () => {
@@ -45,13 +38,8 @@ vi.mock("../api/client", async () => {
   return { ...actual, getRuns: mocks.getRuns, getTelemetry: mocks.getTelemetry };
 });
 
-vi.mock("plotly.js-dist-min", () => ({ default: {} }));
-
-vi.mock("react-plotly.js/factory", () => ({
-  default: () => (props: { revision?: number }) => {
-    mocks.plotlyRender(props);
-    return <div data-testid="plotly" />;
-  },
+vi.mock("plotly.js-dist-min", () => ({
+  default: { react: mocks.plotlyReact, purge: mocks.plotlyPurge },
 }));
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -64,7 +52,7 @@ beforeEach(() => {
   mocks.getRuns.mockReset();
   mocks.getRuns.mockResolvedValue([]);
   mocks.getTelemetry.mockReset();
-  mocks.plotlyRender.mockClear();
+  mocks.plotlyReact.mockClear();
 });
 
 afterEach(() => {
@@ -479,13 +467,8 @@ function RouterProbe() {
 describe("router", () => {
   it("preserves run_id/seed/episode across navigation", () => {
     render(
-      <MemoryRouter
-        initialEntries={["/live?run_id=run-1&seed=2&episode=7"]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-      >
-        <Routes>
-          <Route path="*" element={<RouterProbe />} />
-        </Routes>
+      <MemoryRouter initialEntries={["/live?run_id=run-1&seed=2&episode=7"]}>
+        <RouterProbe />
       </MemoryRouter>,
     );
 
@@ -499,11 +482,11 @@ describe("router", () => {
   });
 
   it("renders the eager shell and resolves a lazily-loaded view", async () => {
-    const router = createMemoryRouter(appRoutes, {
-      initialEntries: ["/live"],
-      future: { v7_relativeSplatPath: true },
-    });
-    render(<RouterProvider router={router} />);
+    render(
+      <MemoryRouter initialEntries={["/live"]}>
+        <AppRouter />
+      </MemoryRouter>,
+    );
 
     // The App shell is eager: it renders before the route chunk resolves.
     expect(screen.getByText("Policy cockpit")).toBeTruthy();
@@ -517,43 +500,70 @@ describe("router", () => {
 // ---------------------------------------------------------------------------
 describe("PlotlyFigure", () => {
   beforeEach(() => {
-    mocks.plotlyRender.mockClear();
+    mocks.plotlyReact.mockClear();
+    mocks.plotlyPurge.mockClear();
   });
 
   it("renders an EmptyState (without throwing) for an empty spec", () => {
     render(<PlotlyFigure spec={{ data: [], layout: {}, config: {} }} ariaLabel="No traces" />);
     expect(screen.getByText("No figure data")).toBeTruthy();
     expect(screen.getByText("No traces")).toBeTruthy();
+    expect(mocks.plotlyReact).not.toHaveBeenCalled();
   });
 
-  it("bumps revision only when the data payload changes", () => {
-    const layout = { title: "curve" };
-    const config = {};
+  it("re-plots only when the data payload changes", () => {
     const { rerender } = render(
       <PlotlyFigure
-        spec={{ data: [{ x: [1], y: [2] }], layout, config }}
+        spec={{ data: [{ x: [1], y: [2] }], layout: { title: "curve" }, config: {} }}
         ariaLabel="Learning curve"
       />,
     );
-    expect(mocks.plotlyRender).toHaveBeenLastCalledWith(expect.objectContaining({ revision: 0 }));
+    expect(mocks.plotlyReact).toHaveBeenCalledTimes(1);
 
-    // Same data content, fresh object/array identity: no revision bump.
+    // Same data content, fresh object/array identity: no re-plot.
     rerender(
       <PlotlyFigure
-        spec={{ data: [{ x: [1], y: [2] }], layout: { ...layout }, config: { ...config } }}
+        spec={{ data: [{ x: [1], y: [2] }], layout: { title: "curve" }, config: {} }}
         ariaLabel="Learning curve"
       />,
     );
-    expect(mocks.plotlyRender).toHaveBeenLastCalledWith(expect.objectContaining({ revision: 0 }));
+    expect(mocks.plotlyReact).toHaveBeenCalledTimes(1);
 
-    // Real data change: revision increments once.
+    // Real data change: one more plot with the new traces.
     rerender(
       <PlotlyFigure
-        spec={{ data: [{ x: [1, 2], y: [2, 3] }], layout, config }}
+        spec={{ data: [{ x: [1, 2], y: [2, 3] }], layout: { title: "curve" }, config: {} }}
         ariaLabel="Learning curve"
       />,
     );
-    expect(mocks.plotlyRender).toHaveBeenLastCalledWith(expect.objectContaining({ revision: 1 }));
+    expect(mocks.plotlyReact).toHaveBeenCalledTimes(2);
+    expect(mocks.plotlyReact).toHaveBeenLastCalledWith(
+      expect.anything(),
+      [{ x: [1, 2], y: [2, 3] }],
+      expect.anything(),
+      expect.anything(),
+    );
+    // Re-plotting must not purge (that would reset zoom/view state).
+    expect(mocks.plotlyPurge).not.toHaveBeenCalled();
+  });
+
+  it("purges the Plotly instance on unmount", () => {
+    const { unmount } = render(
+      <PlotlyFigure spec={{ data: [{ x: [1], y: [2] }], layout: {}, config: {} }} />,
+    );
+    expect(mocks.plotlyPurge).not.toHaveBeenCalled();
+    unmount();
+    expect(mocks.plotlyPurge).toHaveBeenCalledTimes(1);
+  });
+
+  it("purges when the spec becomes empty", () => {
+    const { rerender } = render(
+      <PlotlyFigure spec={{ data: [{ x: [1], y: [2] }], layout: {}, config: {} }} />,
+    );
+    expect(mocks.plotlyPurge).not.toHaveBeenCalled();
+    rerender(<PlotlyFigure spec={{ data: [], layout: {}, config: {} }} />);
+    expect(screen.getByText("No figure data")).toBeTruthy();
+    expect(mocks.plotlyPurge).toHaveBeenCalledTimes(1);
   });
 });
 

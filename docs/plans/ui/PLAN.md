@@ -308,9 +308,10 @@ so in `STATUS.md` and stop.
 | Frontend location | top-level `web/` | keeps JS out of `src/`; clearly not a Python package |
 | Backend | **FastAPI + uvicorn** | OpenAPI → generated TS types (the biggest iteration win); pydantic already present |
 | Live transport | **WebSocket** at `/api/stream` | bidirectional-ready; SSE is an acceptable fallback only if WS is unavailable |
-| Frontend | **React 18 + Vite + TypeScript**, strict | HMR; component reuse for linked views |
+| Frontend | **React 19 + Vite + TypeScript**, strict | HMR; component reuse for linked views |
+| Routing | **built-in `src/router/`** (ADR-028; no `react-router-dom`) | four static routes + query-string selection |
 | Styling | **Tailwind v4 + CSS-variable tokens** | fast, consistent dark theme; tokens live in `CONTRACTS.md` §9 |
-| Charts | **Plotly.js via `react-plotly.js`** | one lib covers curves+CI, heatmaps, subplots, log axes, rangeslider; backend already speaks Plotly JSON |
+| Charts | **`plotly.js-dist-min` driven by `Plotly.react`** (ADR-028; no `react-plotly.js`) | one lib covers curves+CI, heatmaps, subplots, log axes, rangeslider; backend already speaks Plotly JSON |
 | Figure ownership | **server-side Plotly figure specs** for v1; raw typed series also exposed for client-side state | maximum speed to first value; no fig-spec duplication in JS |
 | Frontend tests | **vitest** for logic; Playwright smoke is a stretch (U11) | fast, no browser needed for unit logic |
 | Node toolchain | isolated in `web/`; own CI job; never required by `uv run pytest` | core Python gate unaffected |

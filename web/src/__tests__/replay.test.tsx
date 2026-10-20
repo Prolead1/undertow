@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { MemoryRouter, useLocation } from "../router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RunRecord, RolloutSeries, RolloutSummary } from "../api/client";
@@ -36,11 +36,12 @@ vi.mock("../api/client", async () => {
   };
 });
 
-vi.mock("plotly.js-dist-min", () => ({ default: {} }));
-vi.mock("react-plotly.js/factory", () => ({
-  default: () => (props: { data?: Array<Record<string, unknown>> }) => {
-    mocks.plotlyRender(props);
-    return <div data-testid="plotly" />;
+vi.mock("plotly.js-dist-min", () => ({
+  default: {
+    react: (_node: unknown, data: unknown, layout: unknown, config: unknown) => {
+      mocks.plotlyRender({ data, layout, config });
+    },
+    purge: vi.fn(),
   },
 }));
 
@@ -142,21 +143,9 @@ function LocationProbe() {
 
 function renderView(initialEntry = "/replay?run_id=run-1") {
   return render(
-    <MemoryRouter
-      initialEntries={[initialEntry]}
-      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-    >
-      <Routes>
-        <Route
-          path="/replay"
-          element={
-            <>
-              <PolicyReplay />
-              <LocationProbe />
-            </>
-          }
-        />
-      </Routes>
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <PolicyReplay />
+      <LocationProbe />
     </MemoryRouter>,
   );
 }
