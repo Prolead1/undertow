@@ -19,7 +19,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | U08 Live Cockpit view | pr-open | `feature-ui-live` | [#79](https://github.com/Prolead1/undertow/pull/79) | 32 tests; typecheck/build/lint green | approved | learning + diagnostics + actions; view-local state |
 | U09 Policy Replay view | pr-open | `feature-ui-replay` | [#80](https://github.com/Prolead1/undertow/pull/80) | 37 tests; typecheck/build/lint green | approved | ribbon + filmstrip + inspector; replay theme/rows modules |
 | U10 Leaderboard + Compare view | pr-open | `feature-ui-leaderboard` | [#78](https://github.com/Prolead1/undertow/pull/78) | 38 tests; typecheck/build/lint green | approved | ranking + overlay; URL-only pins; ADR-027 |
-| U11 docs + CI + integration smoke | in-review | `feature-ui-polish` | — | pytest green; web typecheck/test/build/lint green; `scripts/smoke_ui.sh` PASS | running | `running_the_dashboard.md`, `ui.yml`, schema-version close-out, lazy Plotly split |
+| U11 docs + CI + integration smoke | pr-open | `feature-ui-polish` | [#82](https://github.com/Prolead1/undertow/pull/82) | Python 1736 passed, 6 skipped (94.11%); web 74 tests; smoke PASS | approved | `running_the_dashboard.md`, `ui.yml`, schema-version close-out, lazy Plotly split |
 
 ## ADRs raised
 
