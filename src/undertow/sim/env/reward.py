@@ -2,7 +2,13 @@
 
 Implements `CONTRACTS.md` §9 exactly — eq (1) of §9.2 of the roadmap:
 
-    R_t = F_t − G_t − S_t − ΔIL_t − λ·σ_PnL,t
+    R_t = F_t − G_t − S_t + ΔIL_t − λ·σ_PnL,t
+
+where ``ΔIL_t`` is the **signed** step change in the strategy's excess over its
+fixed initial HODL basket (ADR-029); it is negative on most steps because the
+LP position underperforms the basket. It is added, not subtracted — the older
+``− ΔIL_t`` notation implicitly treated ``ΔIL_t`` as a positive loss magnitude,
+which is the opposite sign to the ``il_change`` variable passed in here.
 
 Each friction term is gated by an ablation flag on
 :class:`undertow.sim.config.RewardConfig`. A disabled term is zero in the
@@ -18,8 +24,9 @@ Sign convention (do not double-negate)
 * ``gas_cost`` and ``slippage_cost`` are entered as **positive cost
   magnitudes** (as returned by the S08 friction models); this module stores
   them **negative** (``gas = -gas_cost``).
-* ``il_change`` is a signed change (usually negative — an IL/LVR loss) and is
-  passed through unchanged.
+* ``il_change`` is the signed change in the strategy's excess over its fixed
+  initial HODL basket (usually negative — an IL/LVR loss) and is passed
+  through unchanged.
 * ``reward`` is the sum of the gated terms, so cost terms contribute
   ``≤ 0`` and ``risk_penalty ≤ 0``.
 

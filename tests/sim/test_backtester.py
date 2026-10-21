@@ -1059,15 +1059,20 @@ def test_backtest_observation_to_vector_is_stable() -> None:
         regime="bear",
         step_in_episode=3,
         steps_remaining=7,
+        distance_to_lower_bound_spacings=2.0,
+        distance_to_upper_bound_spacings=-1.0,
+        position_width_spacings=4.0,
     )
     vector = obs.to_vector()
     assert isinstance(vector, np.ndarray)
     assert vector.dtype == np.float64
-    assert len(vector) == 18
+    assert len(vector) == 21
     assert vector[6] == 1.0  # in-range bool
     assert vector[12] == 3000.0  # fee tier
     assert vector[15] == 1.0  # bear ordinal
     assert vector[16] == 3.0 and vector[17] == 7.0
+    # ADR-029 geometry features are appended at indices 18..20.
+    assert vector[18] == 2.0 and vector[19] == -1.0 and vector[20] == 4.0
 
 
 def test_observation_rolling_features_use_reference_bars_not_events() -> None:
@@ -1257,6 +1262,13 @@ def test_observation_liquidity_is_the_replayed_pool_state(
     # must use the snapshot-seeded replay state instead.
     assert spy.observations[0].pool_active_liquidity == pytest.approx(12345.0)
     assert spy.observations[0].pool_active_liquidity != pytest.approx(float(2**80))
+    # ADR-029: the live observation reports the initial band's geometry in
+    # tick-spacing units.  The +-120-tick band snaps to [196080, 196380] around
+    # tick 196242, i.e. 2.7 / 2.3 spacings from the edges and 5 spacings wide.
+    obs = spy.observations[0]
+    assert obs.distance_to_lower_bound_spacings == pytest.approx(2.7)
+    assert obs.distance_to_upper_bound_spacings == pytest.approx(2.3)
+    assert obs.position_width_spacings == pytest.approx(5.0)
 
 
 def test_backtest_warms_up_a_sliced_window_from_the_lane_snapshot(

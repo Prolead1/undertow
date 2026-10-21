@@ -10,7 +10,9 @@ training loop's world: it composes a :class:`~undertow.sim.marketview.MarketView
 
 MDP shape
 ---------
-* **Observation**: ``Box(shape=(18,), dtype=float64)`` — the stable-order
+* **Observation**: ``Box(shape=(OBSERVATION_VECTOR_LENGTH,), dtype=float64)`` —
+  the stable-order reference-bar, position and band-geometry features
+  (CONTRACTS §11; ADR-029) flattened by
   :meth:`~undertow.sim.env.observations.Observation.to_vector`.
 * **Action**: ``Discrete(1 + |center_offsets| * |widths|)``; index ``0`` is
   ``hold`` and every subsequent index maps to a ``rebalance`` action on the
@@ -181,18 +183,26 @@ class LpEnvironment(gym.Env):
         self._done: bool = True
         self._position_id: int | None = None
         self._position: Position | None = None
+        #: The deposit deployed at ``reset()``: the fixed HODL basket every
+        #: excess-vs-HODL measure is benchmarked against (ADR-029).  It is a
+        #: value object, so it stays valid after the engine closes it.
+        self._initial_position: Position | None = None
         self._entry_price: float = 0.0
         self._entry_sqrt: SqrtPrice = 0.0
         self._capital: float = float(config.episode.agent_capital_usdc)
         self._equity: float = self._capital
         self._last_fees_usdc: float = 0.0
         self._collected_fees_usdc: float = 0.0
-        self._il_offset: float = 0.0
         self._last_il_total: float = 0.0
         self._pnl_history: list[float] = [self._capital]
         self._last_pool_result: dict[str, Any] = {}
         self._last_tape_row: dict[str, object] = {}
         self._last_at_time: datetime | None = None
+        # Human price used to mark the last advanced step.  Kept so the
+        # price-exhaustion fallback reuses the *last mark* rather than the
+        # episode entry price, which would pair a stale human price with the
+        # engine's current raw sqrt and misvalue the terminal step.
+        self._last_mark_price: float = 0.0
 
         # Replay event tape (populated on reset for the replay mode).
         self._bar_close_times: list[datetime] = []
@@ -518,6 +528,7 @@ class LpEnvironment(gym.Env):
         self._last_pool_result = {}
         self._last_tape_row = {}
         self._last_at_time = None
+        self._last_mark_price = 0.0
 
         entry_row = self.market_view.tape_at(self._start_seq)
         entry_time = cast(datetime, entry_row["block_timestamp"])
@@ -542,6 +553,7 @@ class LpEnvironment(gym.Env):
         self._entry_sqrt = entry_sqrt
         self._last_tape_row = entry_row
         self._last_at_time = entry_time
+        self._last_mark_price = entry_price
 
         spacing = TickSpacing(int(episode.tick_spacing))
         deploy = Action(
@@ -563,11 +575,12 @@ class LpEnvironment(gym.Env):
             lower, upper, position.liquidity
         )
         self._position = self.pool_engine.positions[self._position_id]
+        # The deposit deployed here is the episode's fixed HODL basket.
+        self._initial_position = self._position
 
         self._equity = self._capital
         self._last_fees_usdc = 0.0
         self._collected_fees_usdc = 0.0
-        self._il_offset = 0.0
         self._last_il_total = self._current_il_total(entry_sqrt, entry_price)
         self._pnl_history = [self._capital]
 
@@ -613,6 +626,10 @@ class LpEnvironment(gym.Env):
         # Fees earned this step = growth in the position's uncollected fees.
         fees_usdc_before = self._current_fees_usdc(price)
         fees_earned = fees_usdc_before - self._last_fees_usdc
+        # The excess-vs-HODL step change is measured on the *pre-action*
+        # position, exactly as the backtester's ledger does (ADR-029), so the
+        # reward decomposition reconciles with ``excess_vs_hodl``.
+        il_change = self._current_il_total(sqrt_price, price) - self._last_il_total
 
         gas_cost = 0.0
         slippage_cost = 0.0
@@ -628,10 +645,7 @@ class LpEnvironment(gym.Env):
             # New position starts with zero uncollected fees.
             fees_usdc_before = self._current_fees_usdc(price)
         self._last_fees_usdc = fees_usdc_before
-
-        il_total = self._current_il_total(sqrt_price, price)
-        il_change = il_total - self._last_il_total
-        self._last_il_total = il_total
+        self._last_il_total = self._current_il_total(sqrt_price, price)
 
         position = self._position
         assert position is not None, "reset deploys a position before any step"
@@ -709,13 +723,16 @@ class LpEnvironment(gym.Env):
         assert isinstance(self.price_process, ReplayPriceProcess)
         try:
             price, sqrt_price, tick = self.price_process.step(self._rng)
-        except StopIteration:
+        except StopIteration:  # pragma: no cover - unreachable in normal replay
+            # ``reset`` caps ``_episode_length`` at ``len(_bar_close_times)``,
+            # so the episode truncates before a step can ask the exhausted
+            # process for another bar.  Defensive fallback only.
             at_time = self._last_at_time or cast(
                 datetime,
                 self.market_view.tape_at(self._end_seq - 1)["block_timestamp"],
             )
             return (
-                self._entry_price,
+                self._last_mark_price,
                 self.pool_engine.state.sqrt_price,
                 at_time,
                 self._last_tape_row,
@@ -798,6 +815,7 @@ class LpEnvironment(gym.Env):
                 if raw not in (None, ""):
                     mark_price = as_float(raw)
                     break
+        self._last_mark_price = mark_price
         return (
             mark_price,
             self.pool_engine.state.sqrt_price,
@@ -818,7 +836,7 @@ class LpEnvironment(gym.Env):
                 self.market_view.tape_at(self._end_seq - 1)["block_timestamp"],
             )
             return (
-                self._entry_price,
+                self._last_mark_price,
                 self.pool_engine.state.sqrt_price,
                 at_time,
                 self._last_tape_row,
@@ -837,6 +855,7 @@ class LpEnvironment(gym.Env):
         at_time = cast(datetime, tape_row["block_timestamp"])
         self._last_tape_row = tape_row
         self._last_at_time = at_time
+        self._last_mark_price = price
         return price, sqrt_price, at_time, tape_row, False
 
     def _event_triplet(self, index: int) -> tuple[SqrtPrice, Tick]:
@@ -896,11 +915,21 @@ class LpEnvironment(gym.Env):
         return fees_0 + fees_1 * price
 
     def _current_il_total(self, sqrt_price: SqrtPrice, price: float) -> float:
-        """Total IL level (current position + realised offset), in USDC."""
-        if self._position is None:
-            return self._il_offset
-        return self._il_offset + self._position.il_vs_hodl(
-            self._entry_sqrt, self._entry_price, sqrt_price, price
+        """Strategy value minus the fixed initial HODL basket, in USDC.
+
+        This is the position's mark-to-market value (excluding uncollected
+        fees, which the reward scores separately) measured against the episode's
+        initial deposit held outside the pool.  The benchmark is fixed for the
+        whole episode (ADR-029), so the level accumulates the rebalancing PnL
+        instead of resetting at every rebalance: its per-step change is the
+        backtester's ``il`` column and its episode sum is ``excess_vs_hodl``.
+        """
+        if self._position is None or self._initial_position is None:
+            return 0.0
+        return self._position.value(sqrt_price, price) - (
+            self._initial_position.hodl_value(
+                self._entry_sqrt, self._entry_price, price
+            )
         )
 
     def _pnl_volatility(self) -> float:
@@ -934,11 +963,11 @@ class LpEnvironment(gym.Env):
         Returns ``(gas_cost, slippage_cost, executed)`` as positive magnitudes.
         When the position cannot pay the gas/slippage out of its own equity the
         trade reverts (``executed=False``): nothing is charged and the position,
-        fee balance and IL baseline are left untouched. The new position is
+        fee balance and HODL benchmark are left untouched. The new position is
         funded with the old position's mark-to-market value **plus its collected
         fees**, net of the rebalance costs, so equity is continuous and
-        cost-honest. The old position's IL is folded into ``_il_offset`` so
-        closing does not create a spurious IL jump.
+        cost-honest.  The fixed initial HODL benchmark is never rebased: the
+        rebalancing PnL stays in the ``_current_il_total`` level (ADR-029).
         """
         if self._position is None or self._position_id is None:
             raise EnvError("rebalance requested with no open position")
@@ -977,10 +1006,9 @@ class LpEnvironment(gym.Env):
         if new_capital <= 0.0:
             return 0.0, 0.0, False
 
-        # Realise the closing IL into the running offset (no IL jump on close).
-        self._il_offset += self._position.il_vs_hodl(
-            self._entry_sqrt, self._entry_price, sqrt_price, price
-        )
+        # Realise the closing fees into the redeployed capital; the fixed HODL
+        # benchmark is not rebased, so the position-value change flows through
+        # ``_current_il_total`` on the next observation (ADR-029).
         self._collected_fees_usdc += collected
         self.pool_engine.close_position(self._position_id)
 
@@ -993,8 +1021,6 @@ class LpEnvironment(gym.Env):
             lower, upper, new_position.liquidity
         )
         self._position = self.pool_engine.positions[self._position_id]
-        self._entry_price = price
-        self._entry_sqrt = sqrt_price
         return gas_cost, slippage_cost, True
 
     def _observe(
@@ -1017,6 +1043,7 @@ class LpEnvironment(gym.Env):
             entry_price=self._entry_price,
             entry_sqrt_price=self._entry_sqrt,
             initial_capital=self._capital,
+            hodl_position=self._initial_position,
         )
         return observation
 
@@ -1035,7 +1062,9 @@ class LpEnvironment(gym.Env):
         ``at_time`` and ``action_index`` are not derivable from the action object
         alone, so they are passed explicitly.  The market/position fields mirror
         the observation vector: U06's rollout recorder persists them without
-        peeking at ``LpEnvironment`` internals (CONTRACTS.md §2.1).
+        peeking at ``LpEnvironment`` internals (CONTRACTS.md §2.1).  The
+        ``entry_price`` field is the **episode** entry (the fixed HODL anchor,
+        ADR-029), not a per-rebalance entry.
         """
         return {
             "reward_breakdown": asdict(breakdown),

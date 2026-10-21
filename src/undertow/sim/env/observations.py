@@ -19,7 +19,19 @@ Orientation (ADR-009)
 ``price`` is the **human** USDC-per-WETH reference price; ``sqrt_price`` and
 ``tick`` are the **raw** protocol quantities carried by the ``PoolEngine``;
 ``pool_active_liquidity`` is raw ``L``. ``position_value`` is USDC and
-``il_vs_hodl`` is expressed as a fraction of the initial capital.
+``il_vs_hodl`` is expressed as a fraction of the initial capital and measured
+against the **fixed initial HODL basket** (ADR-029), so it accumulates across
+rebalances instead of resetting.
+
+Position geometry (ADR-029)
+---------------------------
+The three trailing features expose the agent's live band in **tick-spacing
+units** (the same units as the ``Action`` parameters): ``distance_to_lower_
+bound_spacings`` = ``(tick - tick_lower) / tick_spacing`` and
+``distance_to_upper_bound_spacings`` = ``(tick_upper - tick) / tick_spacing``
+(positive = inside), and ``position_width_spacings``. Without them a memoryless
+policy cannot condition a rebalance on how far the price has drifted from the
+band.
 """
 
 from __future__ import annotations
@@ -51,7 +63,7 @@ REGIME_ORDINAL: dict[str, int] = {
 }
 
 #: Length of :meth:`Observation.to_vector` — one scalar per field.
-OBSERVATION_VECTOR_LENGTH: int = 18
+OBSERVATION_VECTOR_LENGTH: int = 21
 
 #: 10-minute reference bars per year (6 per hour x 24 h x 365.25 d).
 _STEPS_PER_YEAR: float = 6.0 * 24.0 * 365.25
@@ -77,7 +89,8 @@ class Observation:
     position_value: Wealth
     uncollected_fees_token0: float
     uncollected_fees_token1: float
-    il_vs_hodl: float  # as a fraction of initial capital (e.g. -0.05 = -5%)
+    # vs the fixed initial HODL basket, as a fraction of capital (ADR-029)
+    il_vs_hodl: float
 
     # -- Pool --
     pool_active_liquidity: float
@@ -93,6 +106,11 @@ class Observation:
     # -- Time --
     step_in_episode: int
     steps_remaining: int
+
+    # -- Position geometry, in tick-spacing units (ADR-029); positive = inside --
+    distance_to_lower_bound_spacings: float  # (tick - tick_lower) / tick_spacing
+    distance_to_upper_bound_spacings: float  # (tick_upper - tick) / tick_spacing
+    position_width_spacings: float  # (tick_upper - tick_lower) / tick_spacing
 
     def to_vector(self) -> np.ndarray:
         """Flatten to a stable-order 1-D ``float64`` array for the policy network.
@@ -121,6 +139,9 @@ class Observation:
                 float(REGIME_ORDINAL.get(self.regime, REGIME_ORDINAL["unknown"])),
                 float(self.step_in_episode),
                 float(self.steps_remaining),
+                float(self.distance_to_lower_bound_spacings),
+                float(self.distance_to_upper_bound_spacings),
+                float(self.position_width_spacings),
             ],
             dtype=np.float64,
         )
@@ -331,6 +352,7 @@ class ObservationBuilder:
         entry_price: Price,
         entry_sqrt_price: SqrtPrice,
         initial_capital: Wealth,
+        hodl_position: Position | None = None,
     ) -> Observation:
         """Assemble the observation at tape seq ``step`` (CONTRACTS §11).
 
@@ -338,7 +360,10 @@ class ObservationBuilder:
         ``step_in_episode`` / ``steps_remaining`` counters are derived from the
         episode context set by :meth:`configure_episode`. ``gas_model`` is
         accepted for interface completeness (the gas price itself comes from
-        the market view). Raises ``ValueError`` for non-positive capital.
+        the market view). ``hodl_position`` is the fixed initial HODL basket
+        used as the IL benchmark (ADR-029); when omitted the position itself is
+        used, which preserves the original behaviour. Raises ``ValueError`` for
+        non-positive capital.
         """
         tape_row = self.market_view.tape_at(int(step))
         step_in_episode = int(step) - self.episode_start
@@ -353,6 +378,7 @@ class ObservationBuilder:
             entry_price=entry_price,
             entry_sqrt_price=entry_sqrt_price,
             initial_capital=initial_capital,
+            hodl_position=hodl_position,
         )
 
     def build_at(
@@ -368,6 +394,7 @@ class ObservationBuilder:
         entry_price: Price,
         entry_sqrt_price: SqrtPrice,
         initial_capital: Wealth,
+        hodl_position: Position | None = None,
     ) -> Observation:
         """Assemble an observation at an explicit timestamp.
 
@@ -375,8 +402,10 @@ class ObservationBuilder:
         are made at reference-bar boundaries rather than tape rows: ``at_time``
         is the decision timestamp and ``tape_row`` the latest tape event at or
         before it (for gas / regime context). The look-ahead wall is unchanged —
-        only reference bars with ``close_time <= at_time`` are read. Raises
-        ``ValueError`` for non-positive ``initial_capital``.
+        only reference bars with ``close_time <= at_time`` are read.
+        ``entry_price``/``entry_sqrt_price`` are the **episode** entry (the
+        fixed HODL anchor, ADR-029), not necessarily the current position's
+        entry. Raises ``ValueError`` for non-positive ``initial_capital``.
         """
         del gas_model  # part of the frozen signature; nothing to read from it here
         if initial_capital <= 0.0:
@@ -413,8 +442,11 @@ class ObservationBuilder:
         )
         fees_token0, fees_token1 = position.uncollected_fees(inside_0, inside_1)
 
-        il_usdc = position.il_vs_hodl(
-            entry_sqrt_price, entry_price, sqrt_price, price
+        # IL is measured against the fixed initial HODL basket when supplied,
+        # so it accumulates across rebalances instead of resetting to zero.
+        hodl = hodl_position if hodl_position is not None else position
+        il_usdc = position.value(sqrt_price, price) - hodl.hodl_value(
+            entry_sqrt_price, entry_price, price
         )
         il_fraction = il_usdc / initial_capital
 
@@ -439,4 +471,16 @@ class ObservationBuilder:
             regime=self._regime_at(at_time),
             step_in_episode=int(step_in_episode),
             steps_remaining=int(steps_remaining),
+            distance_to_lower_bound_spacings=(
+                (float(tick) - float(position.tick_lower))
+                / float(position.tick_spacing)
+            ),
+            distance_to_upper_bound_spacings=(
+                (float(position.tick_upper) - float(tick))
+                / float(position.tick_spacing)
+            ),
+            position_width_spacings=(
+                (float(position.tick_upper) - float(position.tick_lower))
+                / float(position.tick_spacing)
+            ),
         )

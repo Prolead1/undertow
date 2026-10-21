@@ -167,5 +167,8 @@ configuration that produced it.
   placeholders before running it. `undertow-sim` does not read them.
 - **`Parity check failed` / parity `FAIL`** — run `uv run undertow-sim info` to
   inspect the recorded parity status, and re-run the S14 parity suite.
+- **`checkpoint was trained on observation shape …`** — ADR-029 appended three
+  band-geometry features to the §11 observation vector (18 → 21). Retrain the
+  agent; checkpoints from before the change cannot be evaluated.
 - **Training too slow** — reduce `training.total_timesteps` or increase
   `training.parallel_envs` in the config.

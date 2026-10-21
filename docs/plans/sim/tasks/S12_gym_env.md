@@ -1,5 +1,10 @@
 # S12 — Gymnasium environment
 
+> **Amended by ADR-029:** the §11 observation appends three band-geometry features
+> (`distance_to_lower_bound_spacings`, `distance_to_upper_bound_spacings`,
+> `position_width_spacings`), making the vector 21 entries, and `il_vs_hodl` is measured against
+> the fixed initial HODL basket.
+
 **Wave 4 · size L · depends on: S03, S04, S06, S07, S08, S09, S10 · blocks: S13, S14**  
 **Branch:** `feature-sim-gym-env`
 

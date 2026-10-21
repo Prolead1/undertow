@@ -33,7 +33,7 @@ import polars as pl
 
 from undertow.sim.backtest import BacktestLedger, BacktestResult, run_backtest, summarize_backtest
 from undertow.sim.config import SimConfig, load_sim_config
-from undertow.sim.env import LpEnvironment
+from undertow.sim.env import OBSERVATION_VECTOR_LENGTH, LpEnvironment
 from undertow.sim.evaluate import (
     METRIC_NAMES,
     AblationResult,
@@ -342,6 +342,27 @@ class _CheckpointPolicy:
         self._model = model
         self._name = name
         self._actions = _action_grid(config)
+        self._validate_observation_space(model)
+
+    @staticmethod
+    def _validate_observation_space(model: object) -> None:
+        """Reject checkpoints trained on a different observation contract.
+
+        ADR-029 appended three band-geometry features, so an 18-dim checkpoint
+        cannot be evaluated against the 21-dim environment.  Failing here with
+        an actionable message beats a cryptic shape error deep inside the
+        backtester.
+        """
+        space = getattr(model, "observation_space", None)
+        shape = getattr(space, "shape", None)
+        if shape is None:
+            return
+        if tuple(shape) != (OBSERVATION_VECTOR_LENGTH,):
+            raise CliError(
+                f"checkpoint was trained on observation shape {tuple(shape)}, but "
+                f"this build expects {(OBSERVATION_VECTOR_LENGTH,)}; retrain the "
+                "agent so it sees the band-geometry features (ADR-029)."
+            )
 
     @property
     def name(self) -> str:
