@@ -23,8 +23,22 @@ export interface RolloutRow {
   reward: number | null;
   regime: string;
   gasPriceWei: number | null;
+  /** Raw pool active liquidity `L`; `0` for rollouts predating §2.1's additive columns. */
+  poolActiveLiquidity: number;
+  /** Raw agent-position liquidity `L` (comparable to the pool's, per ADR-009). */
+  positionLiquidity: number;
+  /** Raw token0 (USDC) fees the whole pool generated this step. */
+  poolFeeEarned0: number;
+  /** Raw token1 (WETH) fees the whole pool generated this step. */
+  poolFeeEarned1: number;
   observation: number[] | null;
 }
+
+// ADR-009: the replay rollouts are for the pinned USDC (token0, 6dp) /
+// WETH (token1, 18dp) pool, and CONTRACTS §2.1 records the pool fee legs in
+// raw base units.
+const USDC_DECIMALS = 6;
+const WETH_DECIMALS = 18;
 
 function finiteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -109,11 +123,46 @@ export function parseRolloutRows(rows: RolloutSeries["rows"]): RolloutRow[] {
       reward: finiteNumber(raw.reward),
       regime: stringValue(raw.regime, "unknown"),
       gasPriceWei: finiteNumber(raw.gas_price_wei),
+      poolActiveLiquidity: finiteNumber(raw.pool_active_liquidity) ?? 0,
+      positionLiquidity: finiteNumber(raw.position_liquidity) ?? 0,
+      poolFeeEarned0: finiteNumber(raw.pool_fee_earned_0) ?? 0,
+      poolFeeEarned1: finiteNumber(raw.pool_fee_earned_1) ?? 0,
       observation: toObservation(raw.observation),
     });
   });
   parsed.sort((a, b) => a.step - b.step);
   return parsed;
+}
+
+/**
+ * USDC value of the fees the whole pool generated in one step.
+ *
+ * CONTRACTS §2.1 records both fee legs in **raw base units** while `price` is
+ * human USDC/WETH (ADR-009), so each leg is first humanised with its token
+ * decimals: `fee0 / 10**6 + (fee1 / 10**18) * price`. Both legs default to
+ * `0`, so a pre-fix rollout values to `0` rather than `NaN`.
+ */
+export function poolFeeUsdc(row: RolloutRow): number {
+  const token0Usdc = row.poolFeeEarned0 / 10 ** USDC_DECIMALS;
+  const token1Weth = row.poolFeeEarned1 / 10 ** WETH_DECIMALS;
+  return token0Usdc + token1Weth * row.price;
+}
+
+/**
+ * True when the rollout carries at least one non-zero pool-state value.
+ *
+ * Rollouts recorded before the §2.1 additive columns parse every pool field to
+ * `0`; the replay panels use this to show "not recorded" instead of a flat
+ * zero line (and a divide-by-zero fee share).
+ */
+export function hasPoolState(rows: readonly RolloutRow[]): boolean {
+  return rows.some(
+    (row) =>
+      row.poolActiveLiquidity !== 0 ||
+      row.positionLiquidity !== 0 ||
+      row.poolFeeEarned0 !== 0 ||
+      row.poolFeeEarned1 !== 0,
+  );
 }
 
 /** Append a vertical cursor line to a spec without mutating it. */
