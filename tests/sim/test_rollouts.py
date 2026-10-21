@@ -131,6 +131,16 @@ def test_rows_from_env_maps_info_and_recomputes_in_range() -> None:
     assert rows[0]["pool_fee_earned_1"] == pytest.approx(0.25)
 
 
+def test_rows_from_env_records_rejected_rebalance() -> None:
+    """A reverted rebalance is recorded via the env's ``action_type`` override."""
+    info = _info(
+        0, action=Action(action_type="rebalance", center_offset=0, width=1)
+    )
+    info["action_type"] = "rebalance_rejected"
+    rows = rows_from_env([info], run_id="ppo_s0_deadbeef", seed=0, episode=0)
+    assert rows[0]["action_type"] == "rebalance_rejected"
+
+
 def test_record_episode_round_trips_exact_schema(tmp_path: Path) -> None:
     rows = rows_from_env(
         [_info(0), _info(1, tick=202_500)], run_id="run", seed=7, episode=1

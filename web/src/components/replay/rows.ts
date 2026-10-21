@@ -50,6 +50,9 @@ function stringValue(value: unknown, fallback = ""): string {
 
 function toActionType(value: unknown, centerOffset: number, width: number): "hold" | "rebalance" {
   if (value === "rebalance" || value === "hold") return value;
+  // A reverted rebalance (unaffordable, so it never executed) carries the
+  // attempted offset/width but changed nothing; the UI shows it as a hold.
+  if (value === "rebalance_rejected") return "hold";
   return centerOffset !== 0 || width !== 0 ? "rebalance" : "hold";
 }
 

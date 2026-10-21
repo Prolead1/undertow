@@ -261,6 +261,33 @@ class ObservationBuilder:
         )
         return self._ref_closes[:idx]
 
+    def rolling_price_features(
+        self, at_time: datetime
+    ) -> tuple[float | None, float, float, float]:
+        """Backward-looking ``(last_close, r1h, r24h, vol24h)`` at ``at_time``.
+
+        The windows are the contract's ``6*10min`` and ``144*10min`` reference
+        bars (CONTRACTS §11).  Shared by the environment and the backtester so a
+        frozen policy sees identical features in both instruments; ``last_close``
+        is ``None`` when no reference bar has closed at or before ``at_time``.
+        """
+        closes = self._reference_closes_through(at_time)
+        price = float(closes[-1]) if closes.size > 0 else None
+        window = closes[-(self.lookback_bars + 1) :]
+        log_returns = (
+            np.diff(np.log(window)) if window.size >= 2 else np.empty(0, dtype=float)
+        )
+        if log_returns.size >= 2:
+            vol = float(np.std(log_returns, ddof=1)) * math.sqrt(_STEPS_PER_YEAR)
+        else:
+            vol = 0.0
+        return (
+            price,
+            _log_return(closes, self.RETURN_1H_BARS),
+            _log_return(closes, self.RETURN_24H_BARS),
+            vol,
+        )
+
     def _gas_price_recent(
         self, tape_row: dict[str, object]
     ) -> tuple[float, int, int]:
@@ -355,27 +382,14 @@ class ObservationBuilder:
         if initial_capital <= 0.0:
             raise ValueError("initial_capital must be > 0 to express IL as a fraction")
 
-        closes = self._reference_closes_through(at_time)
-        if closes.size > 0:
-            price = float(closes[-1])
-        else:
-            price = _human_price_from_sqrt(pool_engine.state.sqrt_price)
-
-        price_returns_1h = _log_return(closes, self.RETURN_1H_BARS)
-        price_returns_24h = _log_return(closes, self.RETURN_24H_BARS)
-
-        window = closes[-(self.lookback_bars + 1) :]
-        log_returns = (
-            np.diff(np.log(window))
-            if window.size >= 2
-            else np.empty(0, dtype=float)
+        last_close, price_returns_1h, price_returns_24h, realized_vol_24h = (
+            self.rolling_price_features(at_time)
         )
-        if log_returns.size >= 2:
-            realized_vol_24h = float(np.std(log_returns, ddof=1)) * math.sqrt(
-                _STEPS_PER_YEAR
-            )
-        else:
-            realized_vol_24h = 0.0
+        price = (
+            last_close
+            if last_close is not None
+            else _human_price_from_sqrt(pool_engine.state.sqrt_price)
+        )
 
         sqrt_price = pool_engine.state.sqrt_price
         tick = pool_engine.state.tick

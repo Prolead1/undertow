@@ -158,7 +158,13 @@ def _market_view(
             "close": [float(p) for p in prices],
         }
     )
-    gas = pl.DataFrame({"block_number": list(range(n))})
+    gas = pl.DataFrame(
+        {
+            "block_number": list(range(n)),
+            "base_fee_per_gas": [str(base_fee)] * n,
+            "priority_fee_p50_wei": [str(priority_fee)] * n,
+        }
+    )
     regimes = pl.DataFrame({"timestamp": times, "regime": ["sideways"] * n})
     end = times[-1] + timedelta(minutes=1)
     return MarketView(
@@ -982,10 +988,22 @@ def test_missing_tape_column_raises_backtest_error() -> None:
         run_backtest(HODLPolicy(), broken, SimConfig())
 
 
-def test_rebalance_wipeout_raises_backtest_error() -> None:
+def test_unaffordable_rebalance_is_rejected_and_recorded() -> None:
+    # A $1 position cannot pay the rebalance gas; on-chain the trade reverts.
+    # The backtester records the rejection and keeps the position, instead of
+    # aborting the whole evaluation (the old ``raise BacktestError`` behaviour).
     config = SimConfig(episode=EpisodeConfig(agent_capital_usdc=1.0))
-    with pytest.raises(BacktestError, match="wipe out"):
-        run_backtest(PassiveNarrowPolicy(), _flat_view(), config)
+    ledger = run_backtest(PassiveNarrowPolicy(), _flat_view(), config)
+    actions = ledger.decision_log["action_type"].to_list()
+    assert actions[0] == "rebalance_rejected"
+    assert set(actions[1:]) == {"hold"}
+    assert ledger.cost_ledger.height == 0
+    assert ledger.decision_log["gas_paid"].sum() == 0.0
+    assert ledger.decision_log["slippage_paid"].sum() == 0.0
+    # No position change and no cost: the initial $1 mark is preserved.
+    assert ledger.equity_curve["equity"][0] == pytest.approx(1.0)
+    assert ledger.decision_log["tick_lower"][0] is None
+    assert ledger.decision_log["tick_upper"][0] is None
 
 
 def test_empty_tape_raises_backtest_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1050,6 +1068,68 @@ def test_backtest_observation_to_vector_is_stable() -> None:
     assert vector[12] == 3000.0  # fee tier
     assert vector[15] == 1.0  # bear ordinal
     assert vector[16] == 3.0 and vector[17] == 7.0
+
+
+def test_observation_rolling_features_use_reference_bars_not_events() -> None:
+    """The live observation's 1h/24h windows are 6/144 reference *bars*.
+
+    The tape has one event per minute and the reference feed one bar per ten
+    minutes, so an event-count window gives a visibly different value; this pins
+    the reference-bar semantics the environment and CONTRACTS §11 share.
+    """
+    import math
+    from dataclasses import replace
+
+    n = 2200
+    k = 200  # decision index; decisions land on tape rows 0, 10, 20, ...
+    start = datetime(2022, 1, 1, tzinfo=UTC)
+    prices = [_ENTRY_PRICE * (1.0 + 0.0002 * i) for i in range(n)]
+    view = _market_view(minutes=list(range(n)), prices=prices)
+
+    ref_minutes = list(range(0, n + 1, 10))
+    reference = pl.DataFrame(
+        {
+            "open_time": [start + timedelta(minutes=m) for m in ref_minutes],
+            "close_time": [start + timedelta(minutes=m + 1) for m in ref_minutes],
+            "close": [
+                _ENTRY_PRICE * (1.0 + 0.0002 * m) for m in ref_minutes
+            ],
+        }
+    )
+    view = replace(view, reference=reference)
+
+    class _CapturePolicy:
+        name = "capture"
+
+        def __init__(self) -> None:
+            self.observations: list[BacktestObservation] = []
+
+        def reset(self) -> None:
+            self.observations.clear()
+
+        def act(self, observation: BacktestObservation, rng: object = None) -> Action:
+            self.observations.append(observation)
+            return Action(action_type="hold")
+
+    spy = _CapturePolicy()
+    run_backtest(spy, view, SimConfig())  # type: ignore[arg-type]
+
+    # At the decision at minute 10k the visible closes are reference bars
+    # 0..k-1 (the bar opening at minute 10k closes one minute later).
+    closes = [float(v) for v in reference["close"][:k]]
+    obs = spy.observations[k]
+    assert obs.price == pytest.approx(closes[-1])
+    assert obs.price_returns_1h == pytest.approx(
+        math.log(closes[-1] / closes[-1 - 6])
+    )
+    assert obs.price_returns_24h == pytest.approx(
+        math.log(closes[-1] / closes[-1 - 144])
+    )
+    assert obs.realized_vol_24h > 0.0
+    # An event-count window (the pre-fix behaviour) would use the tape prices
+    # six *events* back; the reference-bar value must differ from it here.
+    event_r1h = math.log(prices[10 * k] / prices[10 * k - 6])
+    assert obs.price_returns_1h != pytest.approx(event_r1h)
 
 
 def test_no_lookahead_from_future_tape_rows() -> None:
@@ -1122,6 +1202,61 @@ def test_backtest_seeds_from_a_matching_pool_state_snapshot(
     assert ledger.n_steps > 0
     # The seeded replay is exact (no approximation flagged).
     assert ledger.fee_growth_exact is True
+
+
+def test_observation_liquidity_is_the_replayed_pool_state(
+    tiny_market_view: MarketView,
+) -> None:
+    """The observation reports the replay's active liquidity, not the tape column.
+
+    The real lane's ``liquidity`` column is nullable and never populated; a
+    snapshot-seeded replay carries the pool state the environment's engine has.
+    """
+    from dataclasses import replace
+
+    from undertow.data.config import GLOBAL_TICK_SENTINEL, default_pools
+
+    first_block = int(tiny_market_view.active_split_data()["block_number"].min())
+    pool = default_pools()["USDC_WETH_3000"]
+    state = pl.DataFrame(
+        {
+            "block_number": [first_block - 1],
+            "tick": [GLOBAL_TICK_SENTINEL],
+            "fee_growth_outside_0_x128": [None],
+            "fee_growth_outside_1_x128": [None],
+            "liquidity_gross": ["0"],
+            "liquidity_net": ["0"],
+            "initialized": [False],
+            "fee_growth_global_0_x128": ["0"],
+            "fee_growth_global_1_x128": ["0"],
+            "current_tick": [ENTRY_TICK],
+            "current_liquidity": ["12345"],
+            "source": ["rpc_call"],
+            "pool_address": [str(pool.address)],
+            "fee_protocol": [0],
+        }
+    )
+    view = replace(tiny_market_view, pool=pool, pool_state=state)
+
+    class _CapturePolicy:
+        name = "capture"
+
+        def __init__(self) -> None:
+            self.observations: list[BacktestObservation] = []
+
+        def reset(self) -> None:
+            self.observations.clear()
+
+        def act(self, observation: BacktestObservation, rng: object = None) -> Action:
+            self.observations.append(observation)
+            return Action(action_type="hold")
+
+    spy = _CapturePolicy()
+    run_backtest(spy, view, SimConfig())  # type: ignore[arg-type]
+    # The tiny tape's own ``liquidity`` column is str(2**80); the observation
+    # must use the snapshot-seeded replay state instead.
+    assert spy.observations[0].pool_active_liquidity == pytest.approx(12345.0)
+    assert spy.observations[0].pool_active_liquidity != pytest.approx(float(2**80))
 
 
 def test_backtest_warms_up_a_sliced_window_from_the_lane_snapshot(

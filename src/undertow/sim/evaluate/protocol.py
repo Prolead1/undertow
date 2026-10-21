@@ -472,7 +472,11 @@ def _run_sim_window(
         il += float(raw["il_change"])
         equity = float(info["equity"]) if "equity" in info else float(raw.get("equity", equity))
         equities.append(equity)
-        if action.action_type == "rebalance":
+        # Count only executed rebalances: a rebalance the position cannot afford
+        # reverts and is recorded as ``rebalance_rejected``, matching the
+        # backtester's decision-log count so both backends report the same
+        # turnover for the same frozen policy.
+        if info.get("action_type", action.action_type) == "rebalance":
             n_rebalances += 1
         steps += 1
         if steps > _MAX_SIM_STEPS:  # pragma: no cover - defensive

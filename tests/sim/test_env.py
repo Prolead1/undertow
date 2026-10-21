@@ -329,6 +329,41 @@ class TestObservationBuilder:
         assert builder.episode_start == 50
         assert builder.episode_length == 7
 
+    def test_rolling_price_features_use_reference_bars(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        """The 1h/24h windows are 6/144 *reference bars*, not tape events."""
+        import math
+
+        base = datetime(2022, 1, 1, tzinfo=UTC)
+        # 160 reference bars spread across the fixture's one-month split so the
+        # view's span validation passes; the feature semantics are index-based.
+        span = timedelta(days=31) / 159
+        closes = [100.0 * (1.0 + 0.001 * i) for i in range(160)]
+        open_times = [base + span * i for i in range(160)]
+        reference = pl.DataFrame(
+            {
+                "open_time": open_times,
+                "close_time": [t + timedelta(minutes=1) for t in open_times],
+                "close": closes,
+            }
+        )
+        view = dataclasses.replace(tiny_market_view, reference=reference)
+        builder = ObservationBuilder(view)
+        at_time = open_times[-1] + timedelta(minutes=1)
+        price, r1h, r24h, vol = builder.rolling_price_features(at_time)
+        assert price == pytest.approx(closes[-1])
+        assert r1h == pytest.approx(math.log(closes[-1] / closes[-1 - 6]))
+        assert r24h == pytest.approx(math.log(closes[-1] / closes[-1 - 144]))
+        assert vol > 0.0
+
+        # Closed on the right: a bar at ``at_time`` is included, one after is not.
+        before, r1h_before, _r24h, _vol = builder.rolling_price_features(
+            at_time - timedelta(minutes=2)
+        )
+        assert before == pytest.approx(closes[-2])
+        assert r1h_before != pytest.approx(r1h)
+
     def test_reference_closes_index_matches_filter_semantics(
         self, tiny_market_view: MarketView
     ) -> None:
@@ -875,6 +910,66 @@ class TestEquityContinuity:
             hold_fees + raw["fees"], rel=1e-6, abs=1e-9
         )
 
+    def test_unaffordable_rebalance_reverts_without_changing_the_book(
+        self, tiny_market_view: MarketView, mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """A rebalance the position cannot pay for is a no-op (on-chain revert).
+
+        The env used to silently recapitalise the position with
+        ``max(capital, 1.0)``, which let a bankrupt policy keep rebalancing for
+        free and diverged from the backtester's ground truth.  Two identical
+        envs step the same state: one holds, the other asks for the unaffordable
+        rebalance; every book term must agree.
+        """
+        config = SimConfig(
+            episode=EpisodeConfig(
+                duration_days=1, step_minutes=10, agent_capital_usdc=1.0
+            ),
+            price_mode=PriceMode.CALIBRATED,
+        )
+
+        def _make_env() -> LpEnvironment:
+            return LpEnvironment(
+                tiny_market_view,
+                _fresh_pool_engine(),
+                _ConstantPriceProcess(3004.0),
+                mock_gas_model,
+                mock_slippage_model,
+                config,
+            )
+
+        hold_env = _make_env()
+        reject_env = _make_env()
+        hold_env.reset(seed=0)
+        reject_env.reset(seed=0)
+        hold_env.step(0)  # one hold step after the entry decision
+        reject_env.step(0)
+        assert reject_env._position is not None
+        lower = reject_env._position.tick_lower
+        upper = reject_env._position.tick_upper
+        position_id = reject_env.position_id
+
+        _, hold_reward, _, _, hold_info = hold_env.step(0)
+        rebalance = Action(action_type="rebalance", center_offset=0, width=1)
+        index = reject_env._action_lookup.index(rebalance)
+        _, reject_reward, _, _, reject_info = reject_env.step(index)
+
+        raw = reject_info["reward_breakdown_raw"]
+        assert reject_info["action_type"] == "rebalance_rejected"
+        assert reject_info["rebalance_rejected"] is True
+        assert raw["gas"] == 0.0
+        assert raw["slippage"] == 0.0
+        # The rejected action is book-identical to the hold on the same state.
+        assert reject_reward == hold_reward
+        assert reject_info["equity"] == hold_info["equity"]
+        assert reject_env.position_id == position_id == hold_env.position_id
+        assert reject_env._position.tick_lower == lower
+        assert reject_env._position.tick_upper == upper
+        assert reject_env._il_offset == hold_env._il_offset
+        assert reject_env._collected_fees_usdc == hold_env._collected_fees_usdc
+        assert reject_env._last_fees_usdc == hold_env._last_fees_usdc
+
 
 class TestValidationAndExhaustion:
     def test_rejects_non_positive_initial_width(
@@ -945,6 +1040,30 @@ class TestValidationAndExhaustion:
         # A terminated episode rejects further steps.
         with pytest.raises(EnvError):
             env.step(0)
+
+    def test_rebalance_at_price_exhaustion_is_reported_rejected(
+        self, tiny_market_view: MarketView, mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """A rebalance the exhausted market skips did not execute: no turnover."""
+        config = SimConfig(episode=EpisodeConfig(duration_days=1, step_minutes=10))
+        env = LpEnvironment(
+            tiny_market_view,
+            _fresh_pool_engine(),
+            _ExhaustingPriceProcess(3004.0, 1),
+            mock_gas_model,
+            mock_slippage_model,
+            config,
+        )
+        env.reset(seed=0)
+        env.step(0)
+        rebalance = Action(action_type="rebalance", center_offset=0, width=1)
+        index = env._action_lookup.index(rebalance)
+        _, _, terminated, _, info = env.step(index)
+        assert terminated is True
+        assert info["rebalance_rejected"] is True
+        assert info["action_type"] == "rebalance_rejected"
+        assert info["reward_breakdown_raw"]["gas"] == 0.0
 
 
 # ---------------------------------------------------------------------------
