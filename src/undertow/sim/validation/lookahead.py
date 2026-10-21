@@ -367,6 +367,7 @@ class _ProbeSuite:
             entry_price=self.env._entry_price,
             entry_sqrt_price=self.env._entry_sqrt,
             initial_capital=self.env._capital,
+            hodl_position=self.env._initial_position,
         )
         return observation, observation.to_vector()
 

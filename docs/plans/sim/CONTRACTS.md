@@ -745,10 +745,21 @@ def compute_reward(
 ) -> RewardBreakdown:
     """Compute the step reward per eq (1) of §9.2 (roadmap eq (2)).
 
-    R_t = F_t − G_t − S_t − ΔIL_t − λ·σ_PnL,t
+    R_t = F_t − G_t − S_t + ΔIL_t − λ·σ_PnL,t
 
-    Each term is gated by its `*_enabled` flag in config. Disabled terms
-    are zero in the returned breakdown but the raw values are still populated."""
+    ``ΔIL_t`` is the **signed** step change in the strategy's excess over its
+    fixed initial HODL basket (ADR-029), so it is added — the older
+    ``− ΔIL_t`` notation treated it as a positive loss magnitude, the opposite
+    sign to the ``il_change`` argument.  Each term is gated by its
+    `*_enabled` flag in config. Disabled terms
+    are zero in the returned breakdown but the raw values are still populated.
+
+    ``il_change`` is the step change in the strategy's value over the **fixed
+    initial HODL basket** (the deposit deployed at episode start held outside
+    the pool): the environment measures it on the pre-action position, exactly
+    as the backtester's ledger does.  The reward is therefore the change in
+    ``excess_vs_hodl``; its episode sum is the reported excess over HODL
+    (ADR-029).  The benchmark is never rebased at a rebalance."""
     ...
 ```
 
@@ -845,7 +856,7 @@ class Observation:
     position_value: Wealth
     uncollected_fees_token0: float
     uncollected_fees_token1: float
-    il_vs_hodl: float                         # as fraction of initial capital
+    il_vs_hodl: float                         # vs the fixed initial HODL basket, as a fraction of initial capital
 
     # -- Pool --
     pool_active_liquidity: float
@@ -862,8 +873,17 @@ class Observation:
     step_in_episode: int
     steps_remaining: int
 
+    # -- Position geometry, in tick-spacing units (ADR-029); positive = inside --
+    distance_to_lower_bound_spacings: float   # (tick - tick_lower) / tick_spacing
+    distance_to_upper_bound_spacings: float   # (tick_upper - tick) / tick_spacing
+    position_width_spacings: float            # (tick_upper - tick_lower) / tick_spacing
+
     def to_vector(self) -> np.ndarray:
-        """Flatten to a 1-D float64 array for the policy network."""
+        """Flatten to a 1-D float64 array for the policy network.
+
+        The vector length is ``OBSERVATION_VECTOR_LENGTH`` (21): the three
+        geometry features are appended at indices 18--20 so the ordinal
+        positions of the original 18 features stay stable (ADR-029)."""
         ...
 ```
 

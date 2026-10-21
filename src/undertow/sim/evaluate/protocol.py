@@ -260,6 +260,9 @@ def observation_from_vector(vector: Sequence[float]) -> Observation:
         regime=inverse.get(int(round(values[15])), "unknown"),
         step_in_episode=int(values[16]),
         steps_remaining=int(values[17]),
+        distance_to_lower_bound_spacings=values[18],
+        distance_to_upper_bound_spacings=values[19],
+        position_width_spacings=values[20],
     )
 
 

@@ -134,6 +134,9 @@ class TestObservationDataclass:
             regime="bull",
             step_in_episode=0,
             steps_remaining=0,
+            distance_to_lower_bound_spacings=0.0,
+            distance_to_upper_bound_spacings=0.0,
+            position_width_spacings=0.0,
         )
         assert not hasattr(obs, "__dict__")
         with pytest.raises(dataclasses.FrozenInstanceError):
@@ -161,6 +164,9 @@ class TestObservationDataclass:
             regime="sideways",
             step_in_episode=int(values[16]),
             steps_remaining=int(values[17]),
+            distance_to_lower_bound_spacings=float(values[18]),
+            distance_to_upper_bound_spacings=float(values[19]),
+            position_width_spacings=float(values[20]),
         )
         vector = obs.to_vector()
         assert vector.dtype == np.float64
@@ -171,6 +177,10 @@ class TestObservationDataclass:
         assert vector.tolist() == expected
         # regime ordinal sits at index 15: sideways -> 2.
         assert vector[15] == 2.0
+        # ADR-029 geometry features are appended at indices 18..20.
+        assert vector[18] == float(values[18])
+        assert vector[19] == float(values[19])
+        assert vector[20] == float(values[20])
 
     @pytest.mark.parametrize(
         ("regime", "ordinal"),
@@ -203,6 +213,9 @@ class TestObservationDataclass:
             regime=regime,
             step_in_episode=0,
             steps_remaining=0,
+            distance_to_lower_bound_spacings=0.0,
+            distance_to_upper_bound_spacings=0.0,
+            position_width_spacings=0.0,
         )
         assert obs.to_vector()[15] == ordinal
 
@@ -240,6 +253,17 @@ class TestObservationBuilder:
         )
         assert obs.position_value == pytest.approx(
             position.value(tiny_pool_engine.state.sqrt_price, obs.price)
+        )
+        # ADR-029 band geometry is reported in tick-spacing units.
+        spacing = float(position.tick_spacing)
+        assert obs.distance_to_lower_bound_spacings == pytest.approx(
+            (float(obs.tick) - float(position.tick_lower)) / spacing
+        )
+        assert obs.distance_to_upper_bound_spacings == pytest.approx(
+            (float(position.tick_upper) - float(obs.tick)) / spacing
+        )
+        assert obs.position_width_spacings == pytest.approx(
+            (float(position.tick_upper) - float(position.tick_lower)) / spacing
         )
         assert -1.0 <= obs.il_vs_hodl <= 1.0
         assert obs.step_in_episode == 500
@@ -301,6 +325,66 @@ class TestObservationBuilder:
             later_seq, position, tiny_pool_engine, mock_gas_model, **kwargs
         )
         assert later_before.price != pytest.approx(later_after.price)
+
+    def test_band_geometry_signs_out_of_range(
+        self,
+        tiny_market_view: MarketView,
+        tiny_pool_engine: PoolEngine,
+        mock_gas_model: object,
+    ) -> None:
+        """Below the band both edges are negative/positive as signalled."""
+        position = tiny_pool_engine.positions[0]
+        below_tick = Tick(int(position.tick_lower) - 2 * int(position.tick_spacing))
+        tiny_pool_engine.state.tick = below_tick
+        tiny_pool_engine.state.sqrt_price = calc_sqrt_price_a(below_tick)
+        obs = ObservationBuilder(tiny_market_view).build(
+            500,
+            position,
+            tiny_pool_engine,
+            mock_gas_model,
+            entry_price=3004.0,
+            entry_sqrt_price=calc_sqrt_price_a(Tick(_ENTRY_TICK)),
+            initial_capital=100_000.0,
+        )
+        assert obs.position_in_range is False
+        assert obs.distance_to_lower_bound_spacings == pytest.approx(-2.0)
+        assert obs.distance_to_upper_bound_spacings > 0.0
+        assert obs.position_width_spacings > 0.0
+
+    def test_build_measures_il_against_the_supplied_hodl_basket(
+        self,
+        tiny_market_view: MarketView,
+        tiny_pool_engine: PoolEngine,
+        mock_gas_model: object,
+    ) -> None:
+        """The optional ``hodl_position`` is the IL benchmark (ADR-029)."""
+        position = tiny_pool_engine.positions[0]
+        other = dataclasses.replace(position, liquidity=position.liquidity * 2.0)
+        builder = ObservationBuilder(tiny_market_view)
+        entry_sqrt = calc_sqrt_price_a(Tick(_ENTRY_TICK))
+        kwargs = {
+            "entry_price": 3004.0,
+            "entry_sqrt_price": entry_sqrt,
+            "initial_capital": 100_000.0,
+        }
+        obs_own = builder.build(
+            500, position, tiny_pool_engine, mock_gas_model, **kwargs
+        )
+        obs_fixed = builder.build(
+            500,
+            position,
+            tiny_pool_engine,
+            mock_gas_model,
+            hodl_position=other,
+            **kwargs,
+        )
+        assert obs_fixed.il_vs_hodl != pytest.approx(obs_own.il_vs_hodl)
+        sqrt = tiny_pool_engine.state.sqrt_price
+        expected = (
+            position.value(sqrt, obs_fixed.price)
+            - other.hodl_value(entry_sqrt, 3004.0, obs_fixed.price)
+        ) / 100_000.0
+        assert obs_fixed.il_vs_hodl == pytest.approx(expected)
 
     def test_rejects_non_positive_capital(
         self,
@@ -797,6 +881,30 @@ class _ConstantPriceProcess:
         return "calibrated"
 
 
+class _SequencePriceProcess:
+    """A deterministic price process that walks a fixed price sequence.
+
+    ``step`` repeats the final price once the sequence is exhausted, so a test
+    can move the market through a known path and then keep it flat.
+    """
+
+    def __init__(self, prices: list[float]) -> None:
+        self._prices = [float(p) for p in prices]
+        self._i = 0
+
+    def reset(self, rng: object) -> None:
+        self._i = 0
+
+    def step(self, rng: object) -> tuple[float, float, Tick]:
+        price = self._prices[min(self._i, len(self._prices) - 1)]
+        self._i += 1
+        return human_price_to_triplet(price)
+
+    @property
+    def mode(self) -> str:
+        return "calibrated"
+
+
 class _ExhaustingPriceProcess:
     """A price process that raises ``StopIteration`` after ``n`` steps."""
 
@@ -813,6 +921,28 @@ class _ExhaustingPriceProcess:
             raise StopIteration
         self._i += 1
         return human_price_to_triplet(self._price)
+
+    @property
+    def mode(self) -> str:
+        return "calibrated"
+
+
+class _SequenceExhaustingPriceProcess:
+    """Yields a fixed price sequence, then raises ``StopIteration``."""
+
+    def __init__(self, prices: list[float]) -> None:
+        self._prices = [float(p) for p in prices]
+        self._i = 0
+
+    def reset(self, rng: object) -> None:
+        self._i = 0
+
+    def step(self, rng: object) -> tuple[float, float, Tick]:
+        if self._i >= len(self._prices):
+            raise StopIteration
+        price = self._prices[self._i]
+        self._i += 1
+        return human_price_to_triplet(price)
 
     @property
     def mode(self) -> str:
@@ -910,6 +1040,102 @@ class TestEquityContinuity:
             hold_fees + raw["fees"], rel=1e-6, abs=1e-9
         )
 
+    def test_reward_measures_excess_vs_fixed_initial_hodl(
+        self, tiny_market_view: MarketView, mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """A rebalance does not reset the IL benchmark (ADR-029).
+
+        The level carried into the next step is the current position value minus
+        the *initial* deposit's HODL value, so rebalancing costs and accumulated
+        under/outperformance stay in the level.  The previous rolling-entry
+        benchmark reset it to ~0 at every rebalance.
+        """
+        prices = [3004.0, 3010.0, 3016.0, 3020.0]
+        env = LpEnvironment(
+            tiny_market_view,
+            _fresh_pool_engine(),
+            _SequencePriceProcess(prices),
+            mock_gas_model,
+            mock_slippage_model,
+            SimConfig(
+                episode=EpisodeConfig(duration_days=1, step_minutes=10),
+                price_mode=PriceMode.CALIBRATED,
+            ),
+        )
+        env.reset(seed=0)
+        initial = env._initial_position
+        assert initial is not None
+        env.step(0)  # 3004
+        env.step(0)  # 3010
+        rebalance = Action(action_type="rebalance", center_offset=0, width=2)
+        index = env._action_lookup.index(rebalance)
+        vector, _, _, _, _ = env.step(index)  # 3016
+
+        # The returned observation measures IL against the same fixed basket.
+        from undertow.sim.evaluate import observation_from_vector
+
+        obs = observation_from_vector(vector)
+        fixed_basket = (
+            env._position.value(env.pool_engine.state.sqrt_price, obs.price)
+            - initial.hodl_value(env._entry_sqrt, env._entry_price, obs.price)
+        ) / env._capital
+        own_basket = (
+            env._position.value(env.pool_engine.state.sqrt_price, obs.price)
+            - env._position.hodl_value(env._entry_sqrt, env._entry_price, obs.price)
+        ) / env._capital
+        assert obs.il_vs_hodl == pytest.approx(fixed_basket)
+        assert obs.il_vs_hodl != pytest.approx(own_basket)
+
+        price = prices[2]  # the rebalance step: hold(3004), hold(3010), rebalance(3016)
+        _, sqrt, _ = human_price_to_triplet(price)
+        expected = env._position.value(sqrt, price) - initial.hodl_value(
+            env._entry_sqrt, env._entry_price, price
+        )
+        assert env._last_il_total == pytest.approx(expected)
+        # The fixed benchmark keeps the rebalancing PnL in the level; a
+        # rolling-entry benchmark would be ~0 right after the rebalance.
+        own_entry_level = env._position.value(sqrt, price) - env._position.hodl_value(
+            env._entry_sqrt, env._entry_price, price
+        )
+        assert env._last_il_total != pytest.approx(own_entry_level)
+
+    def test_episode_reward_sum_is_excess_over_initial_hodl(
+        self, tiny_market_view: MarketView, mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """Summing ``pnl_net`` telescopes to equity minus the initial HODL."""
+        prices = [3004.0, 3010.0, 3016.0]
+        env = LpEnvironment(
+            tiny_market_view,
+            _fresh_pool_engine(),
+            _SequencePriceProcess(prices),
+            mock_gas_model,
+            mock_slippage_model,
+            SimConfig(
+                episode=EpisodeConfig(duration_days=1, step_minutes=10),
+                price_mode=PriceMode.CALIBRATED,
+            ),
+        )
+        env.reset(seed=0)
+        initial = env._initial_position
+        assert initial is not None
+        rebalance = Action(action_type="rebalance", center_offset=0, width=2)
+        index = env._action_lookup.index(rebalance)
+        total = 0.0
+        info: dict[str, object] = {}
+        for step in range(10):
+            action = index if step == 2 else 0
+            _, _, terminated, truncated, info = env.step(action)
+            total += float(info["reward_breakdown_raw"]["pnl_net"])
+            if terminated or truncated:
+                break
+        final_price = env._last_mark_price
+        hodl_final = initial.hodl_value(
+            env._entry_sqrt, env._entry_price, final_price
+        )
+        assert total == pytest.approx(float(info["equity"]) - hodl_final)
+
     def test_unaffordable_rebalance_reverts_without_changing_the_book(
         self, tiny_market_view: MarketView, mock_gas_model: object,
         mock_slippage_model: object,
@@ -966,7 +1192,7 @@ class TestEquityContinuity:
         assert reject_env.position_id == position_id == hold_env.position_id
         assert reject_env._position.tick_lower == lower
         assert reject_env._position.tick_upper == upper
-        assert reject_env._il_offset == hold_env._il_offset
+        assert reject_env._last_il_total == hold_env._last_il_total
         assert reject_env._collected_fees_usdc == hold_env._collected_fees_usdc
         assert reject_env._last_fees_usdc == hold_env._last_fees_usdc
 
@@ -1019,6 +1245,21 @@ class TestValidationAndExhaustion:
         with pytest.raises(EnvError, match="non-positive step budget"):
             env.reset(seed=0)
 
+    def test_current_il_total_is_zero_before_reset(
+        self, tiny_market_view: MarketView, mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """The defensive pre-reset guard returns 0.0 rather than raising."""
+        env = LpEnvironment(
+            tiny_market_view,
+            _fresh_pool_engine(),
+            _ConstantPriceProcess(3004.0),
+            mock_gas_model,
+            mock_slippage_model,
+            SimConfig(),
+        )
+        assert env._current_il_total(1.0, 3004.0) == 0.0
+
     def test_price_exhaustion_terminates_episode(
         self, tiny_market_view: MarketView, mock_gas_model: object,
         mock_slippage_model: object,
@@ -1064,6 +1305,34 @@ class TestValidationAndExhaustion:
         assert info["rebalance_rejected"] is True
         assert info["action_type"] == "rebalance_rejected"
         assert info["reward_breakdown_raw"]["gas"] == 0.0
+
+    def test_exhaustion_fallback_marks_at_the_last_price(
+        self, tiny_market_view: MarketView, mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """The terminal fallback reuses the last mark, not the episode entry.
+
+        The mark price is no longer rebased at rebalances, so using
+        ``_entry_price`` in the exhaustion branch would pair the episode-entry
+        human price with the engine's current raw sqrt (ADR-029 follow-up).
+        """
+        env = LpEnvironment(
+            tiny_market_view,
+            _fresh_pool_engine(),
+            _SequenceExhaustingPriceProcess([3004.0, 3010.0]),
+            mock_gas_model,
+            mock_slippage_model,
+            SimConfig(
+                episode=EpisodeConfig(duration_days=1, step_minutes=10),
+                price_mode=PriceMode.CALIBRATED,
+            ),
+        )
+        env.reset(seed=0)
+        env.step(0)  # 3004
+        env.step(0)  # 3010
+        price, _, _, _, exhausted = env._advance_calibrated()
+        assert exhausted is True
+        assert price == pytest.approx(3010.0)
 
 
 # ---------------------------------------------------------------------------

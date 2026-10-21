@@ -1,5 +1,9 @@
 # S09 — Reward function + RewardBreakdown + ablation flags
 
+> **Amended by ADR-029:** `il_change` is measured against the **fixed initial HODL basket**
+> (the deposit deployed at episode start), never a rolling entry, so the per-step reward is the
+> change in `excess_vs_hodl`.
+
 **Wave 3 · size S · depends on: S01 · blocks: S12**  
 **Branch:** `feature-sim-reward`
 

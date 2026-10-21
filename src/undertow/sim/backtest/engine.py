@@ -156,6 +156,10 @@ class BacktestObservation:
     regime: str
     step_in_episode: int
     steps_remaining: int
+    # -- Position geometry, in tick-spacing units (ADR-029); positive = inside --
+    distance_to_lower_bound_spacings: float
+    distance_to_upper_bound_spacings: float
+    position_width_spacings: float
 
     def to_vector(self) -> np.ndarray:
         """Flatten to a stable float64 vector (the §11 ordinal regime encoding)."""
@@ -180,6 +184,9 @@ class BacktestObservation:
                 float(ordinal.get(self.regime, 4)),
                 float(self.step_in_episode),
                 float(self.steps_remaining),
+                float(self.distance_to_lower_bound_spacings),
+                float(self.distance_to_upper_bound_spacings),
+                float(self.position_width_spacings),
             ],
             dtype=np.float64,
         )
@@ -529,6 +536,13 @@ class _Replay:
         in_range = bool(
             position is not None and position.tick_lower <= tick < position.tick_upper
         )
+        if position is not None:
+            spacing = float(position.tick_spacing)
+            distance_lower = (float(tick) - float(position.tick_lower)) / spacing
+            distance_upper = (float(position.tick_upper) - float(tick)) / spacing
+            width = (float(position.tick_upper) - float(position.tick_lower)) / spacing
+        else:  # pragma: no cover - a position is always deployed before a decision
+            distance_lower = distance_upper = width = 0.0
         fees0 = self.accrued_raw_0 / 10.0**self.dec0
         fees1 = self.accrued_raw_1 / 10.0**self.dec1
         # The exact replay carries the pool's active liquidity; the tape's
@@ -554,6 +568,9 @@ class _Replay:
             regime=regime,
             step_in_episode=step_in_episode,
             steps_remaining=max(0, total_decisions_hint - step_in_episode - 1),
+            distance_to_lower_bound_spacings=distance_lower,
+            distance_to_upper_bound_spacings=distance_upper,
+            position_width_spacings=width,
         )
 
     # -- decisions ---------------------------------------------------------

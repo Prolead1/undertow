@@ -546,6 +546,31 @@ class TestCliInternals:
         model.next_index = -5
         assert policy.act(observation) == tiny_env.action_for_index(0)
 
+    def test_checkpoint_policy_rejects_a_stale_observation_shape(
+        self, tiny_env: object
+    ) -> None:
+        """ADR-029 changed the vector length; an old checkpoint must say so."""
+        import types
+
+        model = _StubModel()
+        model.observation_space = types.SimpleNamespace(shape=(18,))
+        with pytest.raises(CliError, match="retrain"):
+            _CheckpointPolicy(model, tiny_env.config)
+
+    def test_checkpoint_policy_accepts_the_current_observation_shape(
+        self, tiny_env: object
+    ) -> None:
+        import types
+
+        from undertow.sim.env import OBSERVATION_VECTOR_LENGTH
+
+        model = _StubModel()
+        model.observation_space = types.SimpleNamespace(
+            shape=(OBSERVATION_VECTOR_LENGTH,)
+        )
+        policy = _CheckpointPolicy(model, tiny_env.config)
+        assert policy.name == "ppo"
+
     def test_calibrated_env_factory_builds_calibrated_env(
         self, tiny_market_view: object
     ) -> None:
