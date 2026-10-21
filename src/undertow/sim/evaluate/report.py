@@ -16,6 +16,7 @@ Artifacts
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -36,6 +37,39 @@ _REGIME_COLUMNS: tuple[tuple[str, str], ...] = (
     ("gas_paid", "Gas Paid"),
     ("il_realized", "IL"),
 )
+
+#: Metrics mirrored into the machine-readable ``summary.json`` (the UI's
+#: `EvalMetrics` fields); all other per-episode metrics stay in the CSVs.
+_SUMMARY_METRICS: tuple[str, ...] = (
+    "sharpe",
+    "total_pnl",
+    "annualized_return",
+    "max_drawdown",
+)
+
+
+def _write_summary_json(matrices: Sequence[RegimeMatrix], output_dir: Path) -> None:
+    """Write the policy-keyed machine-readable metrics file.
+
+    ``undertow.ui.results`` reads this to populate the Leaderboard's
+    Sharpe/PnL/MaxDD columns; each policy's entry is its episode-mean metric
+    from :attr:`RegimeMatrix.overall`.
+    """
+    payload = {
+        "schema_version": 1,
+        "policies": {
+            matrix.policy_name: {
+                metric: matrix.overall[metric]["mean"]
+                for metric in _SUMMARY_METRICS
+                if metric in matrix.overall
+            }
+            for matrix in matrices
+        },
+    }
+    (output_dir / "summary.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+    )
+
 
 _ABLATION_HEADERS: tuple[str, ...] = (
     "Ablation",
@@ -338,6 +372,7 @@ def write_results(
     _write_ablation(ablation, output)
     _write_regime(regime, output)
     _write_gap(gap, output)
+    _write_summary_json(regime, output)
     (output / "results_summary.md").write_text(
         _summary_markdown(ablation, regime, gap), encoding="utf-8"
     )

@@ -85,6 +85,10 @@ def _info(
         "action_index": action_index,
         "regime": regime,
         "gas_price_wei": 12.5,
+        "active_liquidity": 1.0e18,
+        "position_liquidity": 2.5e17,
+        "pool_fee_earned_0": 0.75,
+        "pool_fee_earned_1": 0.25,
     }
 
 
@@ -120,6 +124,11 @@ def test_rows_from_env_maps_info_and_recomputes_in_range() -> None:
     assert rows[0]["slippage"] == pytest.approx(-0.1)
     # Only ``reward`` is the normalised learning signal.
     assert rows[0]["reward"] == pytest.approx(1.15 / _CAPITAL)
+    # Pool state is carried through so the UI can chart the pool over time.
+    assert rows[0]["pool_active_liquidity"] == pytest.approx(1.0e18)
+    assert rows[0]["position_liquidity"] == pytest.approx(2.5e17)
+    assert rows[0]["pool_fee_earned_0"] == pytest.approx(0.75)
+    assert rows[0]["pool_fee_earned_1"] == pytest.approx(0.25)
 
 
 def test_record_episode_round_trips_exact_schema(tmp_path: Path) -> None:
@@ -336,6 +345,10 @@ def test_lp_env_info_carries_rollout_fields(tiny_env: object) -> None:
         "tick_lower",
         "tick_upper",
         "equity",
+        "active_liquidity",
+        "position_liquidity",
+        "pool_fee_earned_0",
+        "pool_fee_earned_1",
     }
     assert expected <= set(info)
     _obs, _reward, _terminated, _truncated, next_info = env.step(0)  # type: ignore[attr-defined]

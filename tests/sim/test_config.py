@@ -164,6 +164,13 @@ class TestTrainingConfig:
         assert tc.checkpoint_freq_steps == 100_000
         assert tc.log_freq_steps == 10_000
         assert tc.vec_env == "dummy"
+        assert tc.telemetry is True
+        # Rollouts are recorded by default so the replay views have data.
+        assert tc.record_rollouts is True
+        assert tc.rollout_max_episodes == 5
+
+    def test_rollouts_can_still_be_disabled(self) -> None:
+        assert TrainingConfig(record_rollouts=False).record_rollouts is False
 
     def test_vec_env_accepts_subproc_and_rejects_unknown(self) -> None:
         assert TrainingConfig(vec_env="subproc").vec_env == "subproc"

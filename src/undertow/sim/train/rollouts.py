@@ -7,10 +7,13 @@ breakdown.  The environment already computes all of it in ``step()``'s ``info``
 deterministic evaluation episodes to one parquet per episode under
 ``<seed_dir>/rollouts/episode_<k>.parquet``.
 
-The parquet schema is **frozen** by ``CONTRACTS.md`` §2.1.  Column names, order
+The parquet schema is fixed by ``CONTRACTS.md`` §2.1.  Column names, order
 and dtypes are declared once in :data:`ROLLOUT_SCHEMA`; :class:`RolloutRecorder`
 validates every row against it *before* writing, so a schema drift fails loudly
-at the recording site instead of corrupting the UI's replay reader.
+at the recording site instead of corrupting the UI's replay reader.  Additive
+columns (e.g. the pool-state fields added for the pool-over-time chart) are
+permitted when they are declared in §2.1 first, and do not bump
+:data:`SCHEMA_VERSION`; readers select by name and tolerate absent columns.
 
 The recorder never steps the training vector env: the caller
 (``ppo_runner``) runs a separate, deterministic, offline pass over a fresh env
@@ -73,6 +76,15 @@ ROLLOUT_SCHEMA: dict[str, pl.DataType | type[pl.DataType]] = {
     "reward": pl.Float64,
     "regime": pl.Utf8,
     "gas_price_wei": pl.Float64,
+    # Additive §2.1 extension: how the external pool evolves over the episode
+    # and how much of it the agent's position covers. `active_liquidity` is the
+    # pool's raw L, `position_liquidity` the agent's; `pool_fee_earned_*` are the
+    # fees the whole pool generated in the step (raw token units), before the
+    # agent's share is taken.
+    "pool_active_liquidity": pl.Float64,
+    "position_liquidity": pl.Float64,
+    "pool_fee_earned_0": pl.Float64,
+    "pool_fee_earned_1": pl.Float64,
 }
 
 
@@ -104,6 +116,10 @@ class RolloutRow(TypedDict):
     reward: float
     regime: str
     gas_price_wei: float
+    pool_active_liquidity: float
+    position_liquidity: float
+    pool_fee_earned_0: float
+    pool_fee_earned_1: float
 
 
 def rows_from_env(
@@ -164,6 +180,18 @@ def rows_from_env(
             "reward": float(cast(float, breakdown["reward"])),
             "regime": str(info["regime"]),
             "gas_price_wei": float(cast(float, info["gas_price_wei"])),
+            "pool_active_liquidity": float(
+                cast(float, info.get("active_liquidity") or 0.0)
+            ),
+            "position_liquidity": float(
+                cast(float, info.get("position_liquidity") or 0.0)
+            ),
+            "pool_fee_earned_0": float(
+                cast(float, info.get("pool_fee_earned_0") or 0.0)
+            ),
+            "pool_fee_earned_1": float(
+                cast(float, info.get("pool_fee_earned_1") or 0.0)
+            ),
         }
         rows.append(row)
     return rows

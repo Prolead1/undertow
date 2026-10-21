@@ -241,6 +241,31 @@ def rank(
     return sorted(records, key=sort_key)
 
 
+#: Baseline policy names as named by ``undertow-sim`` (mirrored from
+#: ``undertow.sim.cli.POLICY_NAMES``; the UI must not import sim at runtime).
+#: ``tests/ui/test_registry.py`` pins this against the sim list.
+_BASELINE_POLICY_NAMES: frozenset[str] = frozenset(
+    {"hodl", "passive_narrow", "passive_wide", "full_range_v2", "tau_reset", "cost_aware"}
+)
+
+
+def _eval_policy_name(manifest: RunManifestSummary | None) -> str | None:
+    """The policy name ``undertow-sim evaluate`` uses for this run's artifacts.
+
+    The evaluate CLI names its outputs after the checkpoint *stem* (e.g.
+    ``regime_matrix_ppo_seed_1.md``), not the algorithm (``ppo``), and prefixes
+    ``ppo_`` when that stem would shadow a baseline (``hodl.zip`` ->
+    ``ppo_hodl``). Matching on ``manifest.algorithm`` filtered out every row and
+    left the run "train-only"; the checkpoint stem is the name that matches.
+    """
+    if manifest is None:
+        return None
+    stem = Path(manifest.checkpoint_path).stem
+    if not stem:
+        return manifest.algorithm
+    return f"ppo_{stem}" if stem in _BASELINE_POLICY_NAMES else stem
+
+
 @dataclass(frozen=True, slots=True)
 class _Snapshot:
     """One immutable view of a ``runs/`` tree, swapped in atomically by scans.
@@ -465,7 +490,7 @@ class RunRegistry:
             manifest=manifest,
             eval=self._find_eval(
                 run_dir,
-                policy=manifest.algorithm if manifest is not None else None,
+                policy=_eval_policy_name(manifest),
                 allow_shared_root=allow_shared_root,
                 eval_cache=eval_cache,
             ),

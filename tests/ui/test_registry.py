@@ -20,9 +20,9 @@ Mean ± std over walk-forward episodes and seeds.
 
 | Policy | Regime | PnL | Sharpe | MaxDD |
 | --- | --- | --- | --- | --- |
-| ppo | bull | 1,234.56 ± 12.3 | 1.2000 ± 0.1 | -0.0500 ± 0.01 |
-| ppo | bear | -500.00 ± 5.0 | -0.3000 ± 0.1 | -0.2000 ± 0.02 |
-| ppo | sideways | 200.00 ± 1.0 | 0.1000 ± 0.0 | -0.1000 ± 0.0 |
+| ppo_s0_deadbeef | bull | 1,234.56 ± 12.3 | 1.2000 ± 0.1 | -0.0500 ± 0.01 |
+| ppo_s0_deadbeef | bear | -500.00 ± 5.0 | -0.3000 ± 0.1 | -0.2000 ± 0.02 |
+| ppo_s0_deadbeef | sideways | 200.00 ± 1.0 | 0.1000 ± 0.0 | -0.1000 ± 0.0 |
 """
 
 
@@ -281,6 +281,79 @@ def test_scan_attaches_eval_from_nested_seed_results(tmp_path: Path, run_dir) ->
     assert records[0].eval is not None
     assert records[0].eval.source == "experiment_1/seed_0/regime_comparison.md"
     assert records[0].eval.worst_regime_pnl == -500.0
+
+
+def test_scan_does_not_match_eval_by_algorithm_name(tmp_path: Path, run_dir) -> None:
+    """Regression: `evaluate` names artifacts after the checkpoint stem, not `ppo`."""
+    run_dir(seed=0)
+    results = tmp_path / "results" / "experiment_1" / "seed_0"
+    results.mkdir(parents=True)
+    (results / "regime_comparison.md").write_text(
+        "| Policy | Regime | PnL |\n| --- | --- | --- |\n"
+        "| ppo | bull | 1,234.56 ± 12.0 |\n",
+        encoding="utf-8",
+    )
+
+    records = RunRegistry(tmp_path, tmp_path / "results").scan()
+
+    # The algorithm name (`ppo`) is not the checkpoint stem (`ppo_s0_deadbeef`),
+    # so its rows must not be attributed to this run.
+    assert records[0].eval is not None
+    assert records[0].eval.per_regime == {}
+    assert records[0].eval.worst_regime_pnl is None
+
+
+def test_scan_reads_policy_keyed_summary_json(tmp_path: Path, run_dir) -> None:
+    run_dir(seed=0)
+    results = tmp_path / "results" / "experiment_1" / "seed_0"
+    results.mkdir(parents=True)
+    (results / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "policies": {
+                    "ppo_s0_deadbeef": {
+                        "sharpe": 2.5,
+                        "total_pnl": 111.0,
+                        "annualized_return": 0.4,
+                        "max_drawdown": -0.12,
+                    },
+                    "passive_narrow": {"sharpe": 0.1, "total_pnl": 5.0},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    records = RunRegistry(tmp_path, tmp_path / "results").scan()
+
+    assert records[0].eval is not None
+    assert records[0].eval.sharpe == 2.5
+    assert records[0].eval.total_pnl == 111.0
+    assert records[0].eval.max_drawdown == -0.12
+
+
+def test_baseline_policy_names_mirror_the_sim_cli() -> None:
+    from undertow.sim.cli import POLICY_NAMES
+    from undertow.ui import registry as registry_module
+
+    assert frozenset(POLICY_NAMES) == registry_module._BASELINE_POLICY_NAMES
+
+
+def test_eval_policy_prefixes_a_baseline_collision(tmp_path: Path, run_dir) -> None:
+    """`evaluate` renames `hodl.zip` to `ppo_hodl`, so the registry must too."""
+    run_dir(seed=0, checkpoint_stem="hodl")
+    results = tmp_path / "results" / "experiment_1" / "seed_0"
+    results.mkdir(parents=True)
+    (results / "summary.json").write_text(
+        json.dumps({"policies": {"ppo_hodl": {"sharpe": 0.9}}}),
+        encoding="utf-8",
+    )
+
+    records = RunRegistry(tmp_path, tmp_path / "results").scan()
+
+    assert records[0].eval is not None
+    assert records[0].eval.sharpe == 0.9
 
 
 def test_rank_uses_eval_sharpe_then_worst_regime_then_best_reward() -> None:

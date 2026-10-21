@@ -142,6 +142,43 @@ def test_summary_json_maps_nested_result_keys() -> None:
     }
 
 
+def test_summary_json_selects_a_policy_from_the_policies_map() -> None:
+    text = json.dumps(
+        {
+            "schema_version": 1,
+            "policies": {
+                "ppo_seed_1": {
+                    "sharpe": 2.5,
+                    "total_pnl": 111.0,
+                    "annualized_return": 0.4,
+                    "max_drawdown": -0.12,
+                },
+                "passive_narrow": {"sharpe": 0.1, "total_pnl": 5.0},
+            },
+        }
+    )
+
+    assert parse_summary_json(text, policy="ppo_seed_1")["sharpe"] == 2.5
+    assert parse_summary_json(text, policy="ppo_seed_1")["total_pnl"] == 111.0
+    assert parse_summary_json(text, policy="passive_narrow")["sharpe"] == 0.1
+    # An unknown policy (or no policy filter) selects nothing from the map.
+    assert parse_summary_json(text, policy="nope")["sharpe"] is None
+    assert parse_summary_json(text)["sharpe"] is None
+
+
+def test_load_eval_metrics_reads_the_policy_keyed_summary(tmp_path: Path) -> None:
+    (tmp_path / "summary.json").write_text(
+        json.dumps({"policies": {"ppo_seed_1": {"sharpe": 3.0, "total_pnl": 7.0}}}),
+        encoding="utf-8",
+    )
+
+    metrics = load_eval_metrics(tmp_path, policy="ppo_seed_1")
+
+    assert metrics is not None
+    assert metrics.sharpe == 3.0
+    assert metrics.total_pnl == 7.0
+
+
 def test_summary_json_accepts_flat_payload_and_rejects_garbage() -> None:
     assert parse_summary_json(json.dumps({"sharpe": 2.0}))["sharpe"] == 2.0
 
