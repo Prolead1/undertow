@@ -185,6 +185,22 @@ def test_accrue_matches_internal_tracker_and_returns_raw_q128_ints() -> None:
     assert not any(isinstance(value, float) for value in (fees0, fees1, g0, g1))
 
 
+def test_current_liquidity_tracks_replayed_liquidity_moves() -> None:
+    """The scalar accessor reflects mints/burns without a lattice copy."""
+    replay = FeeGrowthReplay(POOL, current_tick=0, current_liquidity=5)
+    assert replay.current_liquidity == 5
+    replay.apply_event(
+        {
+            "event_type": "mint",
+            "block_number": 1,
+            "tick_lower": 0,
+            "tick_upper": 120,
+            "liquidity_amount": str(3 * 10**18),
+        }
+    )
+    assert replay.current_liquidity == 5 + 3 * 10**18
+
+
 def test_snapshot_restore_roundtrip_via_facade() -> None:
     """A facade checkpoint resumes a second facade to the same final state."""
     events = _load_fixture()["events"]

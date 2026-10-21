@@ -169,7 +169,7 @@ def rows_from_env(
             "position_value": float(cast(float, info["position_value"])),
             "equity": float(cast(float, info["equity"])),
             "action_index": int(cast(int, info["action_index"])),
-            "action_type": str(action.action_type),
+            "action_type": str(info.get("action_type", action.action_type)),
             "center_offset": int(action.center_offset),
             "width": int(action.width),
             "fees": float(cast(float, raw["fees"])),

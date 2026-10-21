@@ -616,10 +616,15 @@ class LpEnvironment(gym.Env):
 
         gas_cost = 0.0
         slippage_cost = 0.0
+        # A requested rebalance that cannot execute (the market is exhausted, or
+        # the trade cannot pay for itself) is reported as rejected so turnover
+        # counts match the backtester's decision log.
+        rebalance_rejected = action.action_type == "rebalance" and price_exhausted
         if action.action_type == "rebalance" and not price_exhausted:
-            gas_cost, slippage_cost = self._rebalance(
+            gas_cost, slippage_cost, executed = self._rebalance(
                 action, sqrt_price, price, tape_row
             )
+            rebalance_rejected = not executed
             # New position starts with zero uncollected fees.
             fees_usdc_before = self._current_fees_usdc(price)
         self._last_fees_usdc = fees_usdc_before
@@ -670,6 +675,13 @@ class LpEnvironment(gym.Env):
             action=action,
             action_index=int(action_idx),
         )
+        if rebalance_rejected:
+            # The requested rebalance did not execute (it could not pay for the
+            # trade, or the market was exhausted); the position is unchanged.
+            # ``action_type`` records that nothing executed while ``action``
+            # above keeps the policy's intent.
+            info["action_type"] = "rebalance_rejected"
+            info["rebalance_rejected"] = True
         return observation.to_vector(), float(breakdown.reward), terminated, truncated, info
 
     # ------------------------------------------------------------------
@@ -916,14 +928,17 @@ class LpEnvironment(gym.Env):
         sqrt_price: SqrtPrice,
         price: float,
         tape_row: dict[str, object],
-    ) -> tuple[float, float]:
+    ) -> tuple[float, float, bool]:
         """Close the current position, open the action's range, return costs.
 
-        Returns ``(gas_cost, slippage_cost)`` as positive magnitudes. The new
-        position is funded with the old position's mark-to-market value **plus
-        its collected fees**, net of the rebalance costs, so equity is
-        continuous and cost-honest. The old position's IL is folded into
-        ``_il_offset`` so closing does not create a spurious IL jump.
+        Returns ``(gas_cost, slippage_cost, executed)`` as positive magnitudes.
+        When the position cannot pay the gas/slippage out of its own equity the
+        trade reverts (``executed=False``): nothing is charged and the position,
+        fee balance and IL baseline are left untouched. The new position is
+        funded with the old position's mark-to-market value **plus its collected
+        fees**, net of the rebalance costs, so equity is continuous and
+        cost-honest. The old position's IL is folded into ``_il_offset`` so
+        closing does not create a spurious IL jump.
         """
         if self._position is None or self._position_id is None:
             raise EnvError("rebalance requested with no open position")
@@ -954,6 +969,14 @@ class LpEnvironment(gym.Env):
             )
         )
 
+        # The trade must pay for itself out of the position's own equity; when
+        # it cannot, it reverts on-chain. Charge nothing and leave the book
+        # untouched (the old ``max(..., 1.0)`` floor silently recapitalised the
+        # position, diverging from the ground-truth backtester).
+        new_capital = notional + collected - gas_cost - slippage_cost
+        if new_capital <= 0.0:
+            return 0.0, 0.0, False
+
         # Realise the closing IL into the running offset (no IL jump on close).
         self._il_offset += self._position.il_vs_hodl(
             self._entry_sqrt, self._entry_price, sqrt_price, price
@@ -963,7 +986,6 @@ class LpEnvironment(gym.Env):
 
         # Re-deploy the position value plus collected fees, net of costs, so
         # equity (and every reported PnL number) is continuous and cost-honest.
-        new_capital = max(notional + collected - gas_cost - slippage_cost, 1.0)
         new_position = initial_deposit(
             sqrt_price, price, lower, upper, new_capital, spacing
         )
@@ -973,7 +995,7 @@ class LpEnvironment(gym.Env):
         self._position = self.pool_engine.positions[self._position_id]
         self._entry_price = price
         self._entry_sqrt = sqrt_price
-        return gas_cost, slippage_cost
+        return gas_cost, slippage_cost, True
 
     def _observe(
         self,

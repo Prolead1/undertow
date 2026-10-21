@@ -78,6 +78,7 @@ from undertow.sim.core.position import (
     Position,
     initial_deposit,
 )
+from undertow.sim.env.observations import ObservationBuilder
 from undertow.sim.frictions import GasCostCalculator, ProportionalSlippageModel
 from undertow.sim.marketview import MarketView
 from undertow.sim.types import Action, BacktestError, Tick, TickSpacing
@@ -201,7 +202,9 @@ class _TapeBuffer:
         self.price_pool: list[float | None] = list(tape["price_pool"].to_list())
         self.sqrt_price_x96: list[object] = list(tape["sqrt_price_x96"].to_list())
         self.tick: list[object] = list(tape["tick"].to_list())
-        self.liquidity: list[object] = list(tape["liquidity"].to_list())
+        # ``liquidity`` is schema-validated (see ``_REQUIRED_TAPE_COLUMNS``) but
+        # is not materialised: the real lane's column is null, so the observation
+        # uses the exact replay's active liquidity instead.
         self.base_fee: list[object] = list(tape["base_fee_per_gas"].to_list())
         self.priority_fee: list[object] = list(
             tape["priority_fee_p50_wei"].to_list()
@@ -351,8 +354,10 @@ class _Replay:
         self.last_price: float | None = None
         self.last_sqrt: float | None = None
         self.last_tick: int | None = None
-        self.pool_liquidity = 0.0
-        self.price_history: list[float] = []
+        # The observation's rolling features come from the same reference-bar
+        # windows the environment uses (CONTRACTS §11), so a frozen policy is
+        # fed identical features in both instruments.
+        self.observation_builder = ObservationBuilder(market_view)
 
         # Position + exact fee-growth state.  ``replay`` (ADR-013) is set by
         # ``run_backtest`` once the pool and the tape's opening tick are known.
@@ -438,14 +443,12 @@ class _Replay:
         else:
             tick = _tick_from_price(price, self.dec0, self.dec1)
 
-        liq = self.tape.liquidity[i]
-        if liq is not None:
-            self.pool_liquidity = float(int(str(liq)))
-
+        # The tape's ``liquidity`` column is schema-validated but is not the
+        # observation source: on the real lane it is never populated, and the
+        # exact replay carries the pool's active liquidity.
         self.last_price = price
         self.last_sqrt = sqrt
         self.last_tick = tick
-        self.price_history.append(price)
         return price, sqrt, tick
 
     # -- fees --------------------------------------------------------------
@@ -510,31 +513,30 @@ class _Replay:
         step_in_episode: int,
         total_decisions_hint: int,
         regime: str,
+        at_time: datetime,
     ) -> BacktestObservation:
-        history = self.price_history
-        r1h = 0.0
-        r24h = 0.0
-        vol24h = 0.0
-        if len(history) >= 2:
-            n1 = min(6, len(history) - 1)
-            r1h = math.log(history[-1] / history[-1 - n1])
-            n24 = min(144, len(history) - 1)
-            r24h = math.log(history[-1] / history[-1 - n24])
-            window = history[-min(144, len(history)) :]
-            if len(window) >= 3:
-                logs = [
-                    math.log(window[k + 1] / window[k]) for k in range(len(window) - 1)
-                ]
-                mean = sum(logs) / len(logs)
-                var = sum((x - mean) ** 2 for x in logs) / max(1, len(logs) - 1)
-                vol24h = math.sqrt(var) * math.sqrt(self.periods_per_year)
+        # The rolling features are the canonical reference-bar windows
+        # (CONTRACTS §11), shared with the environment through
+        # ``ObservationBuilder`` so the same frozen policy sees the same
+        # features in both instruments.  ``price`` is the accounting mark; the
+        # observation reports the latest reference close (the env's price).
+        last_close, r1h, r24h, vol24h = self.observation_builder.rolling_price_features(
+            at_time
+        )
+        obs_price = last_close if last_close is not None else price
 
         position = self.position
-        in_range = bool(position is not None and position.tick_lower <= tick < position.tick_upper)
+        in_range = bool(
+            position is not None and position.tick_lower <= tick < position.tick_upper
+        )
         fees0 = self.accrued_raw_0 / 10.0**self.dec0
         fees1 = self.accrued_raw_1 / 10.0**self.dec1
+        # The exact replay carries the pool's active liquidity; the tape's
+        # ``liquidity`` column is nullable and never populated on the real lane.
+        replay = self.replay
+        liquidity = float(replay.current_liquidity) if replay is not None else 0.0
         return BacktestObservation(
-            price=price,
+            price=obs_price,
             sqrt_price=sqrt,
             tick=tick,
             price_returns_1h=r1h,
@@ -545,10 +547,10 @@ class _Replay:
             uncollected_fees_token0=fees0,
             uncollected_fees_token1=fees1,
             il_vs_hodl=(il_now / self.capital) if self.capital else 0.0,
-            pool_active_liquidity=self.pool_liquidity,
+            pool_active_liquidity=liquidity,
             pool_fee_tier_bps=int(self.config.episode.fee_tier_bps),
             gas_price_recent_wei=gas_wei,
-            eth_usd_price_recent=price,
+            eth_usd_price_recent=obs_price,
             regime=regime,
             step_in_episode=step_in_episode,
             steps_remaining=max(0, total_decisions_hint - step_in_episode - 1),
@@ -572,11 +574,14 @@ class _Replay:
         position_value: float,
         fees_value: float,
         i: int,
-    ) -> tuple[float, float, float, int, int]:
+    ) -> tuple[float, float, float, int, int] | None:
         """Close + reopen at the action's range; return the new equity and costs.
 
         Returns ``(equity, gas_cost_magnitude, slippage_cost_magnitude,
-        new_lower, new_upper)``.
+        new_lower, new_upper)``, or ``None`` when the rebalance cannot pay its
+        gas/slippage out of the position's equity.  A rejected rebalance is the
+        on-chain revert case: the position is left untouched and no cost is
+        charged; the caller records it as ``rebalance_rejected``.
         """
         block = self.tape.block[i]
         base_fee = _as_int(self.tape.base_fee[i])
@@ -593,10 +598,12 @@ class _Replay:
 
         new_capital = position_value + fees_value - gas_cost - slippage_cost
         if new_capital <= 0.0:
-            raise BacktestError(
-                f"rebalance at step {self.tape.seq[i]} would wipe out the position "
-                f"(equity {new_capital:.6f})"
-            )
+            # The trade cannot pay for itself: on-chain it reverts, so the
+            # position stays open and no cost is charged.  This used to raise a
+            # ``BacktestError``, which made an evaluation abort on a bankrupt
+            # policy; bankruptcy is a measurement outcome, not an engine
+            # failure.
+            return None
 
         lower = int(action.lower_tick(Tick(tick), TickSpacing(self.tick_spacing)))
         upper = int(action.upper_tick(Tick(tick), TickSpacing(self.tick_spacing)))
@@ -716,8 +723,9 @@ def run_backtest(
     Raises
     ------
     BacktestError
-        If the tape is empty, carries no usable reference price, or a rebalance
-        would wipe out the position.
+        If the tape is empty or carries no usable reference price.  A rebalance
+        the position cannot afford is *not* an error: it is recorded as
+        ``rebalance_rejected`` and the position is held.
     """
     tape_frame = market_view.active_split_data()
     if tape_frame.height == 0:
@@ -840,18 +848,14 @@ def run_backtest(
                 decision_index,
                 total_decisions_hint,
                 str(tape.regime[i] or "unknown"),
+                tape.time[i],
             )
             # ``BacktestObservation`` is the §11 field set's structural stand-in
             # (see the module docstring); policies only read those fields.
             action = policy.act(cast("Observation", observation), rng)
+            applied: tuple[float, float, float, int, int] | None = None
             if not action.is_hold():
-                (
-                    new_equity,
-                    gas_cost,
-                    slippage_cost,
-                    lower,
-                    upper,
-                ) = run._apply_rebalance(
+                applied = run._apply_rebalance(
                     action,
                     tick,
                     sqrt,
@@ -860,6 +864,14 @@ def run_backtest(
                     fees_value,
                     i,
                 )
+            if applied is not None:
+                (
+                    new_equity,
+                    gas_cost,
+                    slippage_cost,
+                    lower,
+                    upper,
+                ) = applied
                 run.equity = new_equity
                 step_gas = -gas_cost
                 step_slippage = -slippage_cost
@@ -886,8 +898,14 @@ def run_backtest(
                 # gas/slippage/fee jumps are separate decomposition terms.
                 il_now = run.equity - hodl_now
             else:
+                # ``hold``, or a rebalance the equity cannot afford: on-chain
+                # the latter reverts, so it is recorded as rejected with no
+                # costs and no position change.
+                rejected = not action.is_hold()
                 run.decisions["step"].append(int(tape.seq[i]))
-                run.decisions["action_type"].append("hold")
+                run.decisions["action_type"].append(
+                    "rebalance_rejected" if rejected else "hold"
+                )
                 run.decisions["center_offset"].append(int(action.center_offset))
                 run.decisions["width"].append(int(action.width))
                 run.decisions["tick_lower"].append(None)

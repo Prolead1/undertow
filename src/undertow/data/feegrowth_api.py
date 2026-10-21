@@ -266,6 +266,16 @@ class FeeGrowthReplay:
         """
         return self._tracker.exact
 
+    @property
+    def current_liquidity(self) -> int:
+        """The replay's current active liquidity, raw units.
+
+        Read-only scalar accessor for consumers (the backtester's observation)
+        that need the replayed pool state without copying the tick lattice via
+        :meth:`snapshot` on every decision.
+        """
+        return int(self._tracker.current_liquidity)
+
     def snapshot(self) -> FeeGrowthState:
         """Serialisable checkpoint of the replay state (for :meth:`from_state`)."""
         return self._tracker.snapshot()

@@ -165,7 +165,7 @@ class RolloutRecorder:
 | `position_value` | `Float64` | USDC |
 | `equity` | `Float64` | USDC |
 | `action_index` | `Int32` | discrete env action |
-| `action_type` | `Utf8` | `hold` \| `rebalance` |
+| `action_type` | `Utf8` | `hold` \| `rebalance` \| `rebalance_rejected` (did not execute: unaffordable or market exhausted) |
 | `center_offset` | `Int32` | tick-spacings (0 for hold) |
 | `width` | `Int32` | tick-spacings (0 for hold) |
 | `fees` | `Float64` | step fee income, >= 0 |

@@ -33,6 +33,7 @@ from undertow.sim.evaluate import (
     GapReport,
     RegimeMatrix,
     aggregate_metrics,
+    build_replay_env,
     dominant_regime,
     evaluate_episodes,
     evaluate_policy,
@@ -291,6 +292,48 @@ class TestEvaluatePolicy:
         assert records
         assert any(record.metrics["n_rebalances"] > 0 for record in records)
         assert any(record.metrics["gas_paid"] < 0.0 for record in records)
+
+    def test_rejected_rebalances_are_not_counted(self, tiny_market_view: MarketView) -> None:
+        """A reverted rebalance is not turnover in either backend.
+
+        With $1 of capital every rebalance is unaffordable, so the env records
+        them as rejected; ``n_rebalances`` and gas must stay at zero, matching
+        the backtester's decision-log count.
+        """
+        from undertow.sim.frictions import FlatGasModel
+        from undertow.sim.types import Action
+
+        class _AlwaysRebalance:
+            name = "always_rebalance"
+
+            def reset(self) -> None:
+                pass
+
+            def act(self, observation: object, rng: object = None) -> Action:
+                return Action(action_type="rebalance", center_offset=0, width=2)
+
+        config = SimConfig(
+            episode=EpisodeConfig(
+                duration_days=1, step_minutes=10, agent_capital_usdc=1.0
+            ),
+            training=TrainingConfig(seeds=(0,)),
+            seed=0,
+        )
+        # The tiny view's gas feed has no row for most tape blocks, so pin a
+        # flat $77 rebalance cost: every rebalance on $1 of capital reverts.
+        def factory(view: MarketView, cfg: SimConfig) -> object:
+            return build_replay_env(view, cfg, gas_model=FlatGasModel(cfg.gas))
+
+        records = evaluate_episodes(
+            _AlwaysRebalance(),
+            tiny_market_view,
+            config,
+            backend="replay_sim",
+            env_factory=factory,
+        )
+        assert records
+        assert all(record.metrics["n_rebalances"] == 0.0 for record in records)
+        assert all(record.metrics["gas_paid"] == 0.0 for record in records)
 
     def test_aggregate_metrics_handles_missing_metric(self) -> None:
         record = _make_record(metrics={"total_pnl": 1.0})

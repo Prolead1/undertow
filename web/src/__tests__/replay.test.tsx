@@ -205,6 +205,17 @@ describe("PolicyReplay selection", () => {
 // ---------------------------------------------------------------------------
 // 2. Ribbon: tick range series and exactly the rebalance rows
 // ---------------------------------------------------------------------------
+
+describe("parseRolloutRows action types", () => {
+  it("treats a reverted rebalance as a hold (it never executed)", () => {
+    const rows = parseRolloutRows([
+      rawRow(0, { action_type: "rebalance_rejected", center_offset: 0, width: 2 }),
+    ] as RolloutSeries["rows"]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.actionType).toBe("hold");
+  });
+});
+
 describe("RibbonChart", () => {
   it("prefers the backend ribbon figure, requesting the selected seed/episode", async () => {
     const backend = {
