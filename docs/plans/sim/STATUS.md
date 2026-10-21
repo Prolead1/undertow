@@ -25,7 +25,7 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 | S14 parity/look-ahead | pr-open | `feature-sim-parity` | [#50](https://github.com/Prolead1/undertow/pull/50) | 30 passed; full 1186 passed, 6 skipped | approved | CONTRACTS §16; exact-int `FeeGrowthReplay` vs float64 tolerance 1e-3; 13-probe look-ahead suite. Real-data drift was ~13× until ADR-019 made the sim's fee engine exact (per-seed fee mean ~1e-7, IL exactly 0, all 5 seeds within tolerance) |
 | S15 evaluation runner | pr-open | `feature-sim-evaluation` | [#51](https://github.com/Prolead1/undertow/pull/51) | 35 passed; full 1294 passed, 6 skipped | approved | CONTRACTS §17; RQ1 ablation (ledger-gating + RL `train_fn` guard), RQ2 regime matrix, RQ3 gap (same-window); markdown/CSV artifacts |
 | S16 CLI + public API | pr-open | `feature-sim-cli` | [#52](https://github.com/Prolead1/undertow/pull/52) | 40 passed; full 1334 passed, 6 skipped | approved | CONTRACTS §2/§12/§13/§15/§17; `undertow-sim train\|backtest\|evaluate\|ablate\|info` (argparse); public API surface + `__all__`; docs/running_experiments.md; `ablate` is RQ1-only (baselines are outside the agent action grid, so no fabricated RQ3 gap) |
-| RL fidelity fix (ADR-029) | pr-open | `feature-sim-geometry-hodl-reward` | | 1771 passed, 6 skipped; coverage 94.15% | approved | §11 band-geometry features 18→21; reward measured as excess vs the fixed initial HODL basket; stale-checkpoint guard |
+| RL fidelity fix (ADR-029) | pr-open | `feature-sim-geometry-hodl-reward` | [#88](https://github.com/Prolead1/undertow/pull/88) | 1771 passed, 6 skipped; coverage 94.15% | approved | §11 band-geometry features 18→21; reward measured as excess vs the fixed initial HODL basket; stale-checkpoint guard |
 
 ## ADRs raised
 
