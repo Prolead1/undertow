@@ -975,7 +975,18 @@ class LpEnvironment(gym.Env):
         lower = action.lower_tick(self.pool_engine.state.tick, spacing)
         upper = action.upper_tick(self.pool_engine.state.tick, spacing)
 
-        notional = self._position.value(sqrt_price, price)
+        old_position = self._position
+        notional = old_position.value(sqrt_price, price)
+        # A V3 rebalance only trades the inventory *imbalance*: the token0 leg
+        # of the target range at the same mark minus the old position's token0
+        # leg (S18).  ``token0`` is USDC (the numeraire, ADR-009), so the
+        # difference is already in USDC and needs no price conversion.
+        target = initial_deposit(
+            sqrt_price, price, lower, upper, notional, spacing
+        )
+        swap_notional = abs(
+            old_position.amount0(sqrt_price) - target.amount0(sqrt_price)
+        )
         collected = self._current_fees_usdc(price)
 
         gas_row = self._gas_row(tape_row)
@@ -992,7 +1003,7 @@ class LpEnvironment(gym.Env):
         )
         slippage_cost = float(
             self.slippage_model.slippage_cost_usdc(
-                notional,
+                swap_notional,
                 int(self.config.episode.fee_tier_bps),
                 float(self.config.slippage.fixed_impact_bps),
             )

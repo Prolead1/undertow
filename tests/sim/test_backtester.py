@@ -25,10 +25,13 @@ from undertow.sim.backtest import (
     summarize_backtest,
 )
 from undertow.sim.config import EpisodeConfig, GasConfig, SimConfig, SlippageConfig
+from undertow.sim.core.pool import PoolEngine, PoolState
 from undertow.sim.core.position import calc_sqrt_price_a, initial_deposit
-from undertow.sim.frictions import GasCostCalculator
+from undertow.sim.env.lp_env import LpEnvironment
+from undertow.sim.frictions import GasCostCalculator, ProportionalSlippageModel
 from undertow.sim.marketview import MarketView
 from undertow.sim.policies import HODLPolicy, PassiveNarrowPolicy, Policy, TauResetPolicy
+from undertow.sim.prices.replay import ReplayPriceProcess
 from undertow.sim.types import Action, BacktestError, Tick, TickSpacing
 
 UTC = UTC
@@ -806,10 +809,28 @@ def test_slippage_only_charged_on_rebalance_steps() -> None:
     assert sum(1 for s in slippage if s != 0.0) == 1
     assert slippage[0] < 0.0
 
-    # ADR-012: notional * (3000/1e6 + 5/1e4) with notional ~ capital.
-    position_value = CAPITAL  # at t=0 the initial position is worth the capital
-    expected = position_value * (3000 / 1_000_000 + 5 / 10_000)
+    # S18: the rebalance charges the **swapped inventory imbalance**, not the
+    # whole position value.  ADR-012 still gives
+    # ``S = swap_notional * (3000/1e6 + 5/1e4)``; ``swap_notional`` is the token0
+    # (USDC) difference between the pre-rebalance ±120-tick position and the
+    # policy's target band at the same mark.  The old expectation was
+    # ``CAPITAL * rate`` (the full position value).
+    decision = ledger.decision_log.row(0, named=True)
+    target = initial_deposit(
+        _ENTRY_SQRT,
+        _ENTRY_PRICE,
+        Tick(decision["tick_lower"]),
+        Tick(decision["tick_upper"]),
+        CAPITAL,
+        TickSpacing(TICK_SPACING),
+    )
+    swap_notional = abs(
+        _initial_position().amount0(_ENTRY_SQRT) - target.amount0(_ENTRY_SQRT)
+    )
+    rate = 3000 / 1_000_000 + 5 / 10_000
+    expected = swap_notional * rate
     assert slippage[0] == pytest.approx(-expected, rel=1e-6)
+    assert abs(slippage[0]) < CAPITAL * rate
 
 
 def test_cost_ledger_records_matching_cost_types() -> None:
@@ -840,6 +861,76 @@ class _RebalanceEveryStep:
     def act(self, observation: BacktestObservation, rng: object = None) -> Action:
         del observation, rng
         return Action(action_type="rebalance", center_offset=0, width=self._width)
+
+
+def test_balanced_recentre_charges_no_slippage() -> None:
+    # S18: the default ±120-tick initial bounds resolve exactly to the
+    # (center_offset=0, width=2) action at ENTRY_TICK, so rebalancing onto that
+    # band swaps zero inventory.  The old full-position-value charge made this
+    # balanced recentre the worst case; it must now cost ~0.
+    ledger = run_backtest(_RebalanceEveryStep(width=2), _flat_view(), SimConfig())
+    slippage = ledger.equity_curve["slippage"].to_list()
+    assert sum(1 for s in slippage if s != 0.0) > 0  # rebalances did execute
+    assert all(s == pytest.approx(0.0, abs=1e-9) for s in slippage)
+
+
+def test_env_and_backtester_agree_on_rebalance_slippage() -> None:
+    # S18: both call sites must request the same swapped imbalance from the
+    # same model for the same pre-rebalance position, target band and mark.
+    view = _flat_view()
+    config = SimConfig()
+    action = Action(action_type="rebalance", center_offset=0, width=10)
+
+    # Backtester: the default ±120-tick position is recentred at row 0.
+    ledger = run_backtest(_RebalanceEveryStep(width=10), view, config)
+    backtester_slippage = -float(ledger.equity_curve["slippage"][0])
+
+    # Environment: deploy the identical default initial position into a fresh
+    # pool engine, then run the same rebalance at the same mark.
+    engine = PoolEngine(
+        state=PoolState(
+            sqrt_price=_ENTRY_SQRT,
+            tick=Tick(ENTRY_TICK),
+            liquidity=2**80,
+            fee_growth_global_0=0.0,
+            fee_growth_global_1=0.0,
+            fee_tier_bps=_FEE_PIPS,
+            tick_spacing=TICK_SPACING,
+        ),
+        ticks={},
+    )
+    env = LpEnvironment(
+        view,
+        engine,
+        ReplayPriceProcess(view, 0, view.step_count()),
+        GasCostCalculator(config.gas),
+        ProportionalSlippageModel(),
+        config,
+    )
+    old = _initial_position()
+    env._position_id = env.pool_engine.open_position(
+        Tick(_DEFAULT_LOWER), Tick(_DEFAULT_UPPER), old.liquidity
+    )
+    env._position = env.pool_engine.positions[env._position_id]
+    gas_cost, env_slippage, executed = env._rebalance(
+        action, _ENTRY_SQRT, _ENTRY_PRICE, {"block_number": 0}
+    )
+
+    assert executed is True
+    assert gas_cost > 0.0
+    assert env_slippage == pytest.approx(backtester_slippage, rel=1e-12)
+    # Both equal the corrected formula on the same constructed position pair.
+    target = initial_deposit(
+        _ENTRY_SQRT,
+        _ENTRY_PRICE,
+        action.lower_tick(Tick(ENTRY_TICK), TickSpacing(TICK_SPACING)),
+        action.upper_tick(Tick(ENTRY_TICK), TickSpacing(TICK_SPACING)),
+        CAPITAL,
+        TickSpacing(TICK_SPACING),
+    )
+    swap_notional = abs(old.amount0(_ENTRY_SQRT) - target.amount0(_ENTRY_SQRT))
+    expected = swap_notional * (_FEE_PIPS / 1_000_000 + 5 / 10_000)
+    assert env_slippage == pytest.approx(expected, rel=1e-9)
 
 
 def test_rebalance_carries_equity_forward() -> None:
