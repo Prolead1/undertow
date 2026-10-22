@@ -89,6 +89,7 @@ def _calibrated_env(
     *,
     duration_days: int = 1,
     step_minutes: int = 10,
+    seed: int = 0,
 ) -> LpEnvironment:
     """A calibrated-mode env with a bounded, config-driven episode budget."""
     config = SimConfig(
@@ -96,6 +97,7 @@ def _calibrated_env(
             duration_days=duration_days, step_minutes=step_minutes
         ),
         price_mode=PriceMode.CALIBRATED,
+        seed=seed,
     )
     price_process = CalibratedPriceProcess(_mrsjd_params(), initial_price=3004.0)
     return LpEnvironment(
@@ -106,6 +108,22 @@ def _calibrated_env(
         slippage_model,
         config,
     )
+
+
+def _window_start(
+    view: MarketView,
+    seed: int,
+    *,
+    duration_days: int = 1,
+    step_minutes: int = 10,
+) -> int:
+    """Expected ``start_seq`` for a window seed, mirroring ``reset``'s call."""
+    episode = EpisodeConfig(duration_days=duration_days, step_minutes=step_minutes)
+    config_steps = (duration_days * 24 * 60) // step_minutes
+    start_seq, _end_seq = view.build_episode(
+        seed, max_steps=config_steps + 1, episode_config=episode
+    )
+    return int(start_seq)
 
 
 # ---------------------------------------------------------------------------
@@ -604,6 +622,98 @@ class TestSpacesAndReset:
         start_a = tiny_env._start_seq
         tiny_env.reset(seed=1)
         assert tiny_env._start_seq == start_a
+
+    def test_reset_without_seed_advances_window(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        env = _calibrated_env(tiny_market_view, mock_gas_model, mock_slippage_model)
+        window_starts = [_window_start(tiny_market_view, seed) for seed in (0, 1, 2)]
+        if len(set(window_starts)) < 3:
+            pytest.skip(
+                "tiny_market_view does not expose three distinct candidate "
+                "windows for seeds 0-2; resampling cannot be distinguished"
+            )
+
+        observation, _ = env.reset(seed=0)
+        assert env._start_seq == window_starts[0]
+        # Two no-seed resets (the SB3 auto-reset path) must move to the next
+        # window each time, and neither may replay the seeded window.
+        first_unseeded, _ = env.reset()
+        assert env._start_seq == window_starts[1]
+        second_unseeded, _ = env.reset()
+        assert env._start_seq == window_starts[2]
+        assert window_starts[1] != window_starts[0]
+        assert window_starts[2] not in (window_starts[0], window_starts[1])
+        assert not np.array_equal(first_unseeded, observation)
+        assert not np.array_equal(second_unseeded, first_unseeded)
+
+    def test_reset_without_seed_is_reproducible_from_a_seeded_start(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        env = _calibrated_env(tiny_market_view, mock_gas_model, mock_slippage_model)
+
+        def run_sequence() -> tuple[list[int], list[np.ndarray]]:
+            starts: list[int] = []
+            vectors: list[np.ndarray] = []
+            observation, _ = env.reset(seed=3)
+            starts.append(env._start_seq)
+            vectors.append(observation)
+            for _ in range(2):
+                observation, _ = env.reset()
+                starts.append(env._start_seq)
+                vectors.append(observation)
+            return starts, vectors
+
+        first_starts, first_vectors = run_sequence()
+        second_starts, second_vectors = run_sequence()
+        assert first_starts == [
+            _window_start(tiny_market_view, seed) for seed in (3, 4, 5)
+        ]
+        assert len(set(first_starts)) == 3
+        assert first_starts == second_starts
+        for first, second in zip(first_vectors, second_vectors, strict=True):
+            assert np.array_equal(first, second)
+
+    def test_reset_with_seed_returns_to_that_window(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        env = _calibrated_env(tiny_market_view, mock_gas_model, mock_slippage_model)
+        seeded_observation, _ = env.reset(seed=3)
+        seeded_start = env._start_seq
+        assert seeded_start == _window_start(tiny_market_view, 3)
+
+        for _ in range(4):
+            env.reset()
+        assert env._start_seq != seeded_start
+
+        observation, _ = env.reset(seed=3)
+        assert env._start_seq == seeded_start
+        assert np.array_equal(observation, seeded_observation)
+
+    def test_first_reset_without_seed_uses_config_seed(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        env = _calibrated_env(
+            tiny_market_view, mock_gas_model, mock_slippage_model, seed=11
+        )
+        assert env._base_seed == 11
+        assert env._episode_index == -1
+
+        _observation, _ = env.reset()
+        assert env._base_seed + env._episode_index == env.config.seed
+        assert env._start_seq == _window_start(tiny_market_view, 11)
 
 
 class TestStep:
