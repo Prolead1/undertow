@@ -28,6 +28,8 @@ EXPECTED_SURFACE: frozenset[str] = frozenset(
         "load_gas_feed",
         "load_regime_labels",
         "load_fee_growth",
+        # S19: Binance USDT-perp funding-rate tape (top-level sim-facing loader).
+        "load_funding",
         # -- Core / dataset / config --
         "Dataset",
         "DatasetManifest",
@@ -61,6 +63,7 @@ EXPECTED_SURFACE: frozenset[str] = frozenset(
         "GAS_SCHEMA",
         "REFERENCE_SCHEMA",
         "REGIME_SCHEMA",
+        "FUNDING_SCHEMA",
         "EVENT_TAPE_SCHEMA",
         "SCHEMA_REGISTRY",
         "SCHEMA_VERSION",
@@ -96,6 +99,7 @@ FORBIDDEN_NAMES: frozenset[str] = frozenset(
         "RpcFetcher",
         "GasFetcher",
         "ReferenceFetcher",
+        "FundingFetcher",
         "AbiFetcher",
     }
 )

@@ -57,6 +57,7 @@ STREAM_SOURCES: dict[str, str] = {
     ),
     "gas": "RPC ``eth_feeHistory``, base-fee only (ADR-006, ADR-005)",
     "reference": "Binance 1m klines — REST API and bulk monthly archive (T08)",
+    "funding": "Binance USDT-M futures fundingRate REST",
     "regime": "Derived in T12 from the cached ``reference`` feed (no network)",
     "event_tape": (
         "T11 aligned union of the log streams plus backward as-of joins of the "

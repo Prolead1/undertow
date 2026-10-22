@@ -1,7 +1,7 @@
 """Canonical pyarrow schemas for every ``undertow.data`` stream (T03).
 
 This module is the data contract (``CONTRACTS.md`` §4): the single place where column
-names, types, units, sign conventions and nullability are declared for all ten streams.
+names, types, units, sign conventions and nullability are declared for every stream.
 Seven other tasks (T05–T09, T11, T12) produce or consume tables that must conform to
 these schemas, so a mismatch is a loud ``SchemaViolationError`` at the boundary rather
 than a silent wrong number three tasks later.
@@ -172,6 +172,22 @@ _REFERENCE_UNITS: dict[str, str] = {
     ),
 }
 
+_FUNDING_UNITS: dict[str, str] = {
+    "funding_time": (
+        "Binance funding settlement time, every 8 h at 00:00/08:00/16:00 UTC "
+        "(timestamp[us])"
+    ),
+    "symbol": "perp symbol, e.g. 'ETHUSDT' (large_string)",
+    "funding_rate": "fraction per 8 h settlement, signed (float64)",
+    "mark_price": (
+        "perp mark price at settlement, USDT (float64); null when Binance omits it "
+        "(empty markPrice in the raw fundingRate response)"
+    ),
+    "is_gap_filled": (
+        "true when a missing 8 h settlement was forward-filled from the prior one (bool)"
+    ),
+}
+
 _REGIME_UNITS: dict[str, str] = {
     "timestamp": "end of the backward-looking window; the label applies at this time, UTC",
     "sigma_rv": "annualized realized vol over the lookback (float64)",
@@ -216,7 +232,7 @@ _TAPE_DERIVED_UNITS: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# The ten canonical schemas (CONTRACTS.md §4.1–§4.8).
+# The canonical schemas (CONTRACTS.md §4.1–§4.8 plus the S19 funding extension).
 # ---------------------------------------------------------------------------
 
 SWAP_SCHEMA: Final[pa.Schema] = _build_schema(
@@ -357,6 +373,18 @@ REGIME_SCHEMA: Final[pa.Schema] = _build_schema(
     _REGIME_UNITS,
 )
 
+FUNDING_SCHEMA: Final[pa.Schema] = _build_schema(
+    "funding",
+    [
+        pa.field("funding_time", pa.timestamp("us", tz="UTC"), nullable=False),
+        pa.field("symbol", pa.large_string(), nullable=False),
+        pa.field("funding_rate", pa.float64(), nullable=False),
+        pa.field("mark_price", pa.float64(), nullable=True),
+        pa.field("is_gap_filled", pa.bool_(), nullable=False),
+    ],
+    _FUNDING_UNITS,
+)
+
 EVENT_TAPE_SCHEMA: Final[pa.Schema] = _build_schema(
     "event_tape",
     _key_fields()
@@ -402,6 +430,7 @@ SCHEMA_REGISTRY: Final[dict[str, pa.Schema]] = {
     "gas": GAS_SCHEMA,
     "reference": REFERENCE_SCHEMA,
     "regime": REGIME_SCHEMA,
+    "funding": FUNDING_SCHEMA,
     "event_tape": EVENT_TAPE_SCHEMA,
 }
 
@@ -415,6 +444,7 @@ SORT_KEYS: Final[dict[str, tuple[str, ...]]] = {
     "gas": ("block_number",),
     "reference": ("symbol", "open_time"),
     "regime": ("timestamp",),
+    "funding": ("symbol", "funding_time"),
     "event_tape": ("block_number", "log_index"),
 }
 

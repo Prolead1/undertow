@@ -70,6 +70,7 @@ __all__ = [
     "GAS_SCHEMA",
     "REFERENCE_SCHEMA",
     "REGIME_SCHEMA",
+    "FUNDING_SCHEMA",
     "SCHEMA_REGISTRY",
     "SORT_KEYS",
     "encode_uint",
@@ -94,6 +95,8 @@ __all__ = [
     "load_gas_feed",
     "load_regime_labels",
     "load_fee_growth",
+    # S19: the Binance USDT-perp funding-rate tape (cost of carry for the sim's hedge leg).
+    "load_funding",
     # === ADR-013 extension (exact fee-growth replay for the backtester) ===
     # A deliberate, ADR-documented additive export: the sim reaches the exact
     # integer fee-growth engine through this facade, never through
@@ -136,6 +139,7 @@ from undertow.data.fixedpoint import (
 from undertow.data.loader import (
     load_dataset,
     load_fee_growth,
+    load_funding,
     load_gas_feed,
     load_reference_feed,
     load_regime_labels,
@@ -147,6 +151,7 @@ from undertow.data.schemas import (
     EVENT_TAPE_SCHEMA,
     FEE_GROWTH_SCHEMA,
     FLASH_SCHEMA,
+    FUNDING_SCHEMA,
     GAS_SCHEMA,
     MINT_SCHEMA,
     REFERENCE_SCHEMA,

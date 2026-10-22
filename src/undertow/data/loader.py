@@ -14,13 +14,16 @@ implementation.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
+import polars as pl
 import pyarrow as pa
 
 from undertow.data.config import DataConfig, EndpointConfig, RegimeConfig, load_config
 from undertow.data.pipeline import build
 from undertow.data.schemas import FEE_GROWTH_SCHEMA, SORT_KEYS
 from undertow.data.storage.manifest import read_manifest
+from undertow.data.storage.parquet import read_stream
 from undertow.data.transforms.align import Dataset
 
 
@@ -136,6 +139,24 @@ def load_regime_labels(config: DataConfig) -> pa.Table:
     """Load the regime labels (``REGIME_SCHEMA``), sorted by ``timestamp``."""
     dataset = load_dataset(config, streams=frozenset({"regime"}))
     return _sorted(dataset.require("regime"), "regime")
+
+
+def load_funding(config: DataConfig) -> pl.DataFrame:
+    """Load the Binance USDT-M perp funding feed (``FUNDING_SCHEMA``), sorted by the
+    canonical ``SORT_KEYS["funding"]`` = ``("symbol", "funding_time")``.
+
+    The S19 hedge leg's cost-of-carry tape: one row per 8 h settlement, gap-filled
+    and flagged (``is_gap_filled``), with the perp mark price nullable where Binance
+    omits it. Unlike the block-range loaders this does **not** go through
+    ``pipeline.build`` — funding is not a tape input — so it is read straight from
+    the parquet cache with T09's ``read_stream``. A dataset built before the funding
+    stream was pulled yields a typed, zero-row frame (not an error), matching
+    :func:`load_fee_growth`. Deterministic: two calls on the same cache return equal
+    frames.
+    """
+    table = read_stream(config.output_dir, "funding", pool=config.pool)
+    ordered = table.sort_by([(col, "ascending") for col in SORT_KEYS["funding"]])
+    return cast(pl.DataFrame, pl.from_arrow(ordered))
 
 
 def load_fee_growth(config: DataConfig) -> pa.Table:
