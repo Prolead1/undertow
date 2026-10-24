@@ -18,10 +18,18 @@ WETH for the pinned pools (~3000)"*. ``price_pool`` and ``price_reference`` are
 both in those units; a systematic 1e12-scale disagreement between them is the
 decimals bug that T11 test #9 exists to catch.
 
-The merge key is ``(block_number, log_index)`` and it **must be unique** in the
-tape. A duplicate means a fetcher paginated wrong; raising ``ValidationError``
-instead of silently de-duplicating keeps that bug loud (T05's boundary de-dup is
-T05's job). ``seq`` is the dense 0..N-1 step index the RL environment uses.
+The merge key is ``(block_number, log_index)`` and it **must** be unique in the
+tape. Within-stream duplicates are T05/T18's fetch-time job; a duplicate surviving
+to this module means a fetcher paginated wrong, so the residual guard raises
+``ValidationError`` instead of silently de-duplicating. The one deliberate
+exception is a **cross-stream** collision (a ``swap`` and a ``mint`` claiming the
+same key): the subgraph can return both branches of an orphaned fork for a short
+region, and exactly one row must be kept. :func:`_collapse_cross_stream_collisions`
+resolves those deterministically by the documented priority
+``mint > burn > swap > collect`` and warns. The collapse only touches keys whose rows
+carry **distinct** event types: a key that repeats an event type (a pagination bug)
+is left for the residual guard and still aborts. ``seq`` is the dense 0..N-1 step
+index the RL environment uses.
 
 This module performs no fetching and no disk I/O beyond what T09 provides. The gas stream
 is base-fee only (ADR-006): USD conversion happens on the tape via its ``price_reference``
@@ -99,6 +107,19 @@ _SRC_BLK_PREFIX = "_src_blk_"  # source *block number* of a fee-growth as-of joi
 # "interpolated_future" value: wanting one means you are about to look ahead.
 _FG_EXACT = "exact"
 _FG_STALE = "stale_prior"
+
+_COLLAPSE_KEY: tuple[str, ...] = ("block_number", "log_index")
+"""The tape's merge key (``CONTRACTS.md`` §4.0.1) — the cross-stream collision key."""
+
+_COLLAPSE_PRIORITY: Mapping[str, int] = {
+    EventType.MINT.value: 0,
+    EventType.BURN.value: 1,
+    EventType.SWAP.value: 2,
+    EventType.COLLECT.value: 3,
+}
+"""Survivor priority for a cross-stream ``(block_number, log_index)`` collision, best
+first: ``mint > burn > swap > collect`` (T18 addendum). Liquidity events beat flow
+events; the sampled canonical-chain collision was a mint. Lower value wins."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +206,62 @@ def _cast_stream_to_base(table: pa.Table, event_type: str) -> pa.Table:
     return base
 
 
+def _collapse_cross_stream_collisions(base: pa.Table) -> pa.Table:
+    """Collapse ``(block_number, log_index)`` collisions between *different* streams.
+
+    A subgraph reorg can leave both branches of an orphaned fork indexed, so a
+    ``swap`` and a ``mint``/``burn``/``collect`` claim one key. The tape admits exactly
+    one row, so keep the highest-priority event type per colliding key
+    (``mint > burn > swap > collect``, ``_COLLAPSE_PRIORITY``), drop the rest and emit
+    **one** ``WARNING`` with the collision/key counts and the first few keys.
+
+    Only keys whose rows carry **distinct** event types are collapsed. A key that
+    repeats an event type (a within-stream duplicate — a pagination bug the fetch
+    layer should have removed) is left untouched, so :func:`_assert_unique_keys`
+    aborts on it instead of this function silently de-duplicating the repeated type:
+    the priority defines an order *between* event types, not within one.
+
+    ``base`` is sorted by the merge key; the result is re-sorted so the caller can
+    stamp a dense ``seq``.
+    """
+    frame = _arrow_frame(base)
+    priority = pl.col("event_type").replace_strict(
+        _COLLAPSE_PRIORITY, return_dtype=pl.Int8
+    )
+    frame = frame.with_columns(
+        priority.alias("_priority"),
+        pl.col("event_type").n_unique().over(list(_COLLAPSE_KEY)).alias("_n_types"),
+        pl.len().over(list(_COLLAPSE_KEY)).alias("_n_rows"),
+    )
+    # ``_n_rows == _n_types``: every row at the key has a distinct event type.
+    # More rows than types means the key repeats a type (a within-stream duplicate)
+    # *and* collides across streams — leave that key alone for the residual guard.
+    resolvable = (pl.col("_n_types") > 1) & (pl.col("_n_rows") == pl.col("_n_types"))
+    collisions = frame.filter(resolvable)
+    if collisions.height == 0:
+        return base
+
+    winners = pl.col("_priority") == pl.col("_priority").min().over(
+        list(_COLLAPSE_KEY)
+    )
+    collapsed = frame.filter((pl.col("_n_types") <= 1) | ~resolvable | winners)
+    dropped = collisions.height - collapsed.filter(resolvable).height
+    colliding_keys = int(collisions.select(list(_COLLAPSE_KEY)).unique().height)
+    LOGGER.warning(
+        "build_event_tape: collapsed %d cross-stream %s collision(s) from an "
+        "orphaned subgraph fork, dropping %d row(s) (priority mint > burn > swap > "
+        "collect); first key(s): %s",
+        colliding_keys,
+        _COLLAPSE_KEY,
+        dropped,
+        collisions.select(list(_COLLAPSE_KEY)).unique(maintain_order=True).head(5).rows(),
+    )
+    collapsed = collapsed.drop(["_priority", "_n_types", "_n_rows"]).sort(
+        list(_COLLAPSE_KEY)
+    )
+    return collapsed.to_arrow().cast(_BASE_TAPE_SCHEMA)
+
+
 def _assert_unique_keys(block_numbers: list[int], log_indices: list[int], where: str) -> None:
     """Raise ``ValidationError`` if ``(block_number, log_index)`` is not strictly unique.
 
@@ -193,7 +270,9 @@ def _assert_unique_keys(block_numbers: list[int], log_indices: list[int], where:
     Same ``block`` + same ``log`` in a row of an adjacent equal block pair is a
     duplicate key. Raises with the offending keys listed — never a silent
     ``drop_duplicates`` (a duplicate means a fetcher paginated wrong, and swallowing
-    it hides a real bug).
+    it hides a real bug). This is the **residual** guard: cross-stream reorg
+    collisions are resolved by :func:`_collapse_cross_stream_collisions` first; this
+    fires on anything that survives that (same-stream duplicates, gas fan-out).
     """
     offending: list[tuple[int, int]] = []
     for i in range(1, len(block_numbers)):
@@ -213,9 +292,10 @@ def _assert_unique_keys(block_numbers: list[int], log_indices: list[int], where:
 
 
 def _build_base_tape(streams: Mapping[str, pa.Table]) -> pa.Table:
-    """Union the four log streams, sort by ``(block_number, log_index)``, assert the key
-    is unique, and stamp the dense ``seq``. Raises ``ValidationError`` listing the
-    offending keys on duplicates — never a silent ``drop_duplicates``."""
+    """Union the four log streams, sort by ``(block_number, log_index)``, collapse
+    cross-stream reorg collisions, assert the key is unique, and stamp the dense
+    ``seq``. A residual duplicate still raises ``ValidationError`` listing the
+    offending keys — never a silent ``drop_duplicates``."""
     parts: list[pa.Table] = []
     for event_type in _LOG_STREAMS:
         stream_schema = SCHEMA_REGISTRY[event_type.value]
@@ -235,6 +315,11 @@ def _build_base_tape(streams: Mapping[str, pa.Table]) -> pa.Table:
         .sort_by([("block_number", "ascending"), ("log_index", "ascending")])
         .select(list(_BASE_TAPE_COLUMNS))  # key columns + payload, in §4.8 order
     )
+
+    # T18: the subgraph can serve both branches of an orphaned fork, letting two
+    # different streams claim one key. Resolve those deterministically (and loudly)
+    # before the residual uniqueness guard; the within-stream case still aborts.
+    base = _collapse_cross_stream_collisions(base)
 
     _assert_unique_keys(
         base.column("block_number").to_pylist(),

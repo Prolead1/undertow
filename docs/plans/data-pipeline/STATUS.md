@@ -38,6 +38,15 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 - `adr/018-backtester-boundary-pool-state.md` — **accepted**: `RpcFetcher.pool_state_at` enumerates the pool's `tickBitmap` at each walk-forward boundary (`undertow-data pool-state`), stores it as the optional `fee_growth` stream, and `FeeGrowthReplay.from_snapshot` seeds the backtester's exact fee engine so it can replay a window that starts mid-lifecycle (the state the tape alone cannot reconstruct).
 - `adr/021-tick-based-crossing-selection.md` — **accepted**: `FeeGrowthTracker.apply_swap` now selects the initialized ticks to cross from the recorded `slot0` tick interval `(min_tick, max_tick]` rather than from the swap's price — a downward swap landing exactly on `boundary(T)` records `tick = T-1` while the price stays on the boundary, so a price rule missed the next upward crossing of `T` and corrupted active liquidity on the real tape (first at block 15,369,829; see ADR-021 for mainnet evidence).
 
+## Post-v1 data fixes
+
+| Task | State | Branch | PR | pytest | Reviewer | Notes |
+|---|---|---|---|---|---|---|
+| T17 liquidity-check null | merged | bug-data-liquidity-check-null | #93 | 1826 passed, 7 skipped, 94.20% cov | APPROVE | check skips on absent/all/partially-null swap liquidity; snapshot unblocked |
+| T18 thegraph reorg duplicates (fetch) | merged | bug-data-thegraph-reorg-duplicates | #95 | 1831 passed, 7 skipped, 94.23% cov | APPROVE | within-page + across-chunk dedup by largest id; pull no longer aborts |
+| T18 addendum (tape collapse) | pr-open | bug-data-tape-cross-stream-collapse | #96 | 1942 passed, 7 skipped, 94.42% cov | APPROVE (x4) | cross-stream `(block, log)` collisions collapse `mint > burn > swap > collect`; 0.05% tape builds |
+| T19 fork-region RPC repair | pr-open | bug-data-tape-cross-stream-collapse | #96 | n/a (one-off data repair) | n/a | 1,422-block fork span replaced with canonical RPC rows; 0 residual mismatches; tape 7,112,636 → 7,112,899 |
+
 ## All tasks complete — data module v1 merged 🎉
 
 T14 + T16 merged via PR #25. The sim-facing surface was later widened from T16's documented
