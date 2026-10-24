@@ -619,17 +619,61 @@ class LpEnvironment(gym.Env):
     def step(
         self, action_idx: int
     ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
-        """Advance one decision step.
+        """Advance one decision step, executing the action at the decision state.
 
         Returns ``(observation, reward, terminated, truncated, info)`` where
         ``reward`` is capital-normalized and ``info`` carries the full
         :class:`RewardBreakdown` under ``"reward_breakdown"`` (normalized) and
         ``"reward_breakdown_raw"`` (USDC).
+
+        Execution timing (ADR-031): the action is chosen from the observation
+        at the **decision state** -- the pool ``sqrt_price``/``tick``, mark
+        ``price``, tape row and time captured by :meth:`reset` or by the
+        previous step (the ``_last_mark_price``/``_last_tape_row``/
+        ``_last_at_time`` fields) -- and is executed **at that state before the
+        market advances**, so a rebalance prices gas/slippage from the decision
+        tape row.  The interval's events then accrue to the post-action
+        position, and the step measures fees/IL/equity/reward on that position.
+        This matches :class:`~undertow.sim.backtest.engine.BacktestEngine`'s
+        same-event execution and on-chain transaction latency (the old ordering
+        executed one full decision bar late).  A rebalance the position cannot
+        afford leaves the position and the decision baselines untouched; the
+        action no longer needs a next bar, so it executes even on the final
+        step (the episode then terminates).
         """
         if self._done:
             raise EnvError("step() called after the episode ended; call reset()")
         action = self.action_for_index(action_idx)
 
+        # 1. Capture the decision state (ADR-031).  ``_last_tape_row``,
+        # ``_last_mark_price`` and ``_last_il_total`` describe the state the
+        # observation was valued at; ``reset`` populates them from the entry
+        # bar, and each step leaves them at its own bar close.
+        decision_sqrt = self.pool_engine.state.sqrt_price
+        decision_price = self._last_mark_price
+        decision_row = self._last_tape_row
+
+        # 2. Execute the rebalance at the decision state, before advancing.
+        gas_cost = 0.0
+        slippage_cost = 0.0
+        rebalance_rejected = False
+        if action.action_type == "rebalance":
+            gas_cost, slippage_cost, executed = self._rebalance(
+                action, decision_sqrt, decision_price, decision_row
+            )
+            rebalance_rejected = not executed
+            if executed:
+                # The new position starts with zero uncollected fees and its
+                # own IL baseline at the decision mark (ADR-031; supersedes
+                # ADR-029's pre-action note).  A rejected rebalance keeps the
+                # previous step's baselines, which equal the decision state.
+                self._last_fees_usdc = 0.0
+                self._last_il_total = self._current_il_total(
+                    decision_sqrt, decision_price
+                )
+
+        # 3. Advance the market one interval; its events accrue to the
+        # post-action position.
         if self.is_replay:
             price, sqrt_price, at_time, tape_row, price_exhausted = (
                 self._advance_replay()
@@ -639,29 +683,16 @@ class LpEnvironment(gym.Env):
                 self._advance_calibrated()
             )
 
-        # Fees earned this step = growth in the position's uncollected fees.
-        fees_usdc_before = self._current_fees_usdc(price)
-        fees_earned = fees_usdc_before - self._last_fees_usdc
-        # The excess-vs-HODL step change is measured on the *pre-action*
-        # position, exactly as the backtester's ledger does (ADR-029), so the
-        # reward decomposition reconciles with ``excess_vs_hodl``.
-        il_change = self._current_il_total(sqrt_price, price) - self._last_il_total
-
-        gas_cost = 0.0
-        slippage_cost = 0.0
-        # A requested rebalance that cannot execute (the market is exhausted, or
-        # the trade cannot pay for itself) is reported as rejected so turnover
-        # counts match the backtester's decision log.
-        rebalance_rejected = action.action_type == "rebalance" and price_exhausted
-        if action.action_type == "rebalance" and not price_exhausted:
-            gas_cost, slippage_cost, executed = self._rebalance(
-                action, sqrt_price, price, tape_row
-            )
-            rebalance_rejected = not executed
-            # New position starts with zero uncollected fees.
-            fees_usdc_before = self._current_fees_usdc(price)
-        self._last_fees_usdc = fees_usdc_before
-        self._last_il_total = self._current_il_total(sqrt_price, price)
+        # 4. Measure the step on the post-action position over the interval.
+        # Fees earned = growth in the position's uncollected fees; the
+        # excess-vs-HODL change is the move in the fixed-benchmark IL level
+        # (ADR-029), which now starts at the decision mark after a rebalance.
+        fees_usdc = self._current_fees_usdc(price)
+        fees_earned = fees_usdc - self._last_fees_usdc
+        il_total = self._current_il_total(sqrt_price, price)
+        il_change = il_total - self._last_il_total
+        self._last_fees_usdc = fees_usdc
+        self._last_il_total = il_total
 
         position = self._position
         assert position is not None, "reset deploys a position before any step"

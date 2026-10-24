@@ -19,7 +19,7 @@ tracker).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -43,8 +43,10 @@ from undertow.sim.core.pool import PoolEngine, PoolState, TickState
 from undertow.sim.core.position import DEFAULT_DEC0, DEFAULT_DEC1, calc_sqrt_price_a
 from undertow.sim.env.lp_env import LpEnvironment
 from undertow.sim.env.observations import ObservationBuilder
+from undertow.sim.evaluate.protocol import action_to_index, observation_from_vector
+from undertow.sim.frictions import ProportionalSlippageModel, ReplayGasModel
 from undertow.sim.marketview import MarketView
-from undertow.sim.policies import HODLPolicy
+from undertow.sim.policies import HODLPolicy, TauResetPolicy
 from undertow.sim.prices.replay import ReplayPriceProcess
 from undertow.sim.types import (
     LookAheadError,
@@ -58,6 +60,7 @@ from undertow.sim.validation import (
     run_lookahead_probes,
     run_parity_check,
 )
+from undertow.sim.validation import parity as parity_module
 
 # ---------------------------------------------------------------------------
 # Purpose-built parity scenario
@@ -71,16 +74,50 @@ _PARITY_SWAP_AMOUNT1 = "-1"  # negligible WETH out (keeps one fee-bearing leg)
 _PARITY_START = datetime(2022, 1, 1, tzinfo=UTC)
 _PARITY_STEP = timedelta(minutes=10)
 
+#: Price path for the S22 rebalancing fixture.  The **first decision bar moves**
+#: (3000 -> 3002.1), so the suite exercises ADR-031 decision-time execution rather
+#: than the old one-bar-late path, and the 00:40 step change (3008 -> 3060)
+#: pushes the tick out of the initial ±120-tick band, triggering a genuine
+#: mid-episode ``TauResetPolicy`` recentre with a material swapped-imbalance
+#: slippage charge (~$186).  The remaining bars are quiet, so exactly one
+#: mid-episode rebalance executes and the fee/IL path is exercised after it.
+#: The first S22 attempt hand-picked a flat first bar (3000 -> 3000) so a
+#: one-bar-late simulator still agreed; this path cannot pass that way.
+_REBALANCE_PRICES: tuple[float, ...] = (
+    _PARITY_ENTRY_PRICE,
+    _PARITY_ENTRY_PRICE * 1.0007,
+    _PARITY_ENTRY_PRICE * 1.0017,
+    _PARITY_ENTRY_PRICE * 1.0027,
+    _PARITY_ENTRY_PRICE * 1.02,
+    _PARITY_ENTRY_PRICE * 1.021,
+    _PARITY_ENTRY_PRICE * 1.022,
+    _PARITY_ENTRY_PRICE * 1.023,
+)
+
 
 def _sqrt_x96(price: float) -> str:
     return str(price_to_sqrt_price_x96(Decimal(str(price)), DEFAULT_DEC0, DEFAULT_DEC1))
 
 
-def _parity_view() -> MarketView:
-    """A schema-valid, internally consistent replay window for parity."""
+def _parity_view(prices: Sequence[float] | None = None) -> MarketView:
+    """A schema-valid, internally consistent replay window for parity.
+
+    ``prices`` defaults to the S14 path (a 0.1 % rise per bar).  The S22
+    rebalancing fixture passes :data:`_REBALANCE_PRICES`, whose first decision
+    bar moves and whose mid-episode jump triggers a real recentre (see that
+    constant for why).
+    """
+    if prices is None:
+        # Human price rises -> raw tick falls -> a token0-in swap per event.
+        prices = [
+            _PARITY_ENTRY_PRICE * (1.0 + 0.001 * i) for i in range(_PARITY_STEPS)
+        ]
+    prices = [float(price) for price in prices]
+    if len(prices) != _PARITY_STEPS:
+        raise ValueError(
+            f"parity fixture needs {_PARITY_STEPS} prices, got {len(prices)}"
+        )
     times = [_PARITY_START + _PARITY_STEP * i for i in range(_PARITY_STEPS)]
-    # Human price rises -> raw tick falls -> a token0-in swap for every event.
-    prices = [_PARITY_ENTRY_PRICE * (1.0 + 0.001 * i) for i in range(_PARITY_STEPS)]
     entry_tick = int(price_to_tick(Decimal(str(prices[0])), DEFAULT_DEC0, DEFAULT_DEC1))
 
     tape_rows: list[dict[str, object]] = [
@@ -331,6 +368,41 @@ def parity_env(
 
 
 @pytest.fixture
+def rebalance_market_view() -> MarketView:
+    return _parity_view(_REBALANCE_PRICES)
+
+
+@pytest.fixture
+def rebalance_policy() -> TauResetPolicy:
+    return TauResetPolicy(120)
+
+
+@pytest.fixture
+def rebalance_ledger(
+    rebalance_market_view: MarketView,
+    parity_config: SimConfig,
+    rebalance_policy: TauResetPolicy,
+) -> BacktestLedger:
+    return run_backtest(rebalance_policy, rebalance_market_view, parity_config)
+
+
+@pytest.fixture
+def rebalance_env(
+    rebalance_market_view: MarketView,
+    parity_config: SimConfig,
+) -> LpEnvironment:
+    # Use the same friction models the backtester builds internally (the tape's
+    # per-block base fee through ``ReplayGasModel`` and the pinned proportional
+    # slippage model) so the gas/slippage series are directly comparable.
+    return _parity_env(
+        rebalance_market_view,
+        parity_config,
+        ReplayGasModel(rebalance_market_view, parity_config.gas),
+        ProportionalSlippageModel(),
+    )
+
+
+@pytest.fixture
 def tiny_backtest_fn(
     tiny_market_view: MarketView,
 ) -> Callable[[MarketView], BacktestLedger]:
@@ -568,6 +640,324 @@ class TestRunParityCheck:
             run_parity_check(
                 parity_env, parity_ledger, num_episodes=1, seeds=(0,), tolerance=0.0
             )
+
+
+# ---------------------------------------------------------------------------
+# S22 — rebalancing parity
+# ---------------------------------------------------------------------------
+
+
+class TestRebalancingParity:
+    """The S14 harness driven by a live policy, not just the no-op HOLD.
+
+    Revision 2 (ADR-031/S22): the fixture's first bar moves and a mid-episode
+    jump forces a genuine recentre, the guard compares the action **executed in
+    each numeric bucket**, and ``passed`` checks the per-step ``max|drift|`` so
+    a one-step execution shift cannot fake a pass.
+    """
+
+    def test_policy_none_is_hold_with_zero_gas_and_slippage(
+        self, parity_env: LpEnvironment, parity_ledger: BacktestLedger
+    ) -> None:
+        default = run_parity_check(
+            parity_env, parity_ledger, num_episodes=2, seeds=(0, 1)
+        )
+        explicit_hold = run_parity_check(
+            parity_env,
+            parity_ledger,
+            num_episodes=2,
+            seeds=(0, 1),
+            policy=HODLPolicy(),
+        )
+        assert default == explicit_hold
+        assert default.passed is True
+        assert default.gas_drift_mean == 0.0
+        assert default.gas_drift_std == 0.0
+        assert default.gas_drift_max == 0.0
+        assert default.slippage_drift_mean == 0.0
+        assert default.slippage_drift_std == 0.0
+        assert default.slippage_drift_max == 0.0
+
+    def test_rebalancing_parity_passes_over_three_seeds(
+        self,
+        rebalance_env: LpEnvironment,
+        rebalance_ledger: BacktestLedger,
+        rebalance_policy: TauResetPolicy,
+    ) -> None:
+        report = run_parity_check(
+            rebalance_env,
+            rebalance_ledger,
+            num_episodes=3,
+            seeds=(0, 1, 2),
+            policy=rebalance_policy,
+        )
+        assert report.passed is True, report
+        assert abs(report.fee_drift_mean) < report.tolerance
+        assert abs(report.il_drift_mean) < report.tolerance
+        assert abs(report.pnl_drift_mean) < report.tolerance
+        # Both worlds call the same friction models on the same inputs, so the
+        # gas/slippage drift is exactly zero -- including the per-step maximum,
+        # which is what catches a one-step execution shift (ADR-031/S22).
+        assert report.gas_drift_mean == 0.0
+        assert report.gas_drift_std == 0.0
+        assert report.gas_drift_max == 0.0
+        assert report.slippage_drift_mean == 0.0
+        assert report.slippage_drift_std == 0.0
+        assert report.slippage_drift_max == 0.0
+
+    def test_moving_path_triggers_a_genuine_mid_episode_rebalance(
+        self,
+        rebalance_env: LpEnvironment,
+        rebalance_ledger: BacktestLedger,
+        rebalance_policy: TauResetPolicy,
+    ) -> None:
+        """S22 T5: a real mid-episode recentre on the moving fixture passes.
+
+        The first bar moves (so the old one-bar-late simulator cannot agree by
+        construction) and the 00:40 step change triggers a rebalance with a
+        non-zero swapped imbalance, exercised end-to-end with max|drift| < 1e-6
+        gas/slippage agreement.
+        """
+        report = run_parity_check(
+            rebalance_env,
+            rebalance_ledger,
+            num_episodes=3,
+            seeds=(0, 1, 2),
+            policy=rebalance_policy,
+        )
+        assert report.passed is True, report
+        assert report.gas_drift_max < 1e-6
+        assert report.slippage_drift_max < 1e-6
+
+        # The backtester's decision log holds a rebalance after step 0 with a
+        # material slippage charge (a real swapped imbalance, not a no-op).
+        log = rebalance_ledger.decision_log
+        first_seq = int(log["step"][0])
+        mid_rebalances = log.filter(
+            (pl.col("action_type") == "rebalance") & (pl.col("step") > first_seq)
+        )
+        assert mid_rebalances.height == 1, log
+        mid_seq = int(mid_rebalances["step"][0])
+        assert float(mid_rebalances["slippage_paid"][0]) < -1.0
+
+        # The simulator, driven exactly as the harness drives it, executes the
+        # same mid-episode rebalance out of the same bucket.
+        decisions = self._sim_decisions(rebalance_env, rebalance_policy)
+        bucket = list(log["step"]).index(mid_seq)
+        step_number, action_type, slippage = decisions[bucket]
+        assert step_number > 1  # not the step-0 deployment
+        assert action_type == "rebalance"
+        assert slippage < -1.0
+
+    def test_rebalance_actually_executes(
+        self,
+        rebalance_env: LpEnvironment,
+        rebalance_ledger: BacktestLedger,
+        rebalance_policy: TauResetPolicy,
+    ) -> None:
+        # The backtester side records the executed rebalances...
+        backtest_rebalances = int(
+            (rebalance_ledger.decision_log["action_type"] == "rebalance").sum()
+        )
+        assert backtest_rebalances >= 2
+
+        # ... and the simulator side, driven exactly as the harness drives it,
+        # executes at least one too, so this cannot pass vacuously.
+        decisions = self._sim_decisions(rebalance_env, rebalance_policy)
+        assert sum(1 for _, kind, _ in decisions if kind == "rebalance") >= 2
+
+    @staticmethod
+    def _sim_decisions(
+        env: LpEnvironment, policy: TauResetPolicy
+    ) -> list[tuple[int, str, float]]:
+        """Drive one episode as the harness does; return executed decisions."""
+        policy.reset()
+        rng = np.random.default_rng(0)
+        vector, _info = env.reset(seed=0)
+        out: list[tuple[int, str, float]] = []
+        for _ in range(int(env.episode_length)):
+            observation = observation_from_vector(vector.tolist())
+            action = policy.act(observation, rng)
+            index = action_to_index(env, action)
+            vector, _reward, terminated, truncated, info = env.step(index)
+            raw = info["reward_breakdown_raw"]
+            out.append(
+                (
+                    int(info["step_in_episode"]),
+                    str(info["action_type"]),
+                    float(raw["slippage"]),
+                )
+            )
+            if terminated or truncated:
+                break
+        return out
+
+    def test_divergent_executed_actions_raise_naming_the_bucket(
+        self,
+        rebalance_env: LpEnvironment,
+        rebalance_ledger: BacktestLedger,
+        rebalance_policy: TauResetPolicy,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """S22 T7: the guard compares executed actions per bucket, by index.
+
+        A live policy always re-runs the backtester, so the corruption is
+        injected into the re-run (monkeypatched ``run_backtest``) rather than
+        into the supplied ledger.
+        """
+        log = rebalance_ledger.decision_log
+        first_seq = int(log["step"][0])
+        mid_seq = int(
+            log.filter(
+                (pl.col("action_type") == "rebalance") & (pl.col("step") > first_seq)
+            )["step"][0]
+        )
+        bucket = list(log["step"]).index(mid_seq)
+
+        real = parity_module.run_backtest
+
+        def corrupted(*args: object, **kwargs: object) -> BacktestLedger:
+            ledger = real(*args, **kwargs)  # type: ignore[arg-type]
+            return replace(
+                ledger,
+                decision_log=ledger.decision_log.with_columns(
+                    pl.when(pl.col("step") == mid_seq)
+                    .then(pl.lit("hold"))
+                    .otherwise(pl.col("action_type"))
+                    .alias("action_type")
+                ),
+            )
+
+        monkeypatch.setattr(parity_module, "run_backtest", corrupted)
+        with pytest.raises(ParityError, match=f"bucket {bucket}"):
+            run_parity_check(
+                rebalance_env,
+                rebalance_ledger,
+                num_episodes=1,
+                seeds=(0,),
+                policy=rebalance_policy,
+            )
+
+    def test_live_policy_ignores_the_supplied_ledger(
+        self,
+        rebalance_env: LpEnvironment,
+        rebalance_ledger: BacktestLedger,
+        rebalance_policy: TauResetPolicy,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """S22 provenance: a live policy always re-runs the backtester.
+
+        A same-window ledger whose policy name/config hash would have been
+        trusted by the first attempt must be ignored, not reused; the re-run is
+        the only source of the backtester series.
+        """
+        mismatched = replace(
+            rebalance_ledger, policy_name="hodl", config_hash="deadbeefdeadbeef"
+        )
+        calls: list[str] = []
+        real = parity_module.run_backtest
+
+        def recording(policy: object, view: MarketView, config: SimConfig) -> BacktestLedger:
+            calls.append(policy.name)  # type: ignore[attr-defined]
+            return real(policy, view, config)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(parity_module, "run_backtest", recording)
+        report = run_parity_check(
+            rebalance_env,
+            mismatched,
+            num_episodes=1,
+            seeds=(0,),
+            policy=rebalance_policy,
+        )
+        assert calls == [rebalance_policy.name]
+        assert report.passed is True, report
+
+    def test_one_step_shift_fails_even_though_the_mean_cancels(
+        self,
+        rebalance_env: LpEnvironment,
+        rebalance_ledger: BacktestLedger,
+        rebalance_policy: TauResetPolicy,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """S22 T6: a one-bucket execution shift must FAIL, not false-pass.
+
+        Rolling the backtester's gas/slippage series one bucket moves the spike
+        to the neighbouring step; the means cancel to ~0 (the first attempt's
+        ``passed`` compared means only and returned True) while the per-step
+        maxima expose the shift.
+        """
+        real = parity_module._per_step_backtest
+
+        def shifted(*args: object, **kwargs: object) -> tuple[
+            list[float], list[float], list[float], list[float], list[float]
+        ]:
+            fees, il, pnl, gas, slippage = real(*args, **kwargs)  # type: ignore[arg-type]
+            return fees, il, pnl, gas[-1:] + gas[:-1], slippage[-1:] + slippage[:-1]
+
+        monkeypatch.setattr(parity_module, "_per_step_backtest", shifted)
+        report = run_parity_check(
+            rebalance_env,
+            rebalance_ledger,
+            num_episodes=1,
+            seeds=(0,),
+            policy=rebalance_policy,
+        )
+        assert report.passed is False
+        # The mean genuinely cancels: it is the per-step maximum that fails.
+        assert abs(report.gas_drift_mean) <= report.tolerance
+        assert abs(report.slippage_drift_mean) <= report.tolerance
+        assert report.gas_drift_max > report.tolerance
+        assert report.slippage_drift_max > report.tolerance
+
+
+class TestExecutedDecisionGuard:
+    """The per-bucket executed-action guard's error branches (S22 T9).
+
+    These exercise the ``policy=None`` HOLD path, which reuses the supplied
+    ledger, so the corruptions land in the decision log the guard reads.
+    """
+
+    def test_rejects_a_decision_log_step_outside_the_window(
+        self, parity_env: LpEnvironment, parity_ledger: BacktestLedger
+    ) -> None:
+        first_seq = int(parity_ledger.decision_log["step"][0])
+        corrupted = replace(
+            parity_ledger,
+            decision_log=parity_ledger.decision_log.with_columns(
+                pl.when(pl.col("step") == first_seq)
+                .then(pl.lit(999_999))
+                .otherwise(pl.col("step"))
+                .alias("step")
+            ),
+        )
+        with pytest.raises(ParityError, match="outside the episode window"):
+            run_parity_check(parity_env, corrupted, num_episodes=1, seeds=(0,))
+
+    def test_rejects_duplicate_decisions_in_one_bucket(
+        self, parity_env: LpEnvironment, parity_ledger: BacktestLedger
+    ) -> None:
+        # The same decision logged twice at one timestamp buckets to one step.
+        duplicated = replace(
+            parity_ledger,
+            decision_log=pl.concat(
+                [parity_ledger.decision_log, parity_ledger.decision_log.head(1)]
+            ),
+        )
+        with pytest.raises(ParityError, match="more than one executed decision"):
+            run_parity_check(parity_env, duplicated, num_episodes=1, seeds=(0,))
+
+    def test_rejects_a_bucket_with_no_backtester_decision(
+        self, parity_env: LpEnvironment, parity_ledger: BacktestLedger
+    ) -> None:
+        first_seq = int(parity_ledger.decision_log["step"][0])
+        dropped = replace(
+            parity_ledger,
+            decision_log=parity_ledger.decision_log.filter(
+                pl.col("step") != first_seq
+            ),
+        )
+        with pytest.raises(ParityError, match="no backtester decision in sim bucket 0"):
+            run_parity_check(parity_env, dropped, num_episodes=1, seeds=(0,))
 
 
 # ---------------------------------------------------------------------------

@@ -981,6 +981,37 @@ class TestInitialDeployment:
 # ---------------------------------------------------------------------------
 
 
+class _RecordingGasModel:
+    """A gas model that records the decision context it is priced from.
+
+    Returns a small fixed USDC cost (the tests pin the decision *row* the env
+    selected, not the cost arithmetic, which ``test_frictions.py`` owns).
+    """
+
+    def __init__(self, cost: float = 7.0) -> None:
+        self.cost = float(cost)
+        self.calls: list[tuple[str, int, int, int, float]] = []
+
+    def gas_cost_usdc(
+        self,
+        action_type: str,
+        block_number: int,
+        base_fee_per_gas_wei: int,
+        priority_fee_p50_wei: int,
+        eth_usd_price: float,
+    ) -> float:
+        self.calls.append(
+            (
+                str(action_type),
+                int(block_number),
+                int(base_fee_per_gas_wei),
+                int(priority_fee_p50_wei),
+                float(eth_usd_price),
+            )
+        )
+        return self.cost
+
+
 class _ConstantPriceProcess:
     """A deterministic, unbounded price process for equity-continuity tests."""
 
@@ -1148,14 +1179,16 @@ class TestEquityContinuity:
         assert rebalance_info["equity"] == pytest.approx(
             equity_before + raw["pnl_net"], abs=1e-6
         )
-        # The old position's collected fees are not silently dropped: they are
-        # the fees accrued on every prior step (ADR-019: a step with no price
-        # movement has no segment and accrues nothing, so the constant-price
-        # rebalance step contributes zero on top of the hold step).
+        # The old position's collected fees are not silently dropped: under
+        # ADR-031 the rebalance executes at the decision state and collects the
+        # fees accrued through the hold step.  The rebalance step's own interval
+        # then accrues on the new position (zero at the constant price), so it
+        # is reported separately rather than added to ``collected``.
         hold_fees = hold_info["reward_breakdown_raw"]["fees"]
         assert rebalance_info["collected_fees_usdc"] == pytest.approx(
-            hold_fees + raw["fees"], rel=1e-6, abs=1e-9
+            hold_fees, rel=1e-6, abs=1e-9
         )
+        assert raw["fees"] == pytest.approx(0.0, abs=1e-12)
 
     def test_reward_measures_excess_vs_fixed_initial_hodl(
         self, tiny_market_view: MarketView, mock_gas_model: object,
@@ -1204,7 +1237,10 @@ class TestEquityContinuity:
         assert obs.il_vs_hodl == pytest.approx(fixed_basket)
         assert obs.il_vs_hodl != pytest.approx(own_basket)
 
-        price = prices[2]  # the rebalance step: hold(3004), hold(3010), rebalance(3016)
+        # ADR-031 marks the rebalance step at its post-advance bar: the action
+        # executes at 3010, then the step advances and values the position at
+        # 3016.
+        price = prices[2]
         _, sqrt, _ = human_price_to_triplet(price)
         expected = env._position.value(sqrt, price) - initial.hodl_value(
             env._entry_sqrt, env._entry_price, price
@@ -1312,6 +1348,131 @@ class TestEquityContinuity:
         assert reject_env._last_il_total == hold_env._last_il_total
         assert reject_env._collected_fees_usdc == hold_env._collected_fees_usdc
         assert reject_env._last_fees_usdc == hold_env._last_fees_usdc
+
+
+class TestDecisionTimeExecution:
+    """ADR-031/S22 T1-T3: the action executes at the decision state it observed.
+
+    The old ordering advanced the market first and executed one decision bar
+    late, so a first-step rebalance centred on the *next* bar's tick and a
+    mid-episode rebalance centred on the following bar's price.
+    """
+
+    @staticmethod
+    def _calibrated_test_env(
+        tiny_market_view: MarketView,
+        price_process: object,
+        gas_model: object,
+        slippage_model: object,
+    ) -> LpEnvironment:
+        return LpEnvironment(
+            tiny_market_view,
+            _fresh_pool_engine(),
+            price_process,
+            gas_model,
+            slippage_model,
+            SimConfig(
+                episode=EpisodeConfig(duration_days=1, step_minutes=10),
+                price_mode=PriceMode.CALIBRATED,
+            ),
+        )
+
+    def test_first_step_rebalance_executes_at_the_entry_price(
+        self,
+        tiny_market_view: MarketView,
+        mock_slippage_model: object,
+    ) -> None:
+        """S22 T1: a step-0 rebalance uses the entry tick, not the next bar's.
+
+        The first advance moves to 4000 (hundreds of ticks away), so the old
+        one-bar-late execution would have centred the band there.  Gas must
+        come from the entry decision row, not the advanced row.
+        """
+        gas_model = _RecordingGasModel()
+        env = self._calibrated_test_env(
+            tiny_market_view,
+            _SequencePriceProcess([4000.0]),
+            gas_model,
+            mock_slippage_model,
+        )
+        _obs, reset_info = env.reset(seed=0)
+        entry_tick = int(reset_info["tick"])
+        entry_row = env._last_tape_row
+        assert entry_row  # T3: reset populates the decision state
+        assert entry_row["block_number"] == env.market_view.tape_at(
+            env._start_seq
+        )["block_number"]
+
+        action = Action(action_type="rebalance", center_offset=0, width=2)
+        index = env._action_lookup.index(action)
+        _, _, _, _, info = env.step(index)
+
+        spacing = TickSpacing(int(env.config.episode.tick_spacing))
+        position = env.pool_engine.positions[env.position_id]
+        assert position.tick_lower == action.lower_tick(Tick(entry_tick), spacing)
+        assert position.tick_upper == action.upper_tick(Tick(entry_tick), spacing)
+        # The market did advance, so the entry tick and the executed range are
+        # distinguishable from the old (next-bar) behaviour.
+        assert env.pool_engine.state.tick != Tick(entry_tick)
+
+        # The rebalance priced gas from the entry decision row's block.
+        assert len(gas_model.calls) == 1
+        gas_action, gas_block, *_ = gas_model.calls[0]
+        assert gas_action == "rebalance"
+        assert gas_block == int(entry_row["block_number"])
+        assert info["reward_breakdown_raw"]["gas"] == pytest.approx(-gas_model.cost)
+
+    def test_mid_episode_rebalance_executes_at_the_decision_price(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """S22 T2: a mid-episode rebalance centres on the decision mark.
+
+        The step change 3010 -> 3070 happens *after* the decision, so the old
+        ordering would have opened the range around 3070's tick.
+        """
+        env = self._calibrated_test_env(
+            tiny_market_view,
+            _SequencePriceProcess([3004.0, 3010.0, 3070.0]),
+            mock_gas_model,
+            mock_slippage_model,
+        )
+        env.reset(seed=0)
+        env.step(0)  # decision at entry -> mark 3004
+        env.step(0)  # decision at 3004 -> mark 3010
+        decision_tick = Tick(env.pool_engine.state.tick)
+        assert float(tick_to_price(int(decision_tick), 6, 18)) == pytest.approx(
+            3010.0, rel=1e-3
+        )
+
+        action = Action(action_type="rebalance", center_offset=0, width=2)
+        index = env._action_lookup.index(action)
+        env.step(index)  # decision at 3010 -> mark 3070
+
+        spacing = TickSpacing(int(env.config.episode.tick_spacing))
+        position = env.pool_engine.positions[env.position_id]
+        assert position.tick_lower == action.lower_tick(decision_tick, spacing)
+        assert position.tick_upper == action.upper_tick(decision_tick, spacing)
+        # The range's centre is the decision mark, not the post-advance mark.
+        assert env.pool_engine.state.tick != decision_tick
+
+    def test_reset_populates_the_decision_state(
+        self, tiny_env: LpEnvironment
+    ) -> None:
+        """S22 T3: ``_last_tape_row``/time/mark are set before the first step.
+
+        The old ``reset`` left ``_last_tape_row`` empty until the first advance,
+        so a first-step rebalance would have priced gas from an empty row.
+        """
+        _obs, info = tiny_env.reset(seed=3)
+        assert tiny_env._last_tape_row
+        assert tiny_env._last_tape_row == tiny_env.market_view.tape_at(
+            tiny_env._start_seq
+        )
+        assert tiny_env._last_at_time == info["timestamp"]
+        assert tiny_env._last_mark_price == pytest.approx(float(info["price"]))
 
 
 class TestRebalanceSwapNotional:
@@ -1483,11 +1644,17 @@ class TestValidationAndExhaustion:
         with pytest.raises(EnvError):
             env.step(0)
 
-    def test_rebalance_at_price_exhaustion_is_reported_rejected(
+    def test_rebalance_at_price_exhaustion_executes_at_the_decision_price(
         self, tiny_market_view: MarketView, mock_gas_model: object,
         mock_slippage_model: object,
     ) -> None:
-        """A rebalance the exhausted market skips did not execute: no turnover."""
+        """ADR-031: the action no longer needs a next bar, so it executes.
+
+        The old ordering decided on the (missing) next bar: an exhausted market
+        skipped the rebalance and reported it rejected.  The action now executes
+        at the decision state first and the episode then terminates, so the
+        turnover is real and gas is charged -- matching the backtester.
+        """
         config = SimConfig(episode=EpisodeConfig(duration_days=1, step_minutes=10))
         env = LpEnvironment(
             tiny_market_view,
@@ -1499,13 +1666,18 @@ class TestValidationAndExhaustion:
         )
         env.reset(seed=0)
         env.step(0)
+        first_id = env.position_id
+        assert first_id is not None
+        first_lower = env.pool_engine.positions[first_id].tick_lower
         rebalance = Action(action_type="rebalance", center_offset=0, width=1)
         index = env._action_lookup.index(rebalance)
         _, _, terminated, _, info = env.step(index)
         assert terminated is True
-        assert info["rebalance_rejected"] is True
-        assert info["action_type"] == "rebalance_rejected"
-        assert info["reward_breakdown_raw"]["gas"] == 0.0
+        assert info["action_type"] == "rebalance"
+        assert "rebalance_rejected" not in info
+        assert info["reward_breakdown_raw"]["gas"] < 0.0
+        assert env.position_id != first_id
+        assert info["tick_lower"] != first_lower
 
     def test_exhaustion_fallback_marks_at_the_last_price(
         self, tiny_market_view: MarketView, mock_gas_model: object,
@@ -1939,11 +2111,15 @@ class TestExternalPoolSeeding:
         raw_before, _ = env.pool_engine.position_fees(env.position_id)
         assert raw_before > 0.0
 
-        # A rebalance collects every uncollected fee (prior steps + this step's)
-        # and redeploys a fresh position with zero uncollected fees.
+        # ADR-031: the rebalance executes at the decision state, so it collects
+        # the fees accrued through the two prior steps.  The step's own interval
+        # then accrues to the *new* position -- zero here because the recentred
+        # band sits out of range, so the old "collected = prior + this step"
+        # identity no longer applies.
         _, _, _, _, rebalance_info = env.step(1)
         collected = float(rebalance_info["collected_fees_usdc"])
         this_step = float(rebalance_info["reward_breakdown_raw"]["fees"])
-        assert collected == pytest.approx(fees_total + this_step, rel=1e-9, abs=1e-9)
+        assert collected == pytest.approx(fees_total, rel=1e-9, abs=1e-9)
+        assert this_step == 0.0
         raw_after, _ = env.pool_engine.position_fees(env.position_id)
         assert raw_after == 0.0
