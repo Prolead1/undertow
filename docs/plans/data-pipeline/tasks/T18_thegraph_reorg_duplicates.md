@@ -82,7 +82,46 @@ fake-transport pattern).
   in `data/cache/eth_usdc_500`). Report the duplicate count and the final row
   counts per stream.
 
+## Addendum (cross-stream collisions in `build_event_tape`)
+
+The 0.05 % snapshot then fails at the tape union:
+
+```
+Validation error: build_event_tape: union of the four log streams: duplicate merge keys
+... 16 distinct offending key(s), the first is (block_number=16675039, log_index=2)
+```
+
+The subgraph kept **both branches of an orphaned fork** for a ~2 100-block region
+(block 16 675 039 ≈ 2023-02-21, verified: 7/12 sampled blocks in that region do
+not match the canonical chain from `eth_getLogs`). A `swap` and a `mint`/`burn`
+can therefore claim the same `(block_number, log_index)`. The RPC route cannot
+replace them (the pinned provider's free tier caps `eth_getLogs` at 10 blocks).
+
+The corrupted region is in the **train** split; the eval view seeds from the
+2024-01-01 boundary snapshot after it, so eval results are unaffected. For the
+train split the impact is ~0.017 % of events.
+
+### What to build
+
+In `_build_base_tape` (`src/undertow/data/transforms/align.py`), replace the
+`_assert_unique_keys` abort for cross-stream collisions with a **deterministic
+collapse**: keep one row per `(block_number, log_index)` using the documented
+priority `mint > burn > swap > collect` (liquidity events over flow events; the
+sampled canonical collisions were mints), drop the rest, and emit one `WARNING`
+with the count and the first few keys. `_assert_unique_keys` keeps its abort for
+any residual duplicate the collapse cannot resolve. Stamp `seq` after the
+collapse so the tape is dense.
+
+### Tests
+
+1. A union with a cross-stream collision (swap + mint at one key) → one row
+   survives, the mint wins, a warning is emitted, no exception.
+2. A union with no collisions → unchanged (same rows, same order, no warning).
+3. The `seq` column is dense (`0..N-1`) after a collapse.
+4. Existing align/tape tests pass untouched.
+
 ## Out of scope
 
-- Switching the 0.05 % pull to the RPC route (expensive).
+- Switching the 0.05 % pull to the RPC route (the free tier cannot; a paid plan
+  or a targeted ~210-call repair of the corrupted region is a separate task).
 - Any change to `EVENT_TAPE_SCHEMA` or the tape's key.

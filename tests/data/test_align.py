@@ -2,7 +2,8 @@
 
 Covers CONTRACTS.md §6.2 end to end on ``tiny_dataset()`` (``tests/data/conftest.py``,
 the shared factory this task owns): the four-stream union + dense ``seq``, the unique-key
-guarantee (a duplicate raises ``ValidationError``, never a silent de-dup), null-vs-zero
+guarantee (a residual duplicate raises ``ValidationError``; a cross-stream reorg
+collision collapses by deterministic priority — T18), null-vs-zero
 applicability, the backward-only as-of joins (reference, regime, fee-growth globals), the
 **exact** gas equi-join, the price-orientation guard against the 1e12 decimals bug,
 ``assert_no_lookahead`` in **both** directions (it must fire on a forward join and pass on
@@ -17,6 +18,8 @@ handled the right way, because a guard that never fires is not a guard.
 from __future__ import annotations
 
 import dataclasses
+import logging
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -107,32 +110,293 @@ def test_merge_shape_seq_and_ordering() -> None:
     assert all(keys[i] < keys[i + 1] for i in range(len(keys) - 1))
 
 
-def test_duplicate_merge_key_raises_no_silent_dedup() -> None:
-    """A duplicate (block_number, log_index) across the union raises ValidationError
-    naming the key; the rows are never silently dropped."""
+def _collide(
+    streams: Mapping[str, pa.Table], winner: str, loser: str
+) -> dict[str, pa.Table]:
+    """Move ``loser``'s first row onto ``winner``'s first key — a synthetic fork.
+
+    The loser keeps its payload (tx hash, amounts); only the tape's merge key and
+    timestamp change, so the resulting union is exactly the shape a subgraph reorg
+    leaves behind: two different streams at one ``(block_number, log_index)``.
+    """
+    streams = dict(streams)
+    winner_row = streams[winner].to_pylist()[0]
+    loser_rows = streams[loser].to_pylist()
+    loser_rows[0]["block_number"] = winner_row["block_number"]
+    loser_rows[0]["log_index"] = winner_row["log_index"]
+    loser_rows[0]["block_timestamp"] = winner_row["block_timestamp"]
+    streams[loser] = pa.Table.from_pylist(loser_rows, schema=SCHEMA_REGISTRY[loser])
+    return streams
+
+
+def _align_warning_messages(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """WARNING records emitted by this module (same shape as the fetcher tests)."""
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "undertow.data.transforms.align" and r.levelno == logging.WARNING
+    ]
+
+
+def test_cross_stream_collision_collapses_to_mint(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """T18 addendum: a swap and a mint sharing ``(block_number, log_index)`` — the
+    orphaned-fork artifact — collapse onto the mint (liquidity over flow), emit one
+    WARNING naming the key, and never raise."""
     data = build_tiny_dataset()
-    streams = dict(data.streams)
-    mint = streams["mint"]
+    mint = data.streams["mint"]
     target_block = int(mint.column("block_number")[0].as_py())
     target_log = int(mint.column("log_index")[0].as_py())
+    mint_owner = mint.column("owner")[0].as_py()
+    streams = _collide(data.streams, "mint", "swap")
 
-    # Rewrite the swap rows so the first one collides with the mint's key.
-    swap = streams["swap"]
-    flat = swap.to_pylist()
-    flat[0]["block_number"] = target_block
-    flat[0]["log_index"] = target_log
-    flat[0]["block_timestamp"] = mint.column("block_timestamp")[0].as_py()
-    swap2 = pa.Table.from_pylist(flat, schema=SCHEMA_REGISTRY["swap"])
-    streams["swap"] = swap2
+    with caplog.at_level(logging.WARNING, logger="undertow.data.transforms.align"):
+        tape = build_event_tape(
+            streams, pool=data.pool, gas=data.gas, reference=data.reference,
+            regime=data.regime, fee_growth=data.fee_growth,
+        )
 
+    rows = [
+        i
+        for i in range(tape.num_rows)
+        if tape.column("block_number")[i].as_py() == target_block
+        and tape.column("log_index")[i].as_py() == target_log
+    ]
+    assert len(rows) == 1, "the collapse must leave exactly one row per merge key"
+    survivor = rows[0]
+    assert tape.column("event_type")[survivor].as_py() == "mint"
+    assert tape.column("owner")[survivor].as_py() == mint_owner
+    assert tape.num_rows == int(data.physical_constants["n_events"]) - 1
+
+    warnings = _align_warning_messages(caplog)
+    assert len(warnings) == 1, warnings
+    message = warnings[0]
+    assert "collapsed 1 cross-stream" in message
+    assert f"({target_block}, {target_log})" in message
+    assert "dropping 1 row(s)" in message
+    assert "mint > burn > swap > collect" in message
+
+
+@pytest.mark.parametrize(
+    ("winner", "loser"),
+    [("mint", "burn"), ("burn", "swap"), ("swap", "collect")],
+)
+def test_cross_stream_priority_is_mint_burn_swap_collect(
+    winner: str, loser: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The documented priority is a total order: each adjacent pair crowns the
+    higher-priority event type and drops the lower one."""
+    data = build_tiny_dataset()
+    streams = _collide(data.streams, winner, loser)
+    winner_row = streams[winner].to_pylist()[0]
+
+    with caplog.at_level(logging.WARNING, logger="undertow.data.transforms.align"):
+        tape = build_event_tape(
+            streams, pool=data.pool, gas=data.gas, reference=data.reference,
+            regime=data.regime, fee_growth=data.fee_growth,
+        )
+
+    rows = [
+        i
+        for i in range(tape.num_rows)
+        if tape.column("block_number")[i].as_py() == winner_row["block_number"]
+        and tape.column("log_index")[i].as_py() == winner_row["log_index"]
+    ]
+    assert len(rows) == 1
+    assert tape.column("event_type")[rows[0]].as_py() == winner
+    assert _align_warning_messages(caplog)
+
+
+def test_cross_stream_collision_keeps_residual_guard_for_same_stream_dups() -> None:
+    """The priority resolves *cross*-stream collisions only: two rows of the same
+    type at one key (a pagination bug the fetch layer must have removed) still abort
+    via ``_assert_unique_keys``."""
+    data = build_tiny_dataset()
+    mint_rows = data.streams["mint"].to_pylist()
+    duplicate = dict(mint_rows[0])
+    duplicate["owner"] = "0x" + "1" * 40
+    streams = dict(data.streams)
+    streams["mint"] = pa.Table.from_pylist(
+        [*mint_rows, duplicate], schema=SCHEMA_REGISTRY["mint"]
+    )
+
+    target_block = int(mint_rows[0]["block_number"])
+    target_log = int(mint_rows[0]["log_index"])
     with pytest.raises(ValidationError) as ei:
         build_event_tape(
             streams, pool=data.pool, gas=data.gas, reference=data.reference,
             regime=data.regime, fee_growth=data.fee_growth,
         )
-    msg = str(ei.value)
-    assert f"block_number={target_block}" in msg
-    assert f"log_index={target_log}" in msg
+    message = str(ei.value)
+    assert "duplicate merge keys" in message
+    assert f"block_number={target_block}" in message
+    assert f"log_index={target_log}" in message
+
+
+def test_mixed_collision_with_repeated_losing_type_still_aborts(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A key that mixes a cross-stream collision with a within-stream duplicate
+    (two swaps + one mint) must not let the repeated losing type be collapsed away
+    silently: the key is left to ``_assert_unique_keys`` and aborts with no
+    collapse warning."""
+    data = build_tiny_dataset()
+    swap_rows = data.streams["swap"].to_pylist()
+    mint_row = data.streams["mint"].to_pylist()[0]
+    duplicate = dict(swap_rows[0])
+    duplicate["tx_hash"] = "0x" + "2" * 64
+    for row in (swap_rows[0], duplicate):
+        row["block_number"] = mint_row["block_number"]
+        row["log_index"] = mint_row["log_index"]
+        row["block_timestamp"] = mint_row["block_timestamp"]
+    streams = dict(data.streams)
+    streams["swap"] = pa.Table.from_pylist(
+        [*swap_rows, duplicate], schema=SCHEMA_REGISTRY["swap"]
+    )
+
+    with caplog.at_level(logging.WARNING, logger="undertow.data.transforms.align"):
+        with pytest.raises(ValidationError, match="duplicate merge keys"):
+            build_event_tape(
+                streams, pool=data.pool, gas=data.gas, reference=data.reference,
+                regime=data.regime, fee_growth=data.fee_growth,
+            )
+    assert _align_warning_messages(caplog) == []
+
+
+def test_resolvable_collision_beside_a_mixed_key_collapses_then_aborts(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``~resolvable`` must keep only the mixed key: a pure collision elsewhere is
+    still collapsed (and warned about) before the residual guard aborts on the mixed
+    key."""
+    data = build_tiny_dataset()
+    streams = _collide(data.streams, "mint", "swap")
+
+    # A second key that repeats an event type: burn[0] + burn[1] + swap[1].
+    burn_rows = streams["burn"].to_pylist()
+    swap_rows = streams["swap"].to_pylist()
+    target = burn_rows[0]
+    for row in (burn_rows[1], swap_rows[1]):
+        row["block_number"] = target["block_number"]
+        row["log_index"] = target["log_index"]
+        row["block_timestamp"] = target["block_timestamp"]
+    streams["burn"] = pa.Table.from_pylist(burn_rows, schema=SCHEMA_REGISTRY["burn"])
+    streams["swap"] = pa.Table.from_pylist(swap_rows, schema=SCHEMA_REGISTRY["swap"])
+
+    with caplog.at_level(logging.WARNING, logger="undertow.data.transforms.align"):
+        with pytest.raises(ValidationError, match="duplicate merge keys"):
+            build_event_tape(
+                streams, pool=data.pool, gas=data.gas, reference=data.reference,
+                regime=data.regime, fee_growth=data.fee_growth,
+            )
+    warnings = _align_warning_messages(caplog)
+    assert len(warnings) == 1, warnings
+    assert "collapsed 1 cross-stream" in warnings[0]
+    assert "dropping 1 row(s)" in warnings[0]
+
+
+def test_resolvable_collision_beside_a_mixed_loser_key_collapses_then_aborts(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The discriminating mixed key repeats the *losing* type (two swaps + one
+    mint): without ``~resolvable`` in the keep-filter the swaps would be collapsed
+    silently and the residual guard would never fire."""
+    data = build_tiny_dataset()
+    streams = _collide(data.streams, "mint", "swap")
+    mint_rows = streams["mint"].to_pylist()
+    swap_rows = streams["swap"].to_pylist()
+    target = mint_rows[1]
+    for row in (swap_rows[1], swap_rows[2]):
+        row["block_number"] = target["block_number"]
+        row["log_index"] = target["log_index"]
+        row["block_timestamp"] = target["block_timestamp"]
+    streams["swap"] = pa.Table.from_pylist(swap_rows, schema=SCHEMA_REGISTRY["swap"])
+
+    with caplog.at_level(logging.WARNING, logger="undertow.data.transforms.align"):
+        with pytest.raises(ValidationError, match="duplicate merge keys"):
+            build_event_tape(
+                streams, pool=data.pool, gas=data.gas, reference=data.reference,
+                regime=data.regime, fee_growth=data.fee_growth,
+            )
+    warnings = _align_warning_messages(caplog)
+    assert len(warnings) == 1, warnings
+    assert "collapsed 1 cross-stream" in warnings[0]
+    assert "dropping 1 row(s)" in warnings[0]
+
+
+def test_three_way_collision_collapses_to_mint(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Three streams at one key (mint + burn + swap) resolve to the mint and drop
+    both losing rows — the multi-drop arithmetic in one assertion."""
+    data = build_tiny_dataset()
+    streams = _collide(data.streams, "mint", "swap")
+    streams = _collide(streams, "mint", "burn")
+    mint_row = streams["mint"].to_pylist()[0]
+
+    with caplog.at_level(logging.WARNING, logger="undertow.data.transforms.align"):
+        tape = build_event_tape(
+            streams, pool=data.pool, gas=data.gas, reference=data.reference,
+            regime=data.regime, fee_growth=data.fee_growth,
+        )
+
+    rows = [
+        i
+        for i in range(tape.num_rows)
+        if tape.column("block_number")[i].as_py() == mint_row["block_number"]
+        and tape.column("log_index")[i].as_py() == mint_row["log_index"]
+    ]
+    assert len(rows) == 1
+    assert tape.column("event_type")[rows[0]].as_py() == "mint"
+    assert tape.num_rows == int(data.physical_constants["n_events"]) - 2
+    warnings = _align_warning_messages(caplog)
+    assert len(warnings) == 1, warnings
+    assert "collapsed 1 cross-stream" in warnings[0]
+    assert "dropping 2 row(s)" in warnings[0]
+
+
+def test_no_cross_stream_collision_warns_nothing_and_is_unchanged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A collision-free union is untouched — same rows in the same order (identical
+    content hash) — and emits no WARNING."""
+    data = build_tiny_dataset()
+    with caplog.at_level(logging.WARNING, logger="undertow.data.transforms.align"):
+        tape = build_event_tape(
+            data.streams, pool=data.pool, gas=data.gas, reference=data.reference,
+            regime=data.regime, fee_growth=data.fee_growth,
+        )
+        again = build_event_tape(
+            data.streams, pool=data.pool, gas=data.gas, reference=data.reference,
+            regime=data.regime, fee_growth=data.fee_growth,
+        )
+
+    assert tape.num_rows == int(data.physical_constants["n_events"])
+    assert content_hash(tape) == content_hash(again)
+    assert _align_warning_messages(caplog) == []
+
+
+def test_seq_is_dense_after_cross_stream_collapse(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``seq`` is stamped after the collapse: 0..N-1 with no gap left by the dropped
+    rows."""
+    data = build_tiny_dataset()
+    streams = _collide(data.streams, "mint", "swap")
+    streams = _collide(streams, "burn", "collect")
+
+    with caplog.at_level(logging.WARNING, logger="undertow.data.transforms.align"):
+        tape = build_event_tape(
+            streams, pool=data.pool, gas=data.gas, reference=data.reference,
+            regime=data.regime, fee_growth=data.fee_growth,
+        )
+
+    assert tape.num_rows == int(data.physical_constants["n_events"]) - 2
+    assert tape.column("seq").to_pylist() == list(range(tape.num_rows))
+    keys = list(zip(_blocks(tape), tape.column("log_index").to_pylist(), strict=True))
+    assert all(keys[i] < keys[i + 1] for i in range(len(keys) - 1))
+    assert len(_align_warning_messages(caplog)) == 1
 
 
 def test_missing_stream_tolerated_as_empty() -> None:
