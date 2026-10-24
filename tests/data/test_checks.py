@@ -21,6 +21,7 @@ import pyarrow as pa  # type: ignore[import-untyped]
 from tests.data.conftest import POOL, build_tiny_dataset
 from undertow.data.config import WindowConfig
 from undertow.data.schemas import (
+    BURN_SCHEMA,
     EVENT_TAPE_SCHEMA,
     FEE_GROWTH_SCHEMA,
     MINT_SCHEMA,
@@ -363,6 +364,110 @@ def test_check_liquidity_conservation_skips_without_snapshot() -> None:
     res = check_liquidity_conservation(_tiny_tape().slice(0, 0), None, None, empty, 1000)
     assert res.passed and res.severity == "info"
     assert "skipped" in res.detail
+
+
+def test_check_liquidity_conservation_skips_when_swap_liquidity_all_null() -> None:
+    """The subgraph Swap entity has no liquidity field: every row is null. The
+    check must report the route fact as an info skip, not crash in ``_as_int``."""
+    fg = _table(FEE_GROWTH_SCHEMA, [_fg_global(1000, "5000000000000000000", 0)])
+    swaps = _table(
+        SWAP_SCHEMA,
+        [
+            dict(_swap_liq_row(1002, "7000000000000000000", -30), liquidity=None),
+            dict(_swap_liq_row(1004, "5000000000000000000", -61), liquidity=None),
+        ],
+    )
+    res = check_liquidity_conservation(swaps, None, None, fg, start_block=1000)
+    assert res.passed is True
+    assert res.severity == "info"
+    assert res.metrics["swap_liquidity"] == "unavailable"
+    assert res.metrics["rows"] == 2
+    assert "subgraph Swap entity has no liquidity field" in res.detail
+    assert "skipped" in res.detail
+
+
+def test_check_liquidity_conservation_skips_when_liquidity_column_absent() -> None:
+    """A swaps table with no ``liquidity`` column at all takes the same skip
+    path as an all-null column (the route simply does not carry the field)."""
+    fg = _table(FEE_GROWTH_SCHEMA, [_fg_global(1000, "5000000000000000000", 0)])
+    swaps = _table(SWAP_SCHEMA, [_swap_liq_row(1002, "7000000000000000000", -30)]).select(
+        [c for c in SWAP_SCHEMA.names if c != "liquidity"]
+    )
+    res = check_liquidity_conservation(swaps, None, None, fg, start_block=1000)
+    assert res.passed is True
+    assert res.severity == "info"
+    assert res.metrics["swap_liquidity"] == "unavailable"
+    assert res.metrics["rows"] == 1
+    assert "subgraph Swap entity has no liquidity field" in res.detail
+
+
+def test_check_liquidity_conservation_skips_on_partial_null_liquidity() -> None:
+    """Some null rows: report the coverage in the metrics rather than silently
+    comparing only the non-null rows (a partial comparison can hide drift)."""
+    fg = _table(FEE_GROWTH_SCHEMA, [_fg_global(1000, "5000000000000000000", 0)])
+    swaps = _table(
+        SWAP_SCHEMA,
+        [
+            _swap_liq_row(1002, "7000000000000000000", -30),
+            dict(_swap_liq_row(1004, "5000000000000000000", -61), liquidity=None),
+        ],
+    )
+    res = check_liquidity_conservation(swaps, None, None, fg, start_block=1000)
+    assert res.passed is True
+    assert res.severity == "info"
+    assert res.metrics["swap_liquidity"] == "partial"
+    assert res.metrics["null_rows"] == 1
+    assert res.metrics["rows"] == 2
+    assert "comparing only the non-null rows could hide drift" in res.detail
+    assert "skipped" in res.detail
+
+
+def test_check_liquidity_conservation_runs_unchanged_when_liquidity_populated() -> None:
+    """Fully-populated liquidity must run the existing algorithm untouched —
+    the skip guard must not leak into the comparison path."""
+    fg = _table(FEE_GROWTH_SCHEMA, [_fg_global(1000, "5000000000000000000", 0)])
+    mints = _table(
+        MINT_SCHEMA,
+        [_mint_row(1001, "0x" + "1" * 40, -60, 60, "2000000000000000000")],
+    )
+    swaps = _table(
+        SWAP_SCHEMA,
+        [
+            _swap_liq_row(1002, "7000000000000000000", -30),  # 5 + 2
+            _swap_liq_row(1004, "5000000000000000000", -61),  # our 3e18 leaves
+        ],
+    )
+    res = check_liquidity_conservation(swaps, mints, None, fg, start_block=1000)
+    assert res.passed, res.detail
+    assert res.severity == "warning"
+    assert res.metrics["max_abs_deviation"] == 0
+    assert res.metrics["swaps_compared"] == 2
+    assert "swap_liquidity" not in res.metrics
+
+
+def test_check_liquidity_conservation_skips_on_null_mint_or_burn_liquidity_amount() -> None:
+    """A null ``liquidity_amount`` on the mint/burn path takes the same named
+    info skip (``_as_int``'s non-null contract stays intact at the call site)."""
+    fg = _table(FEE_GROWTH_SCHEMA, [_fg_global(1000, "5000000000000000000", 0)])
+    swaps = _table(SWAP_SCHEMA, [_swap_liq_row(1002, "7000000000000000000", -30)])
+    mint_rows = [dict(_mint_row(1001, "0x" + "1" * 40, -60, 60, "1"), liquidity_amount=None)]
+    mint = _table(MINT_SCHEMA, mint_rows)
+    burn = _table(BURN_SCHEMA, [dict(r, event_type="burn") for r in mint_rows])
+
+    for kind, table in (("mint", mint), ("burn", burn)):
+        res = check_liquidity_conservation(
+            swaps,
+            table if kind == "mint" else None,
+            table if kind == "burn" else None,
+            fg,
+            1000,
+        )
+        assert res.passed is True
+        assert res.severity == "info"
+        assert res.metrics["null_column"] == f"{kind}.liquidity_amount"
+        assert res.metrics["null_rows"] == 1
+        assert "liquidity_amount" in res.detail
+        assert "skipped" in res.detail
 
 
 # ---------------------------------------------------------------------------

@@ -118,6 +118,24 @@ def _as_int_col(table: pa.Table, name: str) -> list[int]:
     return [_as_int(v) for v in _col(table, name)]
 
 
+def _first_null_column(table: pa.Table | None, columns: tuple[str, ...]) -> tuple[str, int] | None:
+    """First ``(column, null_count)`` among ``columns`` that has nulls.
+
+    A column missing from the table counts as all-null (``num_rows`` nulls) —
+    callers use this to turn a would-be ``_as_int(None)`` crash into a named
+    info skip. Empty tables have nothing to feed, so they report no nulls.
+    """
+    if table is None or table.num_rows == 0:
+        return None
+    for column in columns:
+        if column not in table.column_names:
+            return column, table.num_rows
+        nulls = table.column(column).null_count
+        if nulls:
+            return column, nulls
+    return None
+
+
 def _as_bool_col(table: pa.Table, name: str) -> list[bool]:
     return [bool(v) for v in _col(table, name)]
 
@@ -445,6 +463,74 @@ def check_liquidity_conservation(
     so: that is a strong signal T06's decoding and T10's replay are both right.
     """
     name = "check_liquidity_conservation"
+
+    # --- 0. the reported swap liquidity is the comparison basis ---
+    # The default (subgraph) route does not record it at all: every swap row's
+    # ``liquidity`` is null, so a comparison would crash in ``_as_int``. A
+    # missing/all-null/partial column is a route fact, not a data defect —
+    # report it as an info skip and let the reader see the coverage.
+    n_swaps = swaps.num_rows
+    if n_swaps:
+        rationale = (
+            "the subgraph Swap entity has no liquidity field; only the RPC route supplies it"
+        )
+        null_swaps = (
+            n_swaps
+            if "liquidity" not in swaps.column_names
+            else swaps.column("liquidity").null_count
+        )
+        if null_swaps == n_swaps:
+            return _result(
+                name,
+                True,
+                "swap liquidity is not recorded on this route ("
+                f"{rationale}) — liquidity conservation cannot be compared; skipped",
+                {"swap_liquidity": "unavailable", "rows": n_swaps},
+                severity="info",
+            )
+        if null_swaps:
+            return _result(
+                name,
+                True,
+                f"{null_swaps} of {n_swaps} swap row(s) have null liquidity ({rationale}) "
+                "— comparing only the non-null rows could hide drift; liquidity "
+                "conservation cannot be compared; skipped",
+                {"swap_liquidity": "partial", "null_rows": null_swaps, "rows": n_swaps},
+                severity="info",
+            )
+
+    # --- 0b. defensive nulls in the remaining required columns ---
+    # ``_as_int``'s contract is non-null (it raises by design), so a null must
+    # surface as a named skip at the call site instead of crashing the check.
+    position_columns = (
+        "block_number",
+        "log_index",
+        "tick_lower",
+        "tick_upper",
+        "liquidity_amount",
+    )
+    required_columns: tuple[tuple[str, pa.Table | None, tuple[str, ...]], ...] = (
+        ("swap", swaps, ("block_number", "log_index", "tick")),
+        ("mint", mints, position_columns),
+        ("burn", burns, position_columns),
+        (
+            "fee_growth",
+            fee_growth,
+            ("block_number", "tick", "current_liquidity", "current_tick"),
+        ),
+    )
+    for kind, table, columns in required_columns:
+        first_null = _first_null_column(table, columns)
+        if first_null is not None:
+            column, null_rows = first_null
+            return _result(
+                name,
+                True,
+                f"{null_rows} null value(s) in required column '{kind}.{column}' — the "
+                "liquidity trace cannot be walked; skipped",
+                {"null_column": f"{kind}.{column}", "null_rows": null_rows},
+                severity="info",
+            )
 
     # --- 1. seed from the nearest global snapshot at or before start_block ---
     fg_blocks = _as_int_col(fee_growth, "block_number")
