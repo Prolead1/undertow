@@ -3,7 +3,8 @@
 Exposes the shared contract types (``FetchRequest``, ``FetchResult``, ``Fetcher``) and the
 ``BaseHttpFetcher`` plumbing (retry/backoff, block-range chunking with adaptive shrink, and the
 atomic on-disk raw cache). Concrete fetchers land in later tasks: T05 thegraph, T06 rpc, T07 gas,
-T08 reference. Nothing here imports ``schemas.py``.
+T08 reference, S19 funding. The base plumbing imports nothing from ``schemas.py``; each concrete
+fetcher owns its own schema validation.
 """
 
 from undertow.data.fetchers.base import (
@@ -17,12 +18,14 @@ from undertow.data.fetchers.base import (
     FetchRequest,
     FetchResult,
 )
+from undertow.data.fetchers.funding import FundingFetcher
 
 __all__ = [
     "BaseHttpFetcher",
     "FetchRequest",
     "FetchResult",
     "Fetcher",
+    "FundingFetcher",
     "BACKOFF_BASE_SECONDS",
     "BACKOFF_CAP_SECONDS",
     "DEFAULT_CHUNK_SIZE",

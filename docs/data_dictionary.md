@@ -187,6 +187,20 @@ This dictionary is generated from the canonical schemas in `src/undertow/data/sc
 | `window_complete` | `bool` | false => regime == 'unknown' (bool) | no |
 | `symbol` | `string` | reference symbol the labels were computed from | no |
 
+### `funding`
+
+**Source route:** Binance USDT-M futures fundingRate REST
+
+**Sort key:** `(symbol, funding_time)` · **Pool-scoped:** no
+
+| column | type | unit / convention | nullable |
+| --- | --- | --- | --- |
+| `funding_time` | `timestamp[us, tz=UTC]` | Binance funding settlement time, every 8 h at 00:00/08:00/16:00 UTC (timestamp[us]) | no |
+| `symbol` | `large_string` | perp symbol, e.g. 'ETHUSDT' (large_string) | no |
+| `funding_rate` | `double` | fraction per 8 h settlement, signed (float64) | no |
+| `mark_price` | `double` | perp mark price at settlement, USDT (float64); null when Binance omits it (empty markPrice in the raw fundingRate response) | yes |
+| `is_gap_filled` | `bool` | true when a missing 8 h settlement was forward-filled from the prior one (bool) | no |
+
 ### `event_tape`
 
 **Source route:** T11 aligned union of the log streams plus backward as-of joins of the reference, regime, gas and fee-growth side-streams

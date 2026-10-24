@@ -54,6 +54,9 @@ symbol = "ETHUSDT"
 graph_url = "https://gateway.thegraph.com/api/${GRAPH_API_KEY}"
 rpc_url = "${ETH_RPC_URL}"  # archive node required
 reference_base_url = "https://api.binance.com"
+# S19: Binance USDT-M futures base for /fapi/v1/fundingRate. Public endpoint, not a
+# secret, so it is a literal value rather than an ${ENV_VAR} placeholder.
+futures_base_url = "https://fapi.binance.com"
 
 [paths]
 cache_dir = "data/cache/eth_usdc_3000"

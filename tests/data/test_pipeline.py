@@ -82,6 +82,11 @@ def _write_tiny_streams(tiny, output_dir: Path) -> DataConfig:
         if table is not None:
             sm = write_stream(table, output_dir, name, pool=tiny.pool)
             stream_manifests[name] = sm
+    # S19: funding joined the default pull set; the tiny dataset carries a small
+    # static funding tape so ``pull`` sees it as already pulled (no network).
+    stream_manifests["funding"] = write_stream(
+        _tiny_funding_table(), output_dir, "funding", pool=tiny.pool
+    )
 
     manifest = DatasetManifest(
         schema_version=SCHEMA_VERSION,
@@ -117,6 +122,30 @@ def _write_tiny_streams(tiny, output_dir: Path) -> DataConfig:
         cache_dir=output_dir / "cache",
         output_dir=output_dir,
     )
+
+
+def _tiny_funding_table() -> pa.Table:
+    """A small, synthetic ``FUNDING_SCHEMA`` tape for the tiny-dataset pipeline tests.
+
+    Three observed 8 h settlements with one deliberately gap-filled row; enough
+    for ``pull`` to see a non-empty, schema-valid funding stream without network.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from undertow.data.schemas import FUNDING_SCHEMA
+
+    t0 = datetime(2022, 1, 1, tzinfo=UTC)
+    rows = [
+        {
+            "funding_time": t0 + timedelta(hours=8 * i),
+            "symbol": "ETHUSDT",
+            "funding_rate": 0.0001,
+            "mark_price": 3000.0,
+            "is_gap_filled": i == 2,
+        }
+        for i in range(3)
+    ]
+    return pa.Table.from_pylist(rows, schema=FUNDING_SCHEMA)
 
 
 def _make_fake_fetch(table: pa.Table, route: Route = Route.THEGRAPH):
@@ -414,6 +443,7 @@ def test_snapshot_fresh_output_dir_writes_manifest(tmp_path: Path, tiny_dataset)
     snapshot fails with "No manifest found" (regression test).
     """
     from undertow.data.fetchers.base import FetchResult
+    from undertow.data.fetchers.funding import FundingFetcher
     from undertow.data.fetchers.gas import GasFetcher
     from undertow.data.fetchers.reference import ReferenceFetcher
     from undertow.data.fetchers.thegraph import TheGraphFetcher
@@ -445,6 +475,7 @@ def test_snapshot_fresh_output_dir_writes_manifest(tmp_path: Path, tiny_dataset)
         patch.object(TheGraphFetcher, "fetch", fake_logs_fetch),
         patch.object(GasFetcher, "fetch", fake_table_fetch(tiny_dataset.gas)),
         patch.object(ReferenceFetcher, "fetch", fake_table_fetch(tiny_dataset.reference)),
+        patch.object(FundingFetcher, "fetch", fake_table_fetch(_tiny_funding_table())),
     ):
         report = snapshot(config)
 

@@ -57,7 +57,7 @@ KEY_COLUMNS = (
 )
 
 LOG_STREAMS = {"swap", "mint", "burn", "collect", "flash", "event_tape"}
-GLOBAL_STREAMS = {"gas", "reference", "regime"}
+GLOBAL_STREAMS = {"gas", "reference", "regime", "funding"}
 
 
 def _default_value(field: pa.Field) -> object:
@@ -71,7 +71,7 @@ def _default_value(field: pa.Field) -> object:
         return 1.5
     if pa.types.is_integer(t):
         return 1
-    if pa.types.is_string(t):
+    if pa.types.is_string(t) or pa.types.is_large_string(t):
         return "0"
     raise AssertionError(f"no default value for type {t}")
 
@@ -91,7 +91,7 @@ def _conforming_table(schema: pa.Schema) -> pa.Table:
 # ---------------------------------------------------------------------------
 
 
-def test_registry_keys_are_the_ten_contract_streams() -> None:
+def test_registry_keys_are_the_expected_streams() -> None:
     assert set(SCHEMA_REGISTRY) == {
         "swap",
         "mint",
@@ -102,6 +102,7 @@ def test_registry_keys_are_the_ten_contract_streams() -> None:
         "gas",
         "reference",
         "regime",
+        "funding",
         "event_tape",
     }
 
@@ -149,6 +150,7 @@ def test_sort_keys_match_contract() -> None:
         "gas": ("block_number",),
         "reference": ("symbol", "open_time"),
         "regime": ("timestamp",),
+        "funding": ("symbol", "funding_time"),
     }
 
 
@@ -208,8 +210,8 @@ def test_fee_growth_has_no_log_index() -> None:
     assert "event_type" not in names
 
 
-@pytest.mark.parametrize("stream", ["reference", "regime"])
-def test_reference_regime_have_no_block_columns(stream: str) -> None:
+@pytest.mark.parametrize("stream", ["reference", "regime", "funding"])
+def test_reference_regime_funding_have_no_block_columns(stream: str) -> None:
     schema = SCHEMA_REGISTRY[stream]
     for col in KEY_COLUMNS:
         assert col not in schema.names, f"{stream}: must not carry {col!r}"

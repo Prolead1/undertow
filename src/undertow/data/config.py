@@ -54,6 +54,11 @@ GAS_UNITS: Mapping[str, int] = MappingProxyType(
 DEFAULT_LOG_DIR: Path = Path("logs")
 """Default directory for auto-captured run logs (``[paths] log_dir``)."""
 
+DEFAULT_FUTURES_BASE_URL: str = "https://fapi.binance.com"
+"""Default Binance USDT-M futures REST base URL. Public (no API key), so it is a
+plain endpoint value rather than an ``${ENV_VAR}`` secret. Used by the funding
+fetcher (S19); override via the optional ``[endpoints] futures_base_url`` key."""
+
 DEFAULT_REFERENCE_SYMBOL: str = "ETHUSDT"
 """Primary Binance reference symbol (data PLAN.md §7: ``ETHUSDT`` is the deepest,
 longest 1m history; the ``ETHUSDC`` pair is the thinner cross-check). It is the
@@ -254,6 +259,9 @@ class EndpointConfig:
     request_timeout_s: float = 30.0
     max_retries: int = 5
     min_request_interval_s: float = 0.0
+    # S19 extension, appended so existing positional constructions keep their meaning:
+    # Binance USDT-M futures base for /fapi/v1/fundingRate (public, not a secret).
+    futures_base_url: str = DEFAULT_FUTURES_BASE_URL
 
     def __repr__(self) -> str:
         return (
@@ -263,7 +271,8 @@ class EndpointConfig:
             f"reference_base_url={_host_only(self.reference_base_url)!r}, "
             f"max_concurrency={self.max_concurrency!r}, "
             f"request_timeout_s={self.request_timeout_s!r}, "
-            f"max_retries={self.max_retries!r})"
+            f"max_retries={self.max_retries!r}, "
+            f"futures_base_url={_host_only(self.futures_base_url)!r})"
         )
 
 
@@ -322,6 +331,7 @@ _ENDPOINT_KEYS = frozenset(
         "graph_url",
         "rpc_url",
         "reference_base_url",
+        "futures_base_url",
         "max_concurrency",
         "request_timeout_s",
         "max_retries",
@@ -514,10 +524,16 @@ def _parse_endpoints(
     graph_url = _need_str(section, "graph_url", f"{where}[endpoints]")
     rpc_url = _need_str(section, "rpc_url", f"{where}[endpoints]")
     reference_base_url = _need_str(section, "reference_base_url", f"{where}[endpoints]")
+    # Optional S19 key: absent => the module default, so pre-S19 configs keep loading.
+    futures_base_url = (
+        _opt_str(section, "futures_base_url", f"{where}[endpoints]")
+        or DEFAULT_FUTURES_BASE_URL
+    )
     if expand_env:
         graph_url = _expand_env(graph_url, f"{where}[endpoints]")
         rpc_url = _expand_env(rpc_url, f"{where}[endpoints]")
         reference_base_url = _expand_env(reference_base_url, f"{where}[endpoints]")
+        futures_base_url = _expand_env(futures_base_url, f"{where}[endpoints]")
     return EndpointConfig(
         graph_url=graph_url,
         rpc_url=rpc_url,
@@ -526,6 +542,7 @@ def _parse_endpoints(
         request_timeout_s=timeout if timeout is not None else 30.0,
         max_retries=retries if retries is not None else 5,
         min_request_interval_s=min_interval if min_interval is not None else 0.0,
+        futures_base_url=futures_base_url,
     )
 
 

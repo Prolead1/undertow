@@ -34,6 +34,7 @@ import pyarrow as pa
 
 from undertow.data.config import DataConfig, PoolConfig
 from undertow.data.fetchers.base import FetchRequest, FetchResult
+from undertow.data.fetchers.funding import FundingFetcher
 from undertow.data.fetchers.gas import GasFetcher
 from undertow.data.fetchers.reference import ReferenceFetcher
 from undertow.data.fetchers.rpc import RpcFetcher
@@ -91,6 +92,7 @@ _DEFAULT_STREAMS: tuple[str, ...] = (
     "collect",
     "gas",
     "reference",
+    "funding",
     "regime",
 )
 """Streams a bare ``pull`` / ``snapshot`` fetches. Excludes ``fee_growth``: its
@@ -140,7 +142,7 @@ def _resolve_window_to_blocks(
 
 
 def _make_fetchers(config: DataConfig) -> dict[str, object]:
-    """Instantiate the four concrete fetchers for a given config."""
+    """Instantiate the five concrete fetchers for a given config."""
     endpoints = config.endpoints
     cache_dir = config.cache_dir
     return {
@@ -148,6 +150,8 @@ def _make_fetchers(config: DataConfig) -> dict[str, object]:
         "rpc": RpcFetcher(endpoints, cache_dir),
         "gas": GasFetcher(endpoints, cache_dir),
         "reference": ReferenceFetcher(endpoints, cache_dir),
+        # S19: the perp symbol is the spot symbol (no second config field).
+        "funding": FundingFetcher(endpoints, cache_dir, symbol=config.reference_symbol),
     }
 
 
@@ -276,6 +280,15 @@ def _pull_one_stream(
         w = config.window
         request = FetchRequest(
             stream="reference", pool=None,
+            start_block=None, end_block=None,
+            start_utc=w.start_utc, end_utc=w.end_utc,
+        )
+    elif stream == "funding":
+        fetcher = fetchers["funding"]  # type: ignore[assignment]
+        used_route = Route.REFERENCE
+        w = config.window
+        request = FetchRequest(
+            stream="funding", pool=None,
             start_block=None, end_block=None,
             start_utc=w.start_utc, end_utc=w.end_utc,
         )
