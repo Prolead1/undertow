@@ -606,9 +606,28 @@ class _Replay:
         gas_cost = self.gas_calculator.gas_cost_usdc(
             "rebalance", block, base_fee, priority, price
         )
+        lower = int(action.lower_tick(Tick(tick), TickSpacing(self.tick_spacing)))
+        upper = int(action.upper_tick(Tick(tick), TickSpacing(self.tick_spacing)))
         notional = max(0.0, position_value)
-        slippage_cost = self.slippage_model.slippage_cost_usdc(
+        old_position = self.position
+        assert old_position is not None, "rebalance requested with no open position"
+        # A V3 rebalance only trades the inventory imbalance vs the target
+        # range (S18): the token0 leg of the target at the same mark minus the
+        # old position's token0 leg.  ``token0`` is USDC (ADR-009), so the
+        # difference is already the swap notional.  The target range is
+        # independent of the post-cost capital, so evaluating it here leaves
+        # the final deposit unchanged.
+        target = initial_deposit(
+            sqrt,
+            price,
+            Tick(lower),
+            Tick(upper),
             notional,
+            TickSpacing(self.tick_spacing),
+        )
+        swap_notional = abs(old_position.amount0(sqrt) - target.amount0(sqrt))
+        slippage_cost = self.slippage_model.slippage_cost_usdc(
+            swap_notional,
             int(self.config.episode.fee_tier_bps),
             float(self.config.slippage.fixed_impact_bps),
         )
@@ -622,8 +641,6 @@ class _Replay:
             # failure.
             return None
 
-        lower = int(action.lower_tick(Tick(tick), TickSpacing(self.tick_spacing)))
-        upper = int(action.upper_tick(Tick(tick), TickSpacing(self.tick_spacing)))
         new_position = initial_deposit(
             sqrt,
             price,

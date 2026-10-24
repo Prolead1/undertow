@@ -706,8 +706,10 @@ class SlippageModel(Protocol):
                            fixed_impact_bps: float) -> float:
         """Slippage = notional * (pool_fee_tier_pips / 1_000_000 + fixed_impact_bps / 10_000).
 
-        The ``pool_fee_tier_bps`` argument holds Uniswap pips (1e-6); the impact term is true bps
-        (1e-4). See ADR-012."""
+        ``notional_usdc`` is the **swapped imbalance**: the token0-value difference between the
+        pre-rebalance position and the target range (token0 is the USDC numeraire, ADR-009),
+        not the value of the whole position.  The ``pool_fee_tier_bps`` argument holds Uniswap
+        pips (1e-6); the impact term is true bps (1e-4). See ADR-012."""
         ...
 ```
 

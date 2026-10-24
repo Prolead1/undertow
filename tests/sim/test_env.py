@@ -29,7 +29,7 @@ from undertow.data import (
 )
 from undertow.sim.config import EpisodeConfig, SimConfig
 from undertow.sim.core.pool import PoolEngine, PoolState, TickState
-from undertow.sim.core.position import calc_sqrt_price_a
+from undertow.sim.core.position import calc_sqrt_price_a, initial_deposit
 from undertow.sim.env.lp_env import LpEnvironment
 from undertow.sim.env.observations import (
     OBSERVATION_VECTOR_LENGTH,
@@ -41,7 +41,14 @@ from undertow.sim.marketview import MarketView
 from undertow.sim.prices.base import human_price_to_triplet
 from undertow.sim.prices.regime_jump import CalibratedPriceProcess, MRSJDParams
 from undertow.sim.prices.replay import ReplayPriceProcess
-from undertow.sim.types import Action, EnvError, LookAheadError, PriceMode, Tick
+from undertow.sim.types import (
+    Action,
+    EnvError,
+    LookAheadError,
+    PriceMode,
+    Tick,
+    TickSpacing,
+)
 
 _ENTRY_TICK = 196242
 _FEE_TIER_BPS = 3000
@@ -1305,6 +1312,90 @@ class TestEquityContinuity:
         assert reject_env._last_il_total == hold_env._last_il_total
         assert reject_env._collected_fees_usdc == hold_env._collected_fees_usdc
         assert reject_env._last_fees_usdc == hold_env._last_fees_usdc
+
+
+class TestRebalanceSwapNotional:
+    """S18: rebalance slippage charges the swapped inventory imbalance only."""
+
+    def test_balanced_recentre_charges_no_slippage(
+        self, tiny_market_view: MarketView, mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        env = _calibrated_env(tiny_market_view, mock_gas_model, mock_slippage_model)
+        env.reset(seed=0)
+        assert env._position is not None
+        # The reset deposit was built by ``initial_deposit`` on the env's own
+        # band, so rebalancing to that exact band at the same mark swaps zero
+        # inventory.  The old full-position-value charge (notional * 0.0035)
+        # made this common balanced recentre the worst case.
+        action = Action(
+            action_type="rebalance",
+            center_offset=env._initial_center_offset,
+            width=env._initial_width,
+        )
+        sqrt = env.pool_engine.state.sqrt_price
+        price = env._entry_price
+        notional = env._position.value(sqrt, price)
+
+        _gas, slippage_cost, executed = env._rebalance(
+            action, sqrt, price, env._last_tape_row
+        )
+
+        assert executed is True
+        assert slippage_cost < 1e-6 * notional
+        assert slippage_cost == pytest.approx(0.0, abs=1e-9)
+
+    def test_out_of_range_recentre_charges_about_half_notional(
+        self, tiny_market_view: MarketView, mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        env = _calibrated_env(tiny_market_view, mock_gas_model, mock_slippage_model)
+        env.reset(seed=0)
+        spacing = TickSpacing(int(env.config.episode.tick_spacing))
+        tick = env.pool_engine.state.tick
+        sqrt = env.pool_engine.state.sqrt_price
+        # Pair the raw sqrt with its own human price: the fixture's reference
+        # close is not exactly the tick's price, and the target band's ~50/50
+        # split is what pins the half-notional result.
+        price = float(tick_to_price(int(tick), 6, 18))
+        capital = float(env.config.episode.agent_capital_usdc)
+
+        # Park the live position entirely below the current tick: it holds only
+        # token1 (WETH), so its token0 leg is zero and the target band's ~50 %
+        # token0 leg is the whole swapped imbalance.
+        base = (int(tick) // int(spacing)) * int(spacing)
+        old_lower = Tick(base - 20 * int(spacing))
+        old_upper = Tick(base - 10 * int(spacing))
+        old = initial_deposit(sqrt, price, old_lower, old_upper, capital, spacing)
+        assert old.amount0(sqrt) == 0.0
+        assert env._position_id is not None
+        env.pool_engine.close_position(env._position_id)
+        env._position_id = env.pool_engine.open_position(
+            old_lower, old_upper, old.liquidity
+        )
+        env._position = env.pool_engine.positions[env._position_id]
+
+        action = Action(action_type="rebalance", center_offset=0, width=10)
+        target = initial_deposit(
+            sqrt,
+            price,
+            action.lower_tick(tick, spacing),
+            action.upper_tick(tick, spacing),
+            capital,
+            spacing,
+        )
+        expected_swap = abs(old.amount0(sqrt) - target.amount0(sqrt))
+        assert expected_swap == pytest.approx(capital / 2.0, rel=0.02)
+
+        _gas, slippage_cost, executed = env._rebalance(
+            action, sqrt, price, env._last_tape_row
+        )
+
+        assert executed is True
+        rate = _FEE_TIER_BPS / 1_000_000 + 5 / 10_000
+        assert slippage_cost == pytest.approx(expected_swap * rate, rel=1e-9)
+        # The pre-S18 formula charged ``capital``; the swap is ~half of it.
+        assert slippage_cost == pytest.approx(capital * rate / 2.0, rel=0.02)
 
 
 class TestValidationAndExhaustion:

@@ -392,9 +392,14 @@ class TestAblations:
         self, tiny_market_view: MarketView
     ) -> None:
         config = _config(duration_days=8)
+        # S18: slippage now charges the swapped inventory imbalance.  The tiny
+        # fixture's pool tick is static, so TauReset's single recentre is
+        # balanced (~0 swap); its gated slippage delta is below PnL float
+        # resolution.  The one-shot passive band swaps a material imbalance
+        # from the default ±120-tick deployment, keeping the gate measurable.
         results = {
             r.ablation_name: r
-            for r in run_ablations(config, TauResetPolicy(120), tiny_market_view)
+            for r in run_ablations(config, PassiveNarrowPolicy(), tiny_market_view)
         }
         full = results["full"].metrics
         no_gas = results["no_gas"].metrics
