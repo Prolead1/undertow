@@ -61,6 +61,22 @@ cannot page under this scheme — a single block holding more than ``PAGE_SIZE``
 rows, so the subgraph keeps re-serving the same page — raises ``FetchError``
 instead of silently dropping rows (unreachable on the pinned pools).
 
+Reorg duplicates (T18)
+----------------------
+A subgraph reorg can leave two entities at the same ``(block_number, log_index)``
+with different ``id``s and amounts differing in the last fraction of a percent (seen
+live on ETH/USDC 0.05 %, block 16675001, logIndex 9). The tape's canonical key is
+``(block_number, log_index)`` (``EVENT_TAPE_SCHEMA``), so exactly one row may be
+emitted. Such a pair is a *data* condition, not a fetcher bug: aborting the pull
+on it makes a whole dataset unbuildable, so both the within-page branch of
+``_fetch_chunk`` and the across-chunk ``_dedupe`` collapse the pair onto the
+row with the **lexicographically largest entity ``id``** — deterministic (the same
+page always resolves to the same survivor) and the only stable ordering key the
+subgraph exposes — log a ``WARNING`` naming the key, the kept id, the dropped id(s)
+and the block range, and count the drop so ``fetch()`` can surface the total in the
+pull report (``FetchResult.warnings`` -> ``StreamPullResult.warnings`` ->
+manifest/CLI report). Nothing is dropped silently and nothing aborts.
+
 Indexer lag (T05 brief pitfall 6 companion)
 -------------------------------------------
 Every query carries ``_meta { block { number } }``. If the indexed head is below
@@ -76,6 +92,7 @@ from __future__ import annotations
 import logging
 import random
 import re
+import threading
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from decimal import Decimal, localcontext
@@ -100,7 +117,6 @@ from undertow.data.types import (
     Route,
     SchemaViolationError,
     TransientNetworkError,
-    ValidationError,
 )
 
 logger = logging.getLogger("undertow.data.fetchers.thegraph")
@@ -173,6 +189,28 @@ def _as_str(value: object, *, field: str) -> str:
     if isinstance(value, int):
         return str(value)
     raise SchemaViolationError(f"{field}: expected a string, got {value!r}")
+
+
+def _entity_id(row: Mapping[str, object]) -> str:
+    """The subgraph entity ``id`` — the stable tie-break key for a reorg duplicate."""
+    return _as_str(row.get("id"), field="id")
+
+
+def _keep_largest_id(kept: dict, candidate: dict) -> tuple[dict, dict]:
+    """Deterministic reorg tie-break: return ``(kept, dropped)`` by largest ``id``.
+
+    Two entities sharing ``(block_number, log_index)`` come from the two branches of
+    a reorg; only one row fits the tape's key. ``id`` is unique per entity, stable
+    across re-queries and totally ordered, so the same page always keeps the same
+    survivor (amounts are never compared — that would be a heuristic, not a rule).
+
+    Every query file selects ``id``; an entity without one raises
+    ``SchemaViolationError`` from :func:`_entity_id` rather than falling back to an
+    arbitrary winner.
+    """
+    if _entity_id(candidate) > _entity_id(kept):
+        return candidate, kept
+    return kept, candidate
 
 
 def _address(value: object, *, field: str) -> str:
@@ -261,6 +299,10 @@ class TheGraphFetcher(BaseHttpFetcher):
         self._initial_chunk_size = GRAPH_CHUNK_BLOCKS
         # Instance-level so tests can exercise two-page pagination with small pages.
         self.page_size: int = PAGE_SIZE
+        # Reorg duplicates dropped during the current fetch(), accumulated under a
+        # lock because chunks are fetched by a ThreadPoolExecutor. Reset per fetch().
+        self._dup_lock = threading.Lock()
+        self._duplicates_dropped = 0
 
     # ------------------------------------------------------------------
     # Public API (CONTRACTS.md §5.1/§5.2).
@@ -285,8 +327,17 @@ class TheGraphFetcher(BaseHttpFetcher):
             raise PermanentFetchError(
                 "TheGraphFetcher: log streams are pool-scoped; request.pool is required"
             )
+        self._reset_duplicate_tally()
         rows, n_requests, from_cache, warnings = self.fetch_rows(request)
         table = self._rows_to_table(rows, request.stream, pool=request.pool)
+        dropped = self._take_duplicate_tally()
+        if dropped:
+            note = (
+                f"{request.stream}: dropped {dropped} duplicate (block_number, log_index) "
+                "subgraph reorg row(s) — kept the lexicographically largest entity id per key"
+            )
+            logger.warning("%s", note)
+            warnings.append(note)
         return FetchResult(
             table=table,
             route=self.route,
@@ -295,6 +346,34 @@ class TheGraphFetcher(BaseHttpFetcher):
             from_cache=from_cache,
             warnings=tuple(warnings),
         )
+
+    # ------------------------------------------------------------------
+    # Reorg-duplicate bookkeeping (T18).
+    # ------------------------------------------------------------------
+
+    def _reset_duplicate_tally(self) -> None:
+        """Zero the dropped-duplicate counter at the start of one ``fetch()``.
+
+        The tally is per-``fetch()`` state: only the chunks *inside* one call run
+        concurrently (the base class's ThreadPoolExecutor), which the lock covers.
+        Concurrent ``fetch()`` calls on one fetcher instance would share the tally
+        and are not supported — the same is true of ``page_size`` and of the base
+        class's pacing clock.
+        """
+        with self._dup_lock:
+            self._duplicates_dropped = 0
+
+    def _count_dropped_duplicate(self) -> None:
+        """Record one collapsed duplicate (chunks run concurrently)."""
+        with self._dup_lock:
+            self._duplicates_dropped += 1
+
+    def _take_duplicate_tally(self) -> int:
+        """Return the dropped-duplicate count accumulated so far and reset it."""
+        with self._dup_lock:
+            dropped = self._duplicates_dropped
+            self._duplicates_dropped = 0
+        return dropped
 
     # ------------------------------------------------------------------
     # GraphQL transport (base class owns HTTP-level retry/backoff; the
@@ -386,6 +465,12 @@ class TheGraphFetcher(BaseHttpFetcher):
         subgraph re-serves the same leading rows forever); that raises
         ``FetchError`` instead of silently dropping rows — unreachable on the
         pinned pools.
+
+        A key duplicated **within one page** with a *different* ``id`` is a reorg
+        artifact (both branches of the fork indexed), not an overlap: the row with
+        the lexicographically largest ``id`` is kept, the other is dropped with a
+        ``WARNING`` naming the key, both ids and the block range, and the drop is
+        counted for the pull report (see the module docstring).
         """
         entity = _STREAM_ENTITY.get(request.stream)
         if entity is None:  # defensive — fetch() gates streams before this
@@ -421,22 +506,30 @@ class TheGraphFetcher(BaseHttpFetcher):
                 )
             if not entities:
                 break  # subgraph returned nothing >= cursor: end of range
-            fresh: list[dict] = []
-            page_keys: set[tuple[int, int]] = set()
+            page_rows: dict[tuple[int, int], dict] = {}
             for item in entities:
                 key = self._row_key(item, context)
                 if key[0] == cursor_block and key in seen_boundary:
                     continue  # overlap with the previous page's boundary block
-                if key in page_keys:
-                    # A genuinely duplicated key *within one page* is a data
-                    # integrity error, never a benign overlap to de-dup away.
-                    raise ValidationError(
-                        f"{context}: duplicate (block_number, log_index) key {key} "
-                        "within a single GraphQL page; refusing to emit a table "
-                        "with duplicate keys"
-                    )
-                page_keys.add(key)
-                fresh.append(item)
+                existing = page_rows.get(key)
+                if existing is None:
+                    page_rows[key] = item
+                    continue
+                # Two entities at the same key *within one page* come from the two
+                # branches of a subgraph reorg, not from the pagination overlap.
+                # The tape's key admits exactly one row: keep the deterministic
+                # survivor and drop the orphan loudly — never abort a pull that is
+                # thousands of pages in over one reorg row.
+                kept_row, dropped_row = _keep_largest_id(existing, item)
+                page_rows[key] = kept_row
+                self._count_dropped_duplicate()
+                logger.warning(
+                    "%s: duplicate (block_number, log_index) key %s within a single "
+                    "GraphQL page (subgraph reorg artifact); kept id %s, dropped id %s",
+                    context, key, _entity_id(kept_row), _entity_id(dropped_row),
+                )
+            page_keys = set(page_rows)
+            fresh = list(page_rows.values())
             rows.extend(fresh)
             if len(entities) < self.page_size:
                 break  # a short page is authoritative: no more matching rows
@@ -503,39 +596,55 @@ class TheGraphFetcher(BaseHttpFetcher):
     # Raw rows -> validated table.
     # ------------------------------------------------------------------
 
+    def _dedupe(self, rows: list[dict], *, stream: str) -> list[dict]:
+        """Collapse rows sharing ``(block_number, log_index)``: largest ``id`` survives.
+
+        Within-page duplicates are already collapsed in ``_fetch_chunk``; this pass
+        covers the same key arriving from two different chunks (and a cached chunk
+        written before the within-page rule existed). It follows the identical
+        policy — deterministic largest-``id`` survivor, one ``WARNING`` per collapse
+        naming the key and both ids — and never raises: a reorg artifact is a data
+        condition to record, not a reason to abandon a dataset (T18).
+        """
+        context = f"TheGraphFetcher {stream!r}"
+        deduped: dict[tuple[int, int], dict] = {}
+        for row in rows:
+            key = self._row_key(row, context)
+            existing = deduped.get(key)
+            if existing is None:
+                deduped[key] = row
+                continue
+            kept_row, dropped_row = _keep_largest_id(existing, row)
+            deduped[key] = kept_row
+            self._count_dropped_duplicate()
+            logger.warning(
+                "%s: duplicate (block_number, log_index) key %s across chunks "
+                "(subgraph reorg artifact); kept id %s, dropped id %s",
+                context, key, _entity_id(kept_row), _entity_id(dropped_row),
+            )
+        return list(deduped.values())
+
     def _rows_to_table(self, rows: list[dict], stream: str, *, pool: PoolConfig) -> pa.Table:
-        """Decode, sort by ``(block_number, log_index)``, de-dup, and validate.
+        """De-dup, decode, sort by ``(block_number, log_index)``, and validate.
 
         An empty row list yields ``empty_table(schema)`` — schema-valid, zero rows
-        (what an empty range must produce; CONTRACTS.md §4.9 test 9). Duplicate
-        keys after pagination/dedup raise ``ValidationError`` — never a silent
-        ``drop_duplicates``.
+        (what an empty range must produce; CONTRACTS.md §4.9 test 9). Duplicate keys
+        are collapsed onto the largest entity id by :meth:`_dedupe` (a reorg
+        artifact, warned about and counted) — never a silent ``drop_duplicates`` and
+        never an abort.
         """
         if stream not in SCHEMA_REGISTRY:
             raise PermanentFetchError(f"TheGraphFetcher: unknown stream {stream!r}")
         schema = SCHEMA_REGISTRY[stream]
         if not rows:
             return empty_table(schema)
-        decoded = [self._decode_row(row, stream, pool) for row in rows]
+        decoded = [self._decode_row(row, stream, pool) for row in self._dedupe(rows, stream=stream)]
         decoded.sort(
             key=lambda row: (
                 _as_int(row["block_number"], field="block_number"),
                 _as_int(row["log_index"], field="log_index"),
             )
         )
-        seen: set[tuple[int, int]] = set()
-        for row in decoded:
-            key = (
-                _as_int(row["block_number"], field="block_number"),
-                _as_int(row["log_index"], field="log_index"),
-            )
-            if key in seen:
-                raise ValidationError(
-                    f"TheGraphFetcher {stream!r}: duplicate (block_number, log_index) "
-                    f"key {key} after pagination; refusing to emit a table with "
-                    "duplicate keys"
-                )
-            seen.add(key)
         columns: dict[str, object] = {}
         for field in schema:
             columns[field.name] = pa.array(

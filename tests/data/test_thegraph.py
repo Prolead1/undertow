@@ -31,11 +31,13 @@ from pathlib import Path
 import pytest
 import responses
 
+from undertow.data.cli import _format_pull_report
 from undertow.data.config import EndpointConfig, default_pools
 from undertow.data.fetchers import thegraph
 from undertow.data.fetchers.base import FetchRequest
 from undertow.data.fetchers.thegraph import SUBGRAPH_ID, TheGraphFetcher
 from undertow.data.fixedpoint import amounts_for_liquidity, tick_to_sqrt_price_x96
+from undertow.data.pipeline_report import PullReport, StreamPullResult
 from undertow.data.schemas import (
     BURN_SCHEMA,
     COLLECT_SCHEMA,
@@ -48,6 +50,7 @@ from undertow.data.types import (
     BlockNumber,
     FetchError,
     PermanentFetchError,
+    Route,
     SchemaViolationError,
     TransientNetworkError,
 )
@@ -161,6 +164,18 @@ def _swap_row(block: int, log_index: int, *, amount0: str = "-1234.567891",
 
 def _page(entities: list[dict], meta: int = 16_210_000) -> dict:
     return {"data": {"swaps": entities, "_meta": {"block": {"number": str(meta)}}}}
+
+
+def _reorg_swap(block: int, log_index: int, entity_suffix: str, *, amount0: str) -> dict:
+    """One branch of a subgraph reorg: same ``(block, logIndex)``, distinct entity id.
+
+    Mirrors the observed ETH/USDC 0.05 % artifact (block 16675001, logIndex 9) where
+    the two Swap entities share the transaction but carry different ``<txhash>#<n>``
+    ids and ``amount0`` values differing by ~0.012 %.
+    """
+    row = _swap_row(block, log_index, amount0=amount0, amount1="+37.177979305")
+    row["id"] = f"{row['transaction']['id']}#{entity_suffix}"
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -424,15 +439,169 @@ def test_giant_block_refusal_is_loud_and_duplicate_free(mocked_http, tmp_path: P
     assert "101" in msg  # names the unpageable block
 
 
-def test_pagination_refuses_duplicate_keys(mocked_http, tmp_path: Path) -> None:
-    """A page stream that genuinely duplicates a key raises ValidationError."""
+# ---------------------------------------------------------------------------
+# 6b. T18 — subgraph reorg duplicates are de-duplicated, never fatal
+#     (canonical key is (block_number, log_index); keep the largest entity id)
+# ---------------------------------------------------------------------------
+
+_REORG_BLOCK = 16_675_001
+_REORG_LOG_INDEX = 9
+_REORG_AMOUNT0_LOW = "-63080.10805"  # the dropped (orphaned) branch
+_REORG_AMOUNT0_HIGH = "-63072.49246"  # the kept branch (largest entity id)
+_REORG_TS = "+37.177979305"
+
+
+def _raw_amount0(decimal_text: str) -> str:
+    """The tape's raw 6dp integer unit string for a resolved amount0."""
+    return str(int(Decimal(decimal_text) * 10**6))
+
+
+def _warnings_of(caplog) -> list[str]:
+    return [
+        r.getMessage() for r in caplog.records
+        if r.name == "undertow.data.fetchers.thegraph" and r.levelno == logging.WARNING
+    ]
+
+
+@pytest.mark.parametrize("largest_first", [True, False])
+def test_within_page_reorg_duplicate_keeps_largest_id(
+    mocked_http, tmp_path: Path, caplog, largest_first: bool
+) -> None:
+    """Two rows sharing (block_number, log_index) in ONE page: the largest id survives.
+
+    No exception, exactly one row in the table, the survivor is chosen by id (not by
+    arrival order or by amount), and a WARNING names the key, both ids and the range.
+    """
     f = _make(tmp_path)
-    pages = [_load_pages("swaps")[0]]
-    dup = [dict(pages[0]["data"]["swaps"][0]), dict(pages[0]["data"]["swaps"][0])]
-    _register(f, mocked_http, [{"data": {"swaps": dup}, "_meta": pages[0]["data"]["_meta"]}])
-    with pytest.raises(Exception) as excinfo:
-        f.fetch(_req())
-    assert "duplicate" in str(excinfo.value)
+    low = _reorg_swap(_REORG_BLOCK, _REORG_LOG_INDEX, "4398001", amount0=_REORG_AMOUNT0_LOW)
+    high = _reorg_swap(_REORG_BLOCK, _REORG_LOG_INDEX, "4398002", amount0=_REORG_AMOUNT0_HIGH)
+    entities = [high, low] if largest_first else [low, high]
+    _register(f, mocked_http, [_page(entities, meta=16_680_000)])
+
+    with caplog.at_level(logging.WARNING, logger="undertow.data.fetchers.thegraph"):
+        result = f.fetch(_req(start=_REORG_BLOCK, end=_REORG_BLOCK))
+
+    assert result.table.num_rows == 1
+    assert result.table.column("amount0").to_pylist() == [_raw_amount0(_REORG_AMOUNT0_HIGH)]
+    assert result.table.column("amount1").to_pylist() == [str(int(Decimal(_REORG_TS) * 10**18))]
+    assert result.table.column("block_number").to_pylist() == [_REORG_BLOCK]
+    assert result.table.column("log_index").to_pylist() == [_REORG_LOG_INDEX]
+
+    warnings = _warnings_of(caplog)
+    # one per-collapse WARNING + the per-stream summary; both name the key/ids
+    assert any(
+        f"({_REORG_BLOCK}, {_REORG_LOG_INDEX})" in w
+        and "#4398002" in w  # kept id
+        and "#4398001" in w  # dropped id
+        and f"blocks={_REORG_BLOCK}..{_REORG_BLOCK}" in w  # the block range
+        for w in warnings
+    ), warnings
+
+
+def test_across_chunk_reorg_duplicate_keeps_largest_id(
+    mocked_http, tmp_path: Path, caplog
+) -> None:
+    """The same key arriving from two chunks: one survives, the larger id wins.
+
+    Real pagination cannot emit one key from two chunks (chunk ranges are disjoint),
+    but a stale cache entry plus a fresh fetch — or a chunk split by adaptive shrink —
+    can after a reorg, so ``_rows_to_table`` must resolve it with the same policy
+    instead of aborting.
+    """
+    f = _make(tmp_path)
+    low = _reorg_swap(_REORG_BLOCK, _REORG_LOG_INDEX, "4398001", amount0=_REORG_AMOUNT0_LOW)
+    high = _reorg_swap(_REORG_BLOCK, _REORG_LOG_INDEX, "4398002", amount0=_REORG_AMOUNT0_HIGH)
+
+    def cb(request):
+        variables = json.loads(request.body)["variables"]
+        lo, hi = int(variables["cursorBlock"]), int(variables["endBlock"])
+        entities = [high] if lo <= 4095 else [low] if lo <= 8191 else []
+        return 200, {"Content-Type": "application/json"}, json.dumps(
+            _page(entities, meta=hi)
+        )
+
+    mocked_http.add_callback(responses.POST, f._endpoint(), callback=cb)
+    with caplog.at_level(logging.WARNING, logger="undertow.data.fetchers.thegraph"):
+        result = f.fetch(_req(start=0, end=9000))
+
+    assert len(mocked_http.calls) == 3  # [0,4095], [4096,8191], [8192,9000]
+    assert result.table.num_rows == 1
+    assert result.table.column("amount0").to_pylist() == [_raw_amount0(_REORG_AMOUNT0_HIGH)]
+    assert any(
+        f"({_REORG_BLOCK}, {_REORG_LOG_INDEX})" in w
+        and "across chunks" in w
+        and "#4398002" in w
+        and "#4398001" in w
+        for w in _warnings_of(caplog)
+    ), _warnings_of(caplog)
+
+
+def test_clean_page_is_unchanged_and_warns_nothing(mocked_http, tmp_path: Path, caplog) -> None:
+    """A duplicate-free page yields the same rows in the same order, with no warning."""
+    f = _make(tmp_path)
+    _register(f, mocked_http, _load_pages("swaps"))
+    with caplog.at_level(logging.WARNING, logger="undertow.data.fetchers.thegraph"):
+        result = f.fetch(_req())
+
+    assert result.warnings == ()
+    assert _warnings_of(caplog) == []
+    fixture = _load_pages("swaps")[0]["data"]["swaps"]
+    expected = sorted((int(e["transaction"]["blockNumber"]), e["logIndex"]) for e in fixture)
+    actual = list(
+        zip(
+            result.table.column("block_number").to_pylist(),
+            result.table.column("log_index").to_pylist(),
+            strict=True,
+        )
+    )
+    assert actual == expected  # every fixture row kept, block-ordered
+
+
+def test_dropped_duplicate_count_is_surfaced_in_the_pull_report(
+    mocked_http, tmp_path: Path
+) -> None:
+    """The dropped-duplicate count reaches the pull report, not just the log."""
+    f = _make(tmp_path)
+    low = _reorg_swap(_REORG_BLOCK, _REORG_LOG_INDEX, "4398001", amount0=_REORG_AMOUNT0_LOW)
+    high = _reorg_swap(_REORG_BLOCK, _REORG_LOG_INDEX, "4398002", amount0=_REORG_AMOUNT0_HIGH)
+    _register(f, mocked_http, [_page([low, high], meta=16_680_000)])
+    result = f.fetch(_req(start=_REORG_BLOCK, end=_REORG_BLOCK))
+
+    assert len(result.warnings) == 1
+    summary = result.warnings[0]
+    assert "dropped 1 duplicate" in summary
+    assert "swap" in summary  # names the stream
+
+    # the report the CLI renders carries the same note (StreamPullResult.warnings
+    # is the notes channel the pipeline copies FetchResult.warnings into)
+    report = PullReport(
+        streams={
+            "swap": StreamPullResult(
+                stream="swap",
+                route=Route.THEGRAPH,
+                row_count=result.table.num_rows,
+                n_requests=result.n_requests,
+                from_cache=result.from_cache,
+                warnings=result.warnings,
+            )
+        },
+        n_total_requests=result.n_requests,
+        all_from_cache=result.from_cache,
+    )
+    assert "dropped 1 duplicate" in _format_pull_report(report, json_output=False)
+    assert "dropped 1 duplicate" in _format_pull_report(report, json_output=True)
+
+
+def test_exact_duplicate_row_is_collapsed_not_fatal(mocked_http, tmp_path: Path) -> None:
+    """A byte-identical repeated entity (same id) is collapsed, not an abort."""
+    f = _make(tmp_path)
+    fixture = _load_pages("swaps")[0]
+    dup = [dict(fixture["data"]["swaps"][0]), dict(fixture["data"]["swaps"][0])]
+    _register(f, mocked_http, [{"data": {"swaps": dup}, "_meta": fixture["data"]["_meta"]}])
+
+    result = f.fetch(_req())
+    assert result.table.num_rows == 1
+    assert "dropped 1 duplicate" in result.warnings[0]
 
 
 # ---------------------------------------------------------------------------
