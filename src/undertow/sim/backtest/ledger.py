@@ -132,6 +132,11 @@ class BacktestLedger:
     #: the events present in the tape window, and a boundary initialised before
     #: the window is a named ADR-013 residual that this flag does not detect.
     fee_growth_exact: bool = True
+    #: S20 additive extension: the short-perp overlay's per-event series
+    #: (``step, hedge_pnl, hedge_funding, hedge_fee``), one row per tape event,
+    #: used by the parity harness to compare the hedge leg like-for-like.
+    #: ``None`` when no hedge overlay was configured (the LP-only path).
+    hedge_curve: pl.DataFrame | None = None
 
 
 @dataclass(frozen=True, slots=True)

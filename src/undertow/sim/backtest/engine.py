@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import logging
 import math
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -80,6 +81,7 @@ from undertow.sim.core.position import (
 )
 from undertow.sim.env.observations import ObservationBuilder
 from undertow.sim.frictions import GasCostCalculator, ProportionalSlippageModel
+from undertow.sim.hedge import ETH_DELTA_EPS, HedgeAccount
 from undertow.sim.marketview import MarketView
 from undertow.sim.types import Action, BacktestError, Tick, TickSpacing
 
@@ -160,6 +162,10 @@ class BacktestObservation:
     distance_to_lower_bound_spacings: float
     distance_to_upper_bound_spacings: float
     position_width_spacings: float
+    # -- Hedge overlay (S20); appended at indices 21--23 --
+    hedge_short_ratio: float = 0.0
+    hedge_equity_frac: float = 0.0
+    funding_rate_recent: float = 0.0
 
     def to_vector(self) -> np.ndarray:
         """Flatten to a stable float64 vector (the §11 ordinal regime encoding)."""
@@ -187,6 +193,9 @@ class BacktestObservation:
                 float(self.distance_to_lower_bound_spacings),
                 float(self.distance_to_upper_bound_spacings),
                 float(self.position_width_spacings),
+                float(self.hedge_short_ratio),
+                float(self.hedge_equity_frac),
+                float(self.funding_rate_recent),
             ],
             dtype=np.float64,
         )
@@ -389,6 +398,48 @@ class _Replay:
         self.initial_entry_sqrt: float = 0.0
         self.initial_entry_price: float = 0.0
 
+        # -- Hedge overlay (S20) --
+        # The same deterministic short-perp overlay the environment runs, so
+        # sim-vs-backtester parity holds like-for-like.  ``None`` when the
+        # feature is disabled: the decision log, hedge series and ledger stay
+        # byte-identical to the LP-only path.
+        self.hedge_enabled: bool = bool(config.hedge.enabled)
+        self.hedge_ratio: float = float(config.hedge.ratio)
+        self.hedge: HedgeAccount | None = (
+            HedgeAccount(
+                fee_bps=float(config.hedge.fee_bps),
+                funding_enabled=bool(config.hedge.funding_enabled),
+            )
+            if self.hedge_enabled
+            else None
+        )
+        # Mark PnL carried from the previous event (the delta is realised and
+        # zeroed at each decision, so this is ``0`` right after a trade).
+        self.hedge_mark_value: float = 0.0
+        self.hedge_last_funding_time: datetime | None = None
+        # The initial deployment trade, folded into the first event's hedge
+        # series (and decision row) so the ledger mirrors the simulator's
+        # reset + step 0.
+        self.hedge_pending_fee: float = 0.0
+        self.hedge_pending_trade: float = 0.0
+        self.hedge_rows: dict[str, list[object]] | None = (
+            {"step": [], "hedge_pnl": [], "hedge_funding": [], "hedge_fee": []}
+            if self.hedge_enabled
+            else None
+        )
+        # Sorted settlement index for the per-event funding accrual (the same
+        # O(log n) lookup the environment builds once per view).
+        self.hedge_funding_times: list[datetime] = []
+        self.hedge_funding_rates: list[float] = []
+        if self.hedge_enabled and market_view.funding is not None:
+            frame = market_view.funding.sort("funding_time")
+            self.hedge_funding_times = cast(
+                list[datetime], frame["funding_time"].to_list()
+            )
+            self.hedge_funding_rates = [
+                float(rate) for rate in frame["funding_rate"].to_list()
+            ]
+
         # Ledger rows (parallel lists; assembled into polars frames at the end).
         self.rows: dict[str, list[object]] = {
             "step": [],
@@ -410,6 +461,13 @@ class _Replay:
             "slippage_paid": [],
             "fees_collected": [],
         }
+        if self.hedge_enabled:
+            # Additive decision-log fields (S20): the hedge trade executed at
+            # each decision.  Absent entirely when the feature is disabled, so
+            # the LP-only artifact schema is unchanged.
+            self.decisions["hedge_short_size"] = []
+            self.decisions["hedge_trade"] = []
+            self.decisions["hedge_fee"] = []
         self.costs: dict[str, list[object]] = {
             "step": [],
             "cost_type": [],
@@ -507,6 +565,51 @@ class _Replay:
         step_fees_value = fees_value - self.fees_value_prev
         return fees_value, step_fees_value
 
+    # -- hedge overlay (S20) ----------------------------------------------
+    def _init_hedge(
+        self, position: Position, sqrt: float, price: float, at_time: datetime
+    ) -> None:
+        """Establish the initial short at the first event (S20).
+
+        Mirrors ``LpEnvironment.reset``: target = ``ratio * position.amount1``
+        at the entry mark, traded before the first decision's re-hedge so the
+        first step carries both fees exactly as the simulator's reset + step 0
+        do.
+        """
+        hedge = self.hedge
+        assert hedge is not None
+        target = self.hedge_ratio * position.amount1(sqrt)
+        self.hedge_pending_fee = hedge.trade_to(target, price)
+        self.hedge_pending_trade = (
+            hedge.last_trade.traded_size if hedge.last_trade is not None else 0.0
+        )
+        self.hedge_mark_value = hedge.mark_pnl(price)
+        self.hedge_last_funding_time = at_time
+
+    def _accrue_hedge_funding(self, at_time: datetime, fallback_mark: float) -> float:
+        """Accrue settlements in ``(previous event, this event]`` (S20).
+
+        Same convention as the environment: the rate comes from the view's
+        funding feed, the mark from the sim's own reference close at the
+        settlement time, and the short is the one held through the interval.
+        """
+        hedge = self.hedge
+        after = self.hedge_last_funding_time
+        self.hedge_last_funding_time = at_time
+        if hedge is None or after is None or not self.hedge_funding_times:
+            return 0.0
+        start = bisect_right(self.hedge_funding_times, after)
+        end = bisect_right(self.hedge_funding_times, at_time)
+        total = 0.0
+        for index in range(start, end):
+            settlement_time = self.hedge_funding_times[index]
+            mark = self.market_view.reference_close(settlement_time)
+            total += hedge.accrue_funding(
+                self.hedge_funding_rates[index],
+                fallback_mark if mark is None else mark,
+            )
+        return total
+
     # -- observation -------------------------------------------------------
     def _build_observation(
         self,
@@ -549,6 +652,16 @@ class _Replay:
         # ``liquidity`` column is nullable and never populated on the real lane.
         replay = self.replay
         liquidity = float(replay.current_liquidity) if replay is not None else 0.0
+        hedge_short_ratio = 0.0
+        hedge_equity_frac = 0.0
+        funding_rate_recent = 0.0
+        if self.hedge_enabled:
+            funding_rate_recent = self.observation_builder.funding_rate_recent(at_time)
+            if self.hedge is not None and position is not None:
+                eth_delta = position.amount1(sqrt)
+                if eth_delta > ETH_DELTA_EPS:
+                    hedge_short_ratio = self.hedge.short_size / eth_delta
+                hedge_equity_frac = self.hedge.equity(price) / self.capital
         return BacktestObservation(
             price=obs_price,
             sqrt_price=sqrt,
@@ -571,6 +684,9 @@ class _Replay:
             distance_to_lower_bound_spacings=distance_lower,
             distance_to_upper_bound_spacings=distance_upper,
             position_width_spacings=width,
+            hedge_short_ratio=float(hedge_short_ratio),
+            hedge_equity_frac=float(hedge_equity_frac),
+            funding_rate_recent=float(funding_rate_recent),
         )
 
     # -- decisions ---------------------------------------------------------
@@ -819,6 +935,8 @@ def run_backtest(
             run.initial_entry_sqrt = sqrt
             run.initial_entry_price = price
             run.equity = run.capital
+            if run.hedge_enabled:
+                run._init_hedge(initial_position, sqrt, price, tape.time[i])
             # Register the synthetic position's boundaries so a later real mint
             # at the same tick cannot re-seed feeGrowthOutside (ADR-013).
             run.replay.register_position(
@@ -867,6 +985,24 @@ def run_backtest(
         step_slippage = 0.0
         step_fees_collected = 0.0
         rebalanced = False
+
+        # S20 hedge overlay: mark the open short from the previous event to
+        # this one and accrue any settlements inside the interval *before* the
+        # decision re-hedges (the interval's short is the one established at
+        # the previous decision).
+        hedge_pnl_event = 0.0
+        hedge_funding_event = 0.0
+        pending_fee = run.hedge_pending_fee
+        pending_trade = run.hedge_pending_trade
+        run.hedge_pending_fee = 0.0
+        run.hedge_pending_trade = 0.0
+        hedge_fee_event = -pending_fee
+        if run.hedge_enabled:
+            assert run.hedge is not None
+            mark_value = run.hedge.mark_pnl(price)
+            hedge_pnl_event = mark_value - run.hedge_mark_value
+            run.hedge_mark_value = mark_value
+            hedge_funding_event = run._accrue_hedge_funding(tape.time[i], price)
 
         is_decision = run._decision_due(i, last_decision_idx)
         if is_decision:
@@ -947,8 +1083,33 @@ def run_backtest(
                 run.decisions["gas_paid"].append(0.0)
                 run.decisions["slippage_paid"].append(0.0)
                 run.decisions["fees_collected"].append(0.0)
+
+            # S20: re-hedge the deterministic overlay at the decision state,
+            # after the LP action, and record the trade on the decision row.
+            if run.hedge_enabled:
+                assert run.hedge is not None
+                target = run.hedge_ratio * position.amount1(sqrt)
+                hedge_fee = run.hedge.trade_to(target, price)
+                hedge_fee_event += -hedge_fee
+                traded = (
+                    run.hedge.last_trade.traded_size
+                    if run.hedge.last_trade is not None
+                    else 0.0
+                )
+                run.decisions["hedge_short_size"].append(run.hedge.short_size)
+                # The first decision carries the initial deployment trade too,
+                # matching the simulator's reset + step 0.
+                run.decisions["hedge_trade"].append(traded + pending_trade)
+                run.decisions["hedge_fee"].append(-(hedge_fee + pending_fee))
+                run.hedge_mark_value = run.hedge.mark_pnl(price)
             last_decision_idx = i
             decision_index += 1
+
+        if run.hedge_rows is not None:
+            run.hedge_rows["step"].append(int(tape.seq[i]))
+            run.hedge_rows["hedge_pnl"].append(hedge_pnl_event)
+            run.hedge_rows["hedge_funding"].append(hedge_funding_event)
+            run.hedge_rows["hedge_fee"].append(hedge_fee_event)
 
         run.il_prev = il_now
         # After a collect the new position starts with zero accrued fees; on a
@@ -986,6 +1147,26 @@ def run_backtest(
             "fees_collected": pl.Float64,
         }
     )
+    hedge_curve: pl.DataFrame | None = None
+    if run.hedge_enabled:
+        # S20 additive columns: only present when the overlay is enabled, so a
+        # disabled run's decision log is byte-identical to the LP-only path.
+        decision_log = decision_log.cast(
+            {
+                "hedge_short_size": pl.Float64,
+                "hedge_trade": pl.Float64,
+                "hedge_fee": pl.Float64,
+            }
+        )
+        assert run.hedge_rows is not None
+        hedge_curve = pl.DataFrame(run.hedge_rows).cast(
+            {
+                "step": pl.Int64,
+                "hedge_pnl": pl.Float64,
+                "hedge_funding": pl.Float64,
+                "hedge_fee": pl.Float64,
+            }
+        )
     cost_ledger = cost_ledger.cast(
         {"step": pl.Int64, "cost_type": pl.String, "amount_usdc": pl.Float64}
     )
@@ -1013,4 +1194,5 @@ def run_backtest(
         periods_per_year=periods_per_year,
         n_steps=total_events,
         fee_growth_exact=run.replay.exact,
+        hedge_curve=hedge_curve,
     )

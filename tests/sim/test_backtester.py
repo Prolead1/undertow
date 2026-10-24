@@ -8,6 +8,7 @@ and the frozen-policy guarantee.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -17,6 +18,7 @@ import pytest
 
 from undertow.data import price_to_tick, tick_to_price, tick_to_sqrt_price_x96
 from undertow.sim.backtest import (
+    DECISION_LOG_COLUMNS,
     EQUITY_CURVE_COLUMNS,
     BacktestLedger,
     BacktestObservation,
@@ -24,7 +26,13 @@ from undertow.sim.backtest import (
     run_backtest,
     summarize_backtest,
 )
-from undertow.sim.config import EpisodeConfig, GasConfig, SimConfig, SlippageConfig
+from undertow.sim.config import (
+    EpisodeConfig,
+    GasConfig,
+    HedgeConfig,
+    SimConfig,
+    SlippageConfig,
+)
 from undertow.sim.core.pool import PoolEngine, PoolState
 from undertow.sim.core.position import calc_sqrt_price_a, initial_deposit
 from undertow.sim.env.lp_env import LpEnvironment
@@ -213,6 +221,128 @@ def test_ledger_frames_non_empty_with_rebalancing_policy() -> None:
 
 def test_equity_curve_columns_exact(tiny_ledger: BacktestLedger) -> None:
     assert tuple(tiny_ledger.equity_curve.columns) == EQUITY_CURVE_COLUMNS
+
+
+# ---------------------------------------------------------------------------
+# S20 hedge overlay
+# ---------------------------------------------------------------------------
+
+
+def test_disabled_hedge_keeps_the_ledger_schema(tiny_market_view: MarketView) -> None:
+    """The default (disabled) run is byte-identical to the LP-only path."""
+    ledger = run_backtest(HODLPolicy(), tiny_market_view, SimConfig())
+    assert ledger.hedge_curve is None
+    assert tuple(ledger.decision_log.columns) == DECISION_LOG_COLUMNS
+    assert tuple(ledger.equity_curve.columns) == EQUITY_CURVE_COLUMNS
+
+
+def test_enabled_hedge_records_curve_and_decision_columns() -> None:
+    """The backtester applies the same overlay and records its trade."""
+    view = _flat_view()
+    start = view.train_start_utc
+    funding = pl.DataFrame(
+        {
+            "funding_time": [start + timedelta(minutes=30)],
+            "symbol": ["ETHUSDC"],
+            "funding_rate": [0.001],
+            "mark_price": [None],
+            "is_gap_filled": [False],
+        }
+    )
+    view = replace(view, funding=funding)
+    config = SimConfig(hedge=HedgeConfig(enabled=True, ratio=1.0, fee_bps=5.0))
+    ledger = run_backtest(HODLPolicy(), view, config)
+
+    assert ledger.hedge_curve is not None
+    assert tuple(ledger.hedge_curve.columns) == (
+        "step",
+        "hedge_pnl",
+        "hedge_funding",
+        "hedge_fee",
+    )
+    assert ledger.hedge_curve.height == ledger.equity_curve.height
+    assert "hedge_short_size" in ledger.decision_log.columns
+    assert "hedge_trade" in ledger.decision_log.columns
+    assert "hedge_fee" in ledger.decision_log.columns
+
+    # The initial + first-decision trades have established the short and paid
+    # the perp fee; the first decision row is negative.
+    first = ledger.decision_log.row(0, named=True)
+    assert first["hedge_short_size"] > 0.0
+    assert first["hedge_fee"] <= 0.0
+    # The decision-log fees and the per-event hedge curve agree, and the flat
+    # price means the accrued funding is exactly short * price * rate.
+    hedge = ledger.hedge_curve
+    assert float(hedge["hedge_fee"].sum()) == pytest.approx(
+        float(ledger.decision_log["hedge_fee"].sum())
+    )
+    expected_funding = first["hedge_short_size"] * _ENTRY_PRICE * 0.001
+    assert float(hedge["hedge_funding"].sum()) == pytest.approx(
+        expected_funding, rel=1e-9
+    )
+    # The hedge overlay does not leak into the frozen LP decomposition.
+    assert set(ledger.pnl_decomposition) == {
+        "total_fees",
+        "total_gas",
+        "total_slippage",
+        "total_il",
+        "net",
+    }
+    assert float(hedge["hedge_pnl"].sum()) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_hedge_observation_features_are_gated_by_enabled() -> None:
+    """S20 test item 5: the three appended dims are zero when disabled.
+
+    The view carries a funding settlement at the window start, so an ungated
+    ``funding_rate_recent`` would be non-zero; the disabled run must report the
+    LP-only 21-dim values (hedge dims 21--23 zero), while the enabled run sees
+    the stream's rate.
+    """
+    view = _flat_view()
+    funding = pl.DataFrame(
+        {
+            "funding_time": [view.train_start_utc],
+            "symbol": ["ETHUSDC"],
+            "funding_rate": [0.001],
+            "mark_price": [None],
+            "is_gap_filled": [False],
+        }
+    )
+    view = replace(view, funding=funding)
+
+    class _CapturePolicy:
+        name = "capture"
+
+        def __init__(self) -> None:
+            self.observations: list[BacktestObservation] = []
+
+        def reset(self) -> None:
+            self.observations.clear()
+
+        def act(self, observation: BacktestObservation, rng: object = None) -> Action:
+            self.observations.append(observation)
+            return Action(action_type="hold")
+
+    disabled_spy = _CapturePolicy()
+    enabled_spy = _CapturePolicy()
+    run_backtest(disabled_spy, view, SimConfig())  # type: ignore[arg-type]
+    run_backtest(  # type: ignore[arg-type]
+        enabled_spy,
+        view,
+        SimConfig(hedge=HedgeConfig(enabled=True, ratio=1.0)),
+    )
+
+    assert disabled_spy.observations
+    for observation in disabled_spy.observations:
+        assert observation.hedge_short_ratio == 0.0
+        assert observation.hedge_equity_frac == 0.0
+        assert observation.funding_rate_recent == 0.0
+        assert observation.to_vector()[21:].tolist() == [0.0, 0.0, 0.0]
+    # Non-vacuous: the enabled run reads the stream's rate at the same time.
+    assert enabled_spy.observations
+    assert enabled_spy.observations[0].funding_rate_recent == pytest.approx(0.001)
+    assert enabled_spy.observations[0].hedge_short_ratio > 0.0
 
 
 def test_hodl_decision_log_is_all_holds(tiny_ledger: BacktestLedger) -> None:
@@ -1153,17 +1283,22 @@ def test_backtest_observation_to_vector_is_stable() -> None:
         distance_to_lower_bound_spacings=2.0,
         distance_to_upper_bound_spacings=-1.0,
         position_width_spacings=4.0,
+        hedge_short_ratio=0.75,
+        hedge_equity_frac=-0.002,
+        funding_rate_recent=0.0001,
     )
     vector = obs.to_vector()
     assert isinstance(vector, np.ndarray)
     assert vector.dtype == np.float64
-    assert len(vector) == 21
+    assert len(vector) == 24
     assert vector[6] == 1.0  # in-range bool
     assert vector[12] == 3000.0  # fee tier
     assert vector[15] == 1.0  # bear ordinal
     assert vector[16] == 3.0 and vector[17] == 7.0
-    # ADR-029 geometry features are appended at indices 18..20.
+    # ADR-029 geometry features are appended at indices 18..20; S20 hedge
+    # features at 21..23.
     assert vector[18] == 2.0 and vector[19] == -1.0 and vector[20] == 4.0
+    assert vector[21] == 0.75 and vector[22] == -0.002 and vector[23] == 0.0001
 
 
 def test_observation_rolling_features_use_reference_bars_not_events() -> None:

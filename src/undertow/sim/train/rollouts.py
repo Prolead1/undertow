@@ -85,6 +85,13 @@ ROLLOUT_SCHEMA: dict[str, pl.DataType | type[pl.DataType]] = {
     "position_liquidity": pl.Float64,
     "pool_fee_earned_0": pl.Float64,
     "pool_fee_earned_1": pl.Float64,
+    # Additive §2.1 extension (S20): the short-perp hedge overlay's per-step
+    # breakdown, in USDC (mirrors `reward_breakdown_raw`).  Zero on every row
+    # when the hedge is disabled, so LP-only numbers and the UI's cost/equity
+    # arithmetic are unchanged (readers select by name).
+    "hedge_pnl": pl.Float64,
+    "hedge_funding": pl.Float64,
+    "hedge_fee": pl.Float64,
 }
 
 
@@ -120,6 +127,9 @@ class RolloutRow(TypedDict):
     position_liquidity: float
     pool_fee_earned_0: float
     pool_fee_earned_1: float
+    hedge_pnl: float
+    hedge_funding: float
+    hedge_fee: float
 
 
 def rows_from_env(
@@ -192,6 +202,11 @@ def rows_from_env(
             "pool_fee_earned_1": float(
                 cast(float, info.get("pool_fee_earned_1") or 0.0)
             ),
+            # S20: the hedge breakdown is already USDC in the raw breakdown;
+            # missing keys (older synthetic infos) mean a disabled overlay.
+            "hedge_pnl": float(cast(float, raw.get("hedge_pnl", 0.0))),
+            "hedge_funding": float(cast(float, raw.get("hedge_funding", 0.0))),
+            "hedge_fee": float(cast(float, raw.get("hedge_fee", 0.0))),
         }
         rows.append(row)
     return rows

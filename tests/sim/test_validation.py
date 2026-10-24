@@ -38,7 +38,7 @@ from undertow.data import (
     price_to_tick,
 )
 from undertow.sim.backtest import BacktestLedger, run_backtest
-from undertow.sim.config import EpisodeConfig, SimConfig
+from undertow.sim.config import EpisodeConfig, HedgeConfig, RewardConfig, SimConfig
 from undertow.sim.core.pool import PoolEngine, PoolState, TickState
 from undertow.sim.core.position import DEFAULT_DEC0, DEFAULT_DEC1, calc_sqrt_price_a
 from undertow.sim.env.lp_env import LpEnvironment
@@ -908,6 +908,154 @@ class TestRebalancingParity:
         assert abs(report.slippage_drift_mean) <= report.tolerance
         assert report.gas_drift_max > report.tolerance
         assert report.slippage_drift_max > report.tolerance
+
+
+class TestHedgeParity:
+    """S20: the hedge overlay is like-for-like across the two worlds."""
+
+    def test_hedge_parity_passes_with_zero_drift(self) -> None:
+        view = _parity_view(_REBALANCE_PRICES)
+        settlement = _PARITY_START + timedelta(minutes=30)
+        funding = pl.DataFrame(
+            {
+                "funding_time": [settlement],
+                "symbol": ["ETHUSDC"],
+                "funding_rate": [0.001],
+                "mark_price": [None],
+                "is_gap_filled": [False],
+            }
+        )
+        view = replace(view, funding=funding)
+        config = replace(
+            _parity_config(), hedge=HedgeConfig(enabled=True, ratio=1.0)
+        )
+        policy = TauResetPolicy(120)
+        env = _parity_env(
+            view, config, ReplayGasModel(view, config.gas), ProportionalSlippageModel()
+        )
+        ledger = run_backtest(policy, view, config)
+
+        # The fixture's overlay actually traded and accrued funding, so the
+        # zero-drift assertion below is not vacuous.
+        assert ledger.hedge_curve is not None
+        assert float(ledger.hedge_curve["hedge_fee"].sum()) < 0.0
+        assert float(ledger.hedge_curve["hedge_funding"].sum()) > 0.0
+
+        report = run_parity_check(
+            env,
+            ledger,
+            num_episodes=3,
+            seeds=(0, 1, 2),
+            policy=policy,
+        )
+        assert report.passed is True, report
+        for attr in (
+            "hedge_pnl_drift_mean",
+            "hedge_funding_drift_mean",
+            "hedge_fee_drift_mean",
+            "hedge_pnl_drift_max",
+            "hedge_funding_drift_max",
+            "hedge_fee_drift_max",
+        ):
+            assert abs(getattr(report, attr)) < report.tolerance, (attr, report)
+
+    def test_hedge_parity_passes_under_reward_hedge_ablation(self) -> None:
+        """RQ1: ``[hedge] enabled=true`` + ``[reward] hedge_enabled=false``
+        must still pass with zero hedge drift.
+
+        This is the S20 parity regression: the simulator's gated
+        ``reward_breakdown_raw`` zeroes the hedge terms under the ablation while
+        the backtester's ledger keeps the full magnitudes, so a harness that
+        read the gated breakdown reported every step as a full-magnitude hedge
+        drift and ``passed=False``.  The harness now reads the ungated
+        ``reward_breakdown_economics`` payload.
+        """
+        view = _parity_view(_REBALANCE_PRICES)
+        settlement = _PARITY_START + timedelta(minutes=30)
+        funding = pl.DataFrame(
+            {
+                "funding_time": [settlement],
+                "symbol": ["ETHUSDC"],
+                "funding_rate": [0.001],
+                "mark_price": [None],
+                "is_gap_filled": [False],
+            }
+        )
+        view = replace(view, funding=funding)
+        config = replace(
+            _parity_config(),
+            hedge=HedgeConfig(enabled=True, ratio=1.0),
+            reward=RewardConfig(hedge_enabled=False),
+        )
+        policy = TauResetPolicy(120)
+        env = _parity_env(
+            view, config, ReplayGasModel(view, config.gas), ProportionalSlippageModel()
+        )
+        ledger = run_backtest(policy, view, config)
+
+        # Non-vacuous: the ledger's overlay traded and accrued funding, and the
+        # simulator's gated breakdown (the old harness source) reads zero.
+        assert ledger.hedge_curve is not None
+        assert float(ledger.hedge_curve["hedge_fee"].sum()) < 0.0
+        assert float(ledger.hedge_curve["hedge_funding"].sum()) > 0.0
+        env.reset(seed=0)
+        _, _, _, _, gated_info = env.step(0)
+        assert gated_info["reward_breakdown_raw"]["hedge_fee"] == 0.0
+        assert gated_info["reward_breakdown_economics"]["hedge_fee"] != 0.0
+
+        report = run_parity_check(
+            env,
+            ledger,
+            num_episodes=3,
+            seeds=(0, 1, 2),
+            policy=policy,
+        )
+        assert report.passed is True, report
+        for attr in (
+            "hedge_pnl_drift_mean",
+            "hedge_funding_drift_mean",
+            "hedge_fee_drift_mean",
+            "hedge_pnl_drift_max",
+            "hedge_funding_drift_max",
+            "hedge_fee_drift_max",
+        ):
+            assert abs(getattr(report, attr)) < report.tolerance, (attr, report)
+
+    def test_parity_passes_under_gas_and_slippage_ablation(self) -> None:
+        """The same economics fix covers the other gated friction terms.
+
+        With ``gas_enabled=false`` and ``slippage_enabled=false`` the gated
+        breakdown reads zero for a decision that genuinely paid both, so the
+        pre-fix harness compared a zero series against the ledger's full costs
+        and failed; reading the economics payload keeps parity exact.
+        """
+        view = _parity_view(_REBALANCE_PRICES)
+        config = replace(
+            _parity_config(),
+            reward=RewardConfig(gas_enabled=False, slippage_enabled=False),
+        )
+        policy = TauResetPolicy(120)
+        env = _parity_env(
+            view, config, ReplayGasModel(view, config.gas), ProportionalSlippageModel()
+        )
+        ledger = run_backtest(policy, view, config)
+
+        # Non-vacuous: the executed decisions paid material gas and slippage.
+        assert float(ledger.decision_log["gas_paid"].sum()) < 0.0
+        assert float(ledger.decision_log["slippage_paid"].sum()) < -1.0
+
+        report = run_parity_check(
+            env,
+            ledger,
+            num_episodes=3,
+            seeds=(0, 1, 2),
+            policy=policy,
+        )
+        assert report.passed is True, report
+        assert report.gas_drift_max == 0.0
+        assert report.slippage_drift_max == 0.0
+        assert report.gas_drift_mean == 0.0
+        assert report.slippage_drift_mean == 0.0
 
 
 class TestExecutedDecisionGuard:

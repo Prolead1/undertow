@@ -27,7 +27,7 @@ from undertow.data import (
     tick_to_price,
     tick_to_sqrt_price_x96,
 )
-from undertow.sim.config import EpisodeConfig, SimConfig
+from undertow.sim.config import EpisodeConfig, HedgeConfig, RewardConfig, SimConfig
 from undertow.sim.core.pool import PoolEngine, PoolState, TickState
 from undertow.sim.core.position import calc_sqrt_price_a, initial_deposit
 from undertow.sim.env.lp_env import LpEnvironment
@@ -192,6 +192,9 @@ class TestObservationDataclass:
             distance_to_lower_bound_spacings=float(values[18]),
             distance_to_upper_bound_spacings=float(values[19]),
             position_width_spacings=float(values[20]),
+            hedge_short_ratio=float(values[21]),
+            hedge_equity_frac=float(values[22]),
+            funding_rate_recent=float(values[23]),
         )
         vector = obs.to_vector()
         assert vector.dtype == np.float64
@@ -202,10 +205,14 @@ class TestObservationDataclass:
         assert vector.tolist() == expected
         # regime ordinal sits at index 15: sideways -> 2.
         assert vector[15] == 2.0
-        # ADR-029 geometry features are appended at indices 18..20.
+        # ADR-029 geometry features are appended at indices 18..20; S20 hedge
+        # features at 21..23.
         assert vector[18] == float(values[18])
         assert vector[19] == float(values[19])
         assert vector[20] == float(values[20])
+        assert vector[21] == float(values[21])
+        assert vector[22] == float(values[22])
+        assert vector[23] == float(values[23])
 
     @pytest.mark.parametrize(
         ("regime", "ordinal"),
@@ -743,6 +750,12 @@ class TestStep:
         expected_keys = {f.name for f in dataclasses.fields(RewardBreakdown)}
         assert set(info["reward_breakdown"].keys()) == expected_keys
         assert set(info["reward_breakdown_raw"].keys()) == expected_keys
+        # S20: the ungated economics payload (same shape, no ablation gating).
+        assert set(info["reward_breakdown_economics"].keys()) == expected_keys
+        assert (
+            info["reward_breakdown_economics"]["equity"]
+            == info["reward_breakdown_raw"]["equity"]
+        )
 
     def test_hold_advances_price_keeps_position_and_accrues_fees(
         self, tiny_env: LpEnvironment
@@ -2123,3 +2136,688 @@ class TestExternalPoolSeeding:
         assert this_step == 0.0
         raw_after, _ = env.pool_engine.position_fees(env.position_id)
         assert raw_after == 0.0
+
+
+# ---------------------------------------------------------------------------
+# S20 — hedge overlay
+# ---------------------------------------------------------------------------
+
+
+def _flat_reference_view(view: MarketView, price: float = 3004.0) -> MarketView:
+    """``view`` with every reference close pinned to ``price``.
+
+    Calibrated-mode envs take their entry price from the reference close, so a
+    flat reference feed makes the entry mark and the ordered price process
+    agree (the tiny fixture's reference feed is a random walk an arbitrary
+    distance from any ``_SequencePriceProcess``).
+    """
+    return replace(
+        view,
+        reference=view.reference.with_columns(pl.lit(float(price)).alias("close")),
+    )
+
+
+def _hedge_env(
+    tiny_market_view: MarketView,
+    price_process: object,
+    gas_model: object,
+    slippage_model: object,
+    *,
+    enabled: bool,
+    ratio: float = 1.0,
+    funding_enabled: bool = True,
+    reward_hedge: bool = True,
+    reward_gas: bool = True,
+    reward_slippage: bool = True,
+) -> LpEnvironment:
+    """A calibrated env with the hedge overlay configured explicitly."""
+    return LpEnvironment(
+        tiny_market_view,
+        _fresh_pool_engine(),
+        price_process,
+        gas_model,
+        slippage_model,
+        SimConfig(
+            episode=EpisodeConfig(duration_days=31, step_minutes=10),
+            price_mode=PriceMode.CALIBRATED,
+            hedge=HedgeConfig(
+                enabled=enabled,
+                ratio=ratio,
+                funding_enabled=funding_enabled,
+            ),
+            reward=RewardConfig(
+                hedge_enabled=reward_hedge,
+                gas_enabled=reward_gas,
+                slippage_enabled=reward_slippage,
+            ),
+        ),
+    )
+
+
+def _funding_frame(
+    times: list[datetime],
+    rates: list[float],
+    marks: list[float | None] | None = None,
+) -> pl.DataFrame:
+    """A minimal funding feed (the three columns the sim reads)."""
+    return pl.DataFrame(
+        {
+            "funding_time": times,
+            "symbol": ["ETHUSDC"] * len(times),
+            "funding_rate": rates,
+            "mark_price": marks if marks is not None else [None] * len(times),
+            "is_gap_filled": [False] * len(times),
+        }
+    )
+
+
+class TestHedgeOverlay:
+    def test_disabled_and_zero_ratio_are_byte_identical(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """A disabled hedge changes nothing: 24 dims, last three zero.
+
+        An overlay configured with ``ratio=0`` trades no ETH and must match the
+        disabled env exactly on the full vector and the raw breakdown, which is
+        the regression guard for the first 21 LP-only dimensions.
+        """
+        view = _flat_reference_view(tiny_market_view)
+        prices = [3004.0, 3008.0, 3002.0, 3010.0]
+        disabled = _hedge_env(
+            view,
+            _SequencePriceProcess(prices),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=False,
+        )
+        zero = _hedge_env(
+            view,
+            _SequencePriceProcess(prices),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+            ratio=0.0,
+        )
+        obs_a, info_a = disabled.reset(seed=0)
+        obs_b, info_b = zero.reset(seed=0)
+        assert np.array_equal(obs_a, obs_b)
+        assert obs_a.shape == (OBSERVATION_VECTOR_LENGTH,)
+        assert obs_a[21:].tolist() == [0.0, 0.0, 0.0]
+        assert info_a["reward_breakdown_raw"] == info_b["reward_breakdown_raw"]
+
+        for _ in range(3):
+            obs_a, reward_a, _, _, info_a = disabled.step(0)
+            obs_b, reward_b, _, _, info_b = zero.step(0)
+            assert np.array_equal(obs_a, obs_b)
+            assert reward_a == reward_b
+            assert info_a["reward_breakdown_raw"] == info_b["reward_breakdown_raw"]
+            assert info_a["hedge_equity"] == 0.0
+            for key in ("hedge_pnl", "hedge_funding", "hedge_fee"):
+                assert info_a["reward_breakdown_raw"][key] == 0.0
+
+    def test_hedge_offsets_a_large_price_move(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """With ``ratio=1`` the short tracks the LP ETH delta and variance falls.
+
+        A pure (fee-free) price rise is the cleanest delta-neutrality probe: the
+        LP loses on its WETH leg and the short gains the same magnitude, so the
+        total equity move is far smaller than the unhedged one.
+        """
+        view = _flat_reference_view(tiny_market_view)
+        prices = [3004.0, 3050.0, 3100.0, 3150.0, 3200.0, 3250.0, 3300.0]
+        unhedged = _hedge_env(
+            view,
+            _SequencePriceProcess(prices),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=False,
+        )
+        hedged = _hedge_env(
+            view,
+            _SequencePriceProcess(prices),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+            ratio=1.0,
+        )
+        capital = hedged.config.episode.agent_capital_usdc
+        unhedged.reset(seed=0)
+        reset_vector, _ = hedged.reset(seed=0)
+        hedge_pnl_rising = 0.0
+        for _ in range(len(prices)):
+            _, _, _, _, unhedged_info = unhedged.step(0)
+            _, _, _, _, hedged_info = hedged.step(0)
+            hedge_pnl_rising += float(
+                hedged_info["reward_breakdown_raw"]["hedge_pnl"]
+            )
+        unhedged_pnl = float(unhedged_info["equity"]) - capital
+        hedged_pnl = (
+            float(hedged_info["equity"]) + float(hedged_info["hedge_equity"])
+        ) - capital
+        assert abs(unhedged_pnl) > 100.0  # the rise genuinely moved the LP value
+        # The overlay removes the directional move; the residual is the LP's
+        # convexity/IL cost, well under 1 % of capital here.
+        assert abs(hedged_pnl) < abs(unhedged_pnl) * 0.5
+        assert abs(hedged_pnl) < 0.01 * capital
+        # The short loses in total as the price rises (before funding).
+        assert hedge_pnl_rising < 0.0
+        from undertow.sim.evaluate import observation_from_vector
+
+        obs = observation_from_vector(reset_vector.tolist())
+        assert obs.hedge_short_ratio == pytest.approx(1.0, rel=1e-9)
+
+    def test_hedge_trade_executes_at_the_decision_price(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """ADR-031: the re-hedge is priced at the decision mark, not the next bar."""
+        env = _hedge_env(
+            _flat_reference_view(tiny_market_view),
+            _SequencePriceProcess([3004.0, 3010.0, 4000.0]),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+        )
+        env.reset(seed=0)
+        env.step(0)  # decision at entry -> mark 3004
+        env.step(0)  # decision at 3004 -> mark 3010
+        assert env._last_mark_price == pytest.approx(3010.0)
+        rebalance = Action(action_type="rebalance", center_offset=0, width=2)
+        index = env._action_lookup.index(rebalance)
+        env.step(index)  # decision at 3010 -> advance to 4000
+        assert env._last_mark_price == pytest.approx(4000.0)
+        trade = env._hedge.last_trade
+        assert trade is not None
+        assert trade.mark == pytest.approx(3010.0)
+        assert trade.mark != pytest.approx(4000.0)
+
+    def test_funding_accrues_only_at_settlements(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """Funding is charged once per settlement, at the sim's own mark."""
+        closes = tiny_market_view.reference.sort("close_time")
+        close_times = closes["close_time"].to_list()
+        settlement_times = [close_times[10], close_times[40]]
+        rates = [0.001, -0.002]
+        # Flat reference closes pin the funding marks at 3004 exactly.
+        view = replace(
+            _flat_reference_view(tiny_market_view, 3004.0),
+            funding=_funding_frame(settlement_times, rates),
+        )
+        env = _hedge_env(
+            view,
+            _ConstantPriceProcess(3004.0),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+        )
+        env.reset(seed=0)
+        # Let the pool settle onto the constant process price so the short is
+        # constant over the settlements (the first step re-bases the entry).
+        for _ in range(5):
+            env.step(0)
+        short = env._hedge.short_size
+        assert short > 0.0
+
+        funding_steps = 0
+        funding_total = 0.0
+        for _ in range(500):
+            _, _, terminated, truncated, info = env.step(0)
+            accrual = float(info["reward_breakdown_raw"]["hedge_funding"])
+            if accrual != 0.0:
+                funding_steps += 1
+                funding_total += accrual
+            if terminated or truncated:
+                break
+        assert funding_steps == 2
+        expected = short * 3004.0 * (rates[0] + rates[1])
+        assert funding_total == pytest.approx(expected, rel=1e-12)
+        # The stream's nullable mark price is not used: the settlements were
+        # accrued at the reference closes, not at a stream mark.
+        assert env._hedge.funding_pnl == pytest.approx(funding_total)
+
+    def test_funding_disabled_gates_the_accrual(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        closes = tiny_market_view.reference.sort("close_time")
+        view = replace(
+            _flat_reference_view(tiny_market_view),
+            funding=_funding_frame(
+                [closes["close_time"][10]], [0.001]
+            ),
+        )
+        env = _hedge_env(
+            view,
+            _ConstantPriceProcess(3004.0),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+            funding_enabled=False,
+        )
+        env.reset(seed=0)
+        for _ in range(500):
+            _, _, terminated, truncated, info = env.step(0)
+            assert info["reward_breakdown_raw"]["hedge_funding"] == 0.0
+            if terminated or truncated:
+                break
+
+    def test_hedge_terms_gated_by_reward_flag_but_pnl_net_is_not(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        view = _flat_reference_view(tiny_market_view)
+        prices = [3004.0, 3060.0]
+        gated_env = _hedge_env(
+            view,
+            _SequencePriceProcess(prices),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+            reward_hedge=False,
+        )
+        ungated_env = _hedge_env(
+            view,
+            _SequencePriceProcess(prices),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+            reward_hedge=True,
+        )
+        gated_env.reset(seed=0)
+        ungated_env.reset(seed=0)
+        _, _, _, _, gated_info = gated_env.step(0)
+        _, _, _, _, ungated_info = ungated_env.step(0)
+        gated = gated_info["reward_breakdown_raw"]
+        ungated = ungated_info["reward_breakdown_raw"]
+
+        # The gate zeroes the terms in the learning reward...
+        assert gated["hedge_pnl"] == 0.0
+        assert gated["hedge_funding"] == 0.0
+        assert gated["hedge_fee"] == 0.0
+        assert ungated["hedge_pnl"] != 0.0
+        assert ungated["reward"] - gated["reward"] == pytest.approx(
+            ungated["hedge_pnl"] + ungated["hedge_funding"] + ungated["hedge_fee"]
+        )
+        # ... but the ungated economic total is identical either way.
+        assert gated["pnl_net"] == pytest.approx(ungated["pnl_net"])
+
+    def test_hedge_equity_frac_is_reported(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        env = _hedge_env(
+            _flat_reference_view(tiny_market_view),
+            _ConstantPriceProcess(3004.0),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+        )
+        vector, info = env.reset(seed=0)
+        from undertow.sim.evaluate import observation_from_vector
+
+        obs = observation_from_vector(vector.tolist())
+        # The entry trade paid the perp fee, so hedge equity is -fee / capital.
+        assert obs.hedge_equity_frac == pytest.approx(
+            float(info["hedge_equity"]) / env.config.episode.agent_capital_usdc
+        )
+        assert obs.hedge_equity_frac < 0.0
+        assert obs.hedge_short_ratio == pytest.approx(1.0, rel=1e-3)
+
+    def test_disabled_hedge_zeroes_appended_dims_with_funding_present(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """S20 test item 5: all three appended dims are zero when disabled.
+
+        The view carries a funding settlement at the window start, so an
+        ungated ``funding_rate_recent`` would be non-zero; the disabled run
+        must still report the LP-only vector and its first 21 dims must equal
+        the enabled run's (the overlay never touches the LP state).
+        """
+        settlement = tiny_market_view.active_start_utc
+        view = replace(
+            _flat_reference_view(tiny_market_view),
+            funding=_funding_frame([settlement], [0.001]),
+        )
+        disabled = _hedge_env(
+            view,
+            _ConstantPriceProcess(3004.0),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=False,
+        )
+        enabled = _hedge_env(
+            view,
+            _ConstantPriceProcess(3004.0),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+        )
+        disabled_obs, disabled_info = disabled.reset(seed=0)
+        enabled_obs, _enabled_info = enabled.reset(seed=0)
+        # Non-vacuous: the enabled run reads the stream's rate at the same time.
+        assert enabled_obs[23] == pytest.approx(0.001)
+        assert disabled_obs[21:].tolist() == [0.0, 0.0, 0.0]
+        assert np.array_equal(disabled_obs[:21], enabled_obs[:21])
+        assert disabled_info["reward_breakdown_economics"]["hedge_funding"] == 0.0
+
+        for _ in range(3):
+            disabled_obs, _, terminated, truncated, _ = disabled.step(0)
+            assert disabled_obs[21:].tolist() == [0.0, 0.0, 0.0]
+            if terminated or truncated:
+                break
+
+    def test_economics_payload_is_ungated_by_reward_flags(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """The ungated payload keeps every term an RQ1 ablation zeroes.
+
+        This is the environment-side half of the S20 parity fix: with gas,
+        slippage and hedge ablated in the *learning* reward, the raw breakdown
+        reads zero for all three, while the economics payload the parity
+        harness consumes still holds the true magnitudes.
+        """
+        env = _hedge_env(
+            _flat_reference_view(tiny_market_view),
+            _SequencePriceProcess([3004.0, 3060.0, 3090.0]),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+            reward_hedge=False,
+            reward_gas=False,
+            reward_slippage=False,
+        )
+        env.reset(seed=0)
+        rebalance = Action(action_type="rebalance", center_offset=0, width=2)
+        index = env._action_lookup.index(rebalance)
+        _, _, _, _, info = env.step(index)
+        raw = info["reward_breakdown_raw"]
+        economics = info["reward_breakdown_economics"]
+
+        # The gated view zeroes the ablated terms...
+        assert raw["gas"] == 0.0
+        assert raw["slippage"] == 0.0
+        assert raw["hedge_pnl"] == 0.0
+        assert raw["hedge_funding"] == 0.0
+        assert raw["hedge_fee"] == 0.0
+        # ... while the economics payload keeps them (the rebalance paid gas
+        # and slippage; the mark move and reset trade moved the hedge).
+        assert economics["gas"] < 0.0
+        assert economics["slippage"] < 0.0
+        assert economics["hedge_pnl"] != 0.0
+        assert economics["hedge_fee"] < 0.0
+        # The ungated net is shared: `pnl_net` never depended on the flags.
+        assert economics["pnl_net"] == pytest.approx(raw["pnl_net"])
+        assert economics["fees"] == raw["fees"]
+        assert economics["il_change"] == raw["il_change"]
+
+
+# ---------------------------------------------------------------------------
+# S20 golden guard: the disabled build reproduces HEAD's LP-only output exactly
+# ---------------------------------------------------------------------------
+# Captured from commit 745135f (pre-S20) with the scenario in
+# ``TestDisabledGoldenGuard`` below: shared tiny fixture, flat reference feed,
+# ``_SequencePriceProcess([3004, 3010, 2995, 3005, 3015])``, calibrated mode,
+# reset(seed=0) then holds at steps 1--2, a (center_offset=0, width=2) rebalance
+# at step 3, a hold at step 4.  The constants are the observation vector and the
+# (gated/ungated identical) USDC reward breakdown of that exact run, so any
+# accidental change to the disabled path fails on the raw float values rather
+# than on a loose tolerance.
+_GOLDEN_DISABLED_OBS: dict[str, list[float]] = {
+    "reset": [
+        3004.30716760014,
+        18244.326385761702,
+        196242.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        99999.99999988991,
+        0.0,
+        0.0,
+        0.0,
+        1e18,
+        3000.0,
+        21000000000.0,
+        3004.30716760014,
+        0.0,
+        0.0,
+        4463.0,
+        10.7,
+        10.3,
+        21.0,
+    ],
+    "step1": [
+        3004.0,
+        18245.259129220667,
+        196243.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        99994.78781637349,
+        8.825809261938209e-05,
+        0.0,
+        -4.2143421451328325e-08,
+        1e18,
+        3000.0,
+        21000000000.0,
+        3004.0,
+        0.0,
+        1.0,
+        4462.0,
+        10.716666666666667,
+        10.283333333333333,
+        21.0,
+    ],
+    "step2": [
+        3004.0,
+        18227.06541441223,
+        196223.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        99996.39275793756,
+        0.00017651618523876418,
+        0.0,
+        1.600727221928537e-05,
+        1e18,
+        3000.0,
+        21000000000.0,
+        3004.0,
+        0.0,
+        2.0,
+        4461.0,
+        10.383333333333333,
+        10.616666666666667,
+        21.0,
+    ],
+    "step3": [
+        3004.0,
+        18272.652143588817,
+        196273.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        99925.73302112112,
+        0.00036597667825354914,
+        0.0,
+        -0.000690590095945081,
+        1e18,
+        3000.0,
+        21000000000.0,
+        3004.0,
+        0.0,
+        3.0,
+        4460.0,
+        3.216666666666667,
+        1.7833333333333334,
+        5.0,
+    ],
+    "step4": [
+        3004.0,
+        18242.22305978801,
+        196239.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        99910.8691072961,
+        0.0007319533565070983,
+        0.0,
+        -0.0008392292341953726,
+        1e18,
+        3000.0,
+        21000000000.0,
+        3004.0,
+        0.0,
+        4.0,
+        4459.0,
+        2.65,
+        2.35,
+        5.0,
+    ],
+}
+
+_GOLDEN_DISABLED_RAW: dict[str, dict[str, float]] = {
+    "reset": {
+        "fees": 0.0,
+        "gas": 0.0,
+        "slippage": 0.0,
+        "il_change": 0.0,
+        "risk_penalty": 0.0,
+        "reward": 0.0,
+        "pnl_net": 0.0,
+        "equity": 100000.0,
+    },
+    "step1": {
+        "fees": 8.825809261938209e-05,
+        "gas": -0.0,
+        "slippage": -0.0,
+        "il_change": -0.004214342145132832,
+        "risk_penalty": 0.0,
+        "reward": -0.0041260840525134505,
+        "pnl_net": -0.0041260840525134505,
+        "equity": 99994.78790463158,
+    },
+    "step2": {
+        "fees": 8.825809261938209e-05,
+        "gas": -0.0,
+        "slippage": -0.0,
+        "il_change": -1.4418992520513711,
+        "risk_penalty": 0.0,
+        "reward": -1.4418109939587518,
+        "pnl_net": -1.4418109939587518,
+        "equity": 100095.07497074404,
+    },
+    "step3": {
+        "fees": 0.00036597667825354914,
+        "gas": -76.4775,
+        "slippage": -6.16750327591709,
+        "il_change": -25.062111793493386,
+        "risk_penalty": 0.0,
+        "reward": -107.70674909273222,
+        "pnl_net": -107.70674909273222,
+        "equity": 99733.04602888528,
+    },
+    "step4": {
+        "fees": 0.00036597667825354914,
+        "gas": -0.0,
+        "slippage": -0.0,
+        "il_change": 25.972910674274317,
+        "risk_penalty": 0.0,
+        "reward": 25.97327665095257,
+        "pnl_net": 25.97327665095257,
+        "equity": 99928.56743404694,
+    },
+}
+
+
+class TestDisabledGoldenGuard:
+    """The disabled overlay reproduces the pre-S20 LP-only numbers exactly.
+
+    Golden constants captured from HEAD (commit 745135f) with the scenario
+    below; see the comments above the constants.  The first 21 observation dims
+    and the eight original reward fields must match bit for bit, and the three
+    appended hedge dims must be exactly zero.
+    """
+
+    def test_disabled_path_reproduces_head_observations_and_reward(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        env = _hedge_env(
+            _flat_reference_view(tiny_market_view),
+            _SequencePriceProcess([3004.0, 3010.0, 2995.0, 3005.0, 3015.0]),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=False,
+        )
+        observation, info = env.reset(seed=0)
+        rows: list[tuple[str, np.ndarray, dict[str, float], dict[str, float]]] = [
+            (
+                "reset",
+                observation,
+                dict(info["reward_breakdown_raw"]),
+                dict(info["reward_breakdown_economics"]),
+            )
+        ]
+        rebalance = Action(action_type="rebalance", center_offset=0, width=2)
+        rebalance_index = env._action_lookup.index(rebalance)
+        for step, action_idx in enumerate([0, 0, rebalance_index, 0]):
+            observation, _reward, terminated, truncated, info = env.step(action_idx)
+            rows.append(
+                (
+                    f"step{step + 1}",
+                    observation,
+                    dict(info["reward_breakdown_raw"]),
+                    dict(info["reward_breakdown_economics"]),
+                )
+            )
+            if terminated or truncated:  # pragma: no cover - long episode budget
+                break
+
+        assert [label for label, _obs, _raw, _econ in rows] == list(
+            _GOLDEN_DISABLED_OBS
+        )
+        for label, obs, raw, economics in rows:
+            assert obs.shape == (OBSERVATION_VECTOR_LENGTH,)
+            assert obs[:21].tolist() == _GOLDEN_DISABLED_OBS[label]
+            assert obs[21:].tolist() == [0.0, 0.0, 0.0]
+            golden_raw = _GOLDEN_DISABLED_RAW[label]
+            assert set(golden_raw) <= set(raw)
+            for key, expected in golden_raw.items():
+                assert raw[key] == expected, (label, key, raw[key], expected)
+            for key in ("hedge_pnl", "hedge_funding", "hedge_fee"):
+                assert raw[key] == 0.0
+            # No ablation is configured, so the ungated economics view is
+            # field-for-field the same as the gated raw breakdown.
+            assert economics == raw

@@ -18,6 +18,7 @@ from undertow.sim.config import (
     BacktestConfig,
     EpisodeConfig,
     GasConfig,
+    HedgeConfig,
     RewardConfig,
     SimConfig,
     SlippageConfig,
@@ -117,6 +118,62 @@ class TestRewardConfig:
         assert rc.slippage_enabled is True
         assert rc.il_enabled is True
         assert rc.risk_penalty_enabled is False
+        # S20: the hedge terms are part of the learning reward by default; the
+        # RQ1 ablation sets this false (only meaningful with [hedge] enabled).
+        assert rc.hedge_enabled is True
+
+
+# ---------------------------------------------------------------------------
+# HedgeConfig
+# ---------------------------------------------------------------------------
+class TestHedgeConfig:
+    def test_defaults(self) -> None:
+        hc = HedgeConfig()
+        assert hc.enabled is False
+        assert hc.fee_bps == 5.0
+        assert hc.funding_enabled is True
+        assert hc.ratio == 1.0
+        assert tuple(hc.ratios) == (0.0, 0.25, 0.5, 0.75, 1.0)
+
+    @pytest.mark.parametrize(
+        "fee_bps", [-1.0, -1e-9, float("nan"), float("inf"), float("-inf")]
+    )
+    def test_negative_or_non_finite_fee_bps_raises(self, fee_bps: float) -> None:
+        with pytest.raises(SimConfigError, match="fee_bps"):
+            HedgeConfig(fee_bps=fee_bps)
+
+    @pytest.mark.parametrize(
+        "ratio",
+        [-0.01, 1.01, -1.0, 2.0, float("nan"), float("inf"), float("-inf")],
+    )
+    def test_out_of_range_or_non_finite_ratio_raises(self, ratio: float) -> None:
+        with pytest.raises(SimConfigError, match="ratio"):
+            HedgeConfig(ratio=ratio)
+
+    @pytest.mark.parametrize("ratio", [0.0, 0.5, 1.0])
+    def test_ratio_boundaries_are_valid(self, ratio: float) -> None:
+        assert HedgeConfig(ratio=ratio).ratio == ratio
+
+    @pytest.mark.parametrize(
+        "bad",
+        [-0.01, 1.01, -1.0, 2.0, float("nan"), float("inf"), float("-inf")],
+    )
+    def test_out_of_range_or_non_finite_ratios_entry_raises(self, bad: float) -> None:
+        with pytest.raises(SimConfigError, match="ratios"):
+            HedgeConfig(ratios=(0.0, bad, 1.0))
+
+    def test_empty_ratios_is_valid(self) -> None:
+        # ``ratios`` is the S20b action head; this task only consumes ``ratio``,
+        # so an empty discrete head is a legal (if degenerate) configuration.
+        assert tuple(HedgeConfig(ratios=()).ratios) == ()
+
+    def test_error_message_names_the_offending_value(self) -> None:
+        with pytest.raises(SimConfigError, match="3.5"):
+            HedgeConfig(ratio=3.5)
+        with pytest.raises(SimConfigError, match="-2.0"):
+            HedgeConfig(fee_bps=-2.0)
+        with pytest.raises(SimConfigError, match="1.25"):
+            HedgeConfig(ratios=(0.5, 1.25))
 
 
 # ---------------------------------------------------------------------------
@@ -271,3 +328,35 @@ class TestLoadSimConfig:
         )
         with pytest.raises(SimConfigError, match="train_end_utc"):
             load_sim_config(str(path))
+
+    def test_hedge_section_loads(self, tmp_path) -> None:
+        path = tmp_path / "hedge.toml"
+        _write_toml(
+            path,
+            "[hedge]\nenabled = true\nfee_bps = 3.5\n"
+            "funding_enabled = false\nratio = 0.5\n"
+            "ratios = [0.0, 0.5, 1.0]\n",
+        )
+        cfg = load_sim_config(str(path))
+        assert cfg.hedge.enabled is True
+        assert cfg.hedge.fee_bps == 3.5
+        assert cfg.hedge.funding_enabled is False
+        assert cfg.hedge.ratio == 0.5
+        # TOML arrays become tuples for the ``Sequence``-typed field, exactly
+        # like the action grid.
+        assert isinstance(cfg.hedge.ratios, tuple)
+        assert cfg.hedge.ratios == (0.0, 0.5, 1.0)
+
+    def test_hedge_validation_applies_through_the_loader(self, tmp_path) -> None:
+        path = tmp_path / "bad_hedge.toml"
+        _write_toml(path, "[hedge]\nenabled = true\nratio = 1.5\n")
+        with pytest.raises(SimConfigError, match="ratio"):
+            load_sim_config(str(path))
+
+    def test_empty_hedge_section_uses_defaults(self, tmp_path) -> None:
+        path = tmp_path / "empty_hedge.toml"
+        _write_toml(path, "[hedge]\n")
+        cfg = load_sim_config(str(path))
+        assert cfg.hedge.enabled is False
+        assert cfg.hedge.fee_bps == 5.0
+        assert cfg.hedge.ratio == 1.0

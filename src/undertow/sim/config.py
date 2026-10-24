@@ -6,6 +6,7 @@ exactly. No logic here — just types, defaults, validation, and the TOML loader
 
 from __future__ import annotations
 
+import math
 import tomllib
 import typing
 from collections.abc import Sequence
@@ -82,6 +83,43 @@ class RewardConfig:
     slippage_enabled: bool = True
     il_enabled: bool = True
     risk_penalty_enabled: bool = False
+    #: Gate the hedge PnL/funding/fee terms (S20, ADR-030).  ``True`` keeps the
+    #: terms in the learning reward; ``False`` is the RQ1 "hedge off" ablation
+    #: (the ungated `pnl_net` still records them).
+    hedge_enabled: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class HedgeConfig:
+    """Short-perp hedge overlay configuration (S20, ``CONTRACTS.md`` §2).
+
+    Disabled by default: with ``enabled=False`` the environment, reward and
+    observation are exactly the LP-only ones (the hedge terms are zero).
+
+    ``ratios`` is the discrete hedge-ratio head S20b will expose; this task
+    only consumes ``ratio`` (the deterministic overlay's target fraction of the
+    LP's ETH delta).
+    """
+
+    enabled: bool = False
+    fee_bps: float = 5.0  # perp taker fee, true basis points (S19)
+    funding_enabled: bool = True
+    ratio: float = 1.0  # deterministic overlay target = ratio * LP ETH delta
+    ratios: Sequence[float] = (0.0, 0.25, 0.5, 0.75, 1.0)  # S20b action head
+
+    def __post_init__(self) -> None:
+        fee_bps = float(self.fee_bps)
+        if not math.isfinite(fee_bps) or fee_bps < 0.0:
+            raise SimConfigError(f"hedge.fee_bps must be >= 0, got {self.fee_bps!r}")
+        ratio = float(self.ratio)
+        if not math.isfinite(ratio) or not 0.0 <= ratio <= 1.0:
+            raise SimConfigError(f"hedge.ratio must be in [0, 1], got {self.ratio!r}")
+        for value in self.ratios:
+            entry = float(value)
+            if not math.isfinite(entry) or not 0.0 <= entry <= 1.0:
+                raise SimConfigError(
+                    f"hedge.ratios entries must be in [0, 1], got {value!r}"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +191,8 @@ class SimConfig:
     price_mode: PriceMode = PriceMode.REPLAY
     seed: int = 0
     output_dir: Path | None = None
+    #: S20 short-perp hedge overlay (additive, defaulted: disabled).
+    hedge: HedgeConfig = field(default_factory=HedgeConfig)
 
     def rng(self) -> np.random.Generator:
         """Construct a seeded ``numpy.random.Generator`` from ``self.seed``."""
@@ -184,6 +224,7 @@ def load_sim_config(path: str | Path) -> SimConfig:
         "training",
         "backtest",
         "price",
+        "hedge",
     }
     unknown = set(raw.keys()) - _known_sections
     if unknown:
@@ -226,4 +267,5 @@ def load_sim_config(path: str | Path) -> SimConfig:
         training=_populate(TrainingConfig, raw.get("training")),
         backtest=_populate(BacktestConfig, raw.get("backtest")),
         price_mode=price_mode,
+        hedge=_populate(HedgeConfig, raw.get("hedge")),
     )

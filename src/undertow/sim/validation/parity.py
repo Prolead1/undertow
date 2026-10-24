@@ -144,14 +144,15 @@ class ParityReport:
     """Sim-vs-backtester agreement on identical inputs (CONTRACTS §16).
 
     The drift fields are the mean and population std of the per-step
-    ``sim - backtest`` difference for fees, IL, PnL, gas and slippage, in USDC;
-    the ``*_max`` fields are the worst single-step absolute drift of each
-    series.  ``passed`` requires every mean **and** the per-step ``max|drift|``
-    of gas and slippage to lie within ``tolerance`` (ADR-031/S22: a one-step
-    shift cancels in the mean) and is exposed as a real (``init=False``)
-    dataclass field so it is part of the frozen shape.  The gas/slippage and
-    max fields are additive, defaulted extensions (PLAN.md §0.2) appended after
-    the frozen fields.
+    ``sim - backtest`` difference for fees, IL, PnL, gas, slippage and the S20
+    hedge series (mark PnL, funding, fee), in USDC; the ``*_max`` fields are
+    the worst single-step absolute drift of each series.  ``passed`` requires
+    every mean **and** the per-step ``max|drift|`` of the spike-prone
+    gas/slippage/hedge series to lie within ``tolerance`` (ADR-031/S22: a
+    one-step shift cancels in the mean) and is exposed as a real
+    (``init=False``) dataclass field so it is part of the frozen shape.  The
+    gas/slippage, hedge and max fields are additive, defaulted extensions
+    (PLAN.md §0.2) appended after the frozen fields.
     """
 
     fee_drift_mean: float
@@ -174,6 +175,20 @@ class ParityReport:
     pnl_drift_max: float = 0.0
     gas_drift_max: float = 0.0
     slippage_drift_max: float = 0.0
+    # --- S20 hedge additive extensions (defaulted; appended last) ---
+    #: Mean/std of the per-step hedge mark PnL drift (USDC).
+    hedge_pnl_drift_mean: float = 0.0
+    hedge_pnl_drift_std: float = 0.0
+    #: Mean/std of the per-step hedge funding drift (USDC).
+    hedge_funding_drift_mean: float = 0.0
+    hedge_funding_drift_std: float = 0.0
+    #: Mean/std of the per-step hedge fee drift (USDC, signed ``<= 0``).
+    hedge_fee_drift_mean: float = 0.0
+    hedge_fee_drift_std: float = 0.0
+    #: Worst single-step ``|sim - backtest|`` for each hedge series.
+    hedge_pnl_drift_max: float = 0.0
+    hedge_funding_drift_max: float = 0.0
+    hedge_fee_drift_max: float = 0.0
 
     def __post_init__(self) -> None:
         means = (
@@ -182,10 +197,20 @@ class ParityReport:
             self.pnl_drift_mean,
             self.gas_drift_mean,
             self.slippage_drift_mean,
+            self.hedge_pnl_drift_mean,
+            self.hedge_funding_drift_mean,
+            self.hedge_fee_drift_mean,
         )
-        # The per-step criterion is on the cost series: a one-step execution
-        # shift moves a gas/slippage spike and cancels in the means.
-        maxima = (self.gas_drift_max, self.slippage_drift_max)
+        # The per-step criterion is on the spike-prone series: a one-step
+        # execution shift moves a gas/slippage/funding spike and cancels in the
+        # means.
+        maxima = (
+            self.gas_drift_max,
+            self.slippage_drift_max,
+            self.hedge_pnl_drift_max,
+            self.hedge_funding_drift_max,
+            self.hedge_fee_drift_max,
+        )
         within = all(math.isfinite(m) and abs(m) <= self.tolerance for m in means)
         within = within and all(
             math.isfinite(m) and abs(m) <= self.tolerance for m in maxima
@@ -351,6 +376,9 @@ def _sim_step_series(
     list[float],
     list[float],
     list[float],
+    list[float],
+    list[float],
+    list[float],
     list[datetime],
     list[_Decision],
 ]:
@@ -361,8 +389,12 @@ def _sim_step_series(
     :func:`~undertow.sim.evaluate.protocol.observation_from_vector`, calls
     ``policy.act`` and maps the :class:`~undertow.sim.types.Action` back to the
     environment's discrete index.  Returns ``(fees, il, pnl, gas, slippage,
-    step_end_times, decisions)``: the first five are the per-step
-    ``reward_breakdown_raw`` terms in USDC, ``step_end_times`` the bar-close
+    hedge_pnl, hedge_funding, hedge_fee, step_end_times, decisions)``: the
+    numeric series are the per-step **ungated economics** terms in USDC
+    (``info["reward_breakdown_economics"]``; the gated
+    ``reward_breakdown_raw`` would read ``0`` for an ablated friction while the
+    backtester still records its full magnitude -- S20) with the hedge terms
+    zero when the overlay is disabled, ``step_end_times`` the bar-close
     timestamps the numeric series are bucketed on, and ``decisions`` the
     executed-action records (at the decision state each action was executed at)
     the cross-world guard compares against the backtester.
@@ -381,6 +413,9 @@ def _sim_step_series(
     sim_pnl: list[float] = []
     sim_gas: list[float] = []
     sim_slippage: list[float] = []
+    sim_hedge_pnl: list[float] = []
+    sim_hedge_funding: list[float] = []
+    sim_hedge_fee: list[float] = []
     decisions: list[_Decision] = []
     equity_prev = float(sim_env.config.episode.agent_capital_usdc)
     for _ in range(episode_length):
@@ -388,14 +423,19 @@ def _sim_step_series(
         action = policy.act(observation, rng)
         action_index = action_to_index(sim_env, action)
         vector, _reward, terminated, truncated, info = sim_env.step(action_index)
-        raw = info["reward_breakdown_raw"]
-        sim_fees.append(float(raw["fees"]))
-        sim_il.append(float(raw["il_change"]))
-        equity = float(raw["equity"])
+        # Ungated economics (S20): an RQ1 ablation zeroes the term in the gated
+        # ``reward_breakdown_raw`` while the backtester's series is unchanged.
+        economics = info["reward_breakdown_economics"]
+        sim_fees.append(float(economics["fees"]))
+        sim_il.append(float(economics["il_change"]))
+        equity = float(economics["equity"])
         sim_pnl.append(equity - equity_prev)
         equity_prev = equity
-        sim_gas.append(float(raw["gas"]))
-        sim_slippage.append(float(raw["slippage"]))
+        sim_gas.append(float(economics["gas"]))
+        sim_slippage.append(float(economics["slippage"]))
+        sim_hedge_pnl.append(float(economics["hedge_pnl"]))
+        sim_hedge_funding.append(float(economics["hedge_funding"]))
+        sim_hedge_fee.append(float(economics["hedge_fee"]))
         applied = info["action"]
         decisions.append(
             _Decision(
@@ -414,6 +454,9 @@ def _sim_step_series(
         sim_pnl,
         sim_gas,
         sim_slippage,
+        sim_hedge_pnl,
+        sim_hedge_funding,
+        sim_hedge_fee,
         step_end_times[: len(sim_fees)],
         decisions,
     )
@@ -499,6 +542,66 @@ def _per_step_backtest(
     return out_fees, out_il, out_pnl, out_gas, out_slippage
 
 
+def _per_step_hedge(
+    ledger: BacktestLedger,
+    market_view: MarketView,
+    window: tuple[int, int],
+    decision_times: Sequence[datetime],
+    decision_rows: Sequence[dict[str, Any] | None],
+) -> tuple[list[float], list[float], list[float]]:
+    """Aggregate the ledger's hedge series into the sim's per-step buckets.
+
+    Mark PnL and funding are interval accruals, bucketed with the same ``<=``
+    rule as the fee/IL series, so bucket ``k`` holds the contribution over the
+    interval ending at the simulator's step-end time ``D_k`` — exactly the
+    interval the simulator measured (its short was established at the
+    interval's start).  The hedge **fee** is a decision cost, like gas and
+    slippage: the simulator pays it at the decision state that opens bucket
+    ``k``, while the backtester logs it on the decision row that
+    ``_bucket_backtest_decisions`` maps to bucket ``k``, so it is read from
+    there.  A ledger without a hedge curve (the overlay disabled) yields zeros,
+    which is what the simulator's gated breakdown reports too.
+    """
+    steps = len(decision_times)
+    curve = ledger.hedge_curve
+    if curve is None or curve.height == 0:
+        return [0.0] * steps, [0.0] * steps, [0.0] * steps
+
+    view = market_view.slice(window[0], window[1])
+    tape = view.active_split_data()
+    time_by_seq = dict(
+        zip(tape["seq"].to_list(), tape["block_timestamp"].to_list(), strict=True)
+    )
+    rows = sorted(
+        (time_by_seq[int(seq)], float(pnl), float(funding))
+        for seq, pnl, funding in zip(
+            curve["step"].to_list(),
+            curve["hedge_pnl"].to_list(),
+            curve["hedge_funding"].to_list(),
+            strict=True,
+        )
+    )
+
+    out_pnl: list[float] = []
+    out_funding: list[float] = []
+    out_fee: list[float] = []
+    idx = 0
+    total = len(rows)
+    pnl_cum = funding_cum = 0.0
+    prev_pnl = prev_funding = 0.0
+    for step, decision_time in enumerate(decision_times):
+        while idx < total and rows[idx][0] <= decision_time:
+            pnl_cum += rows[idx][1]
+            funding_cum += rows[idx][2]
+            idx += 1
+        out_pnl.append(pnl_cum - prev_pnl)
+        out_funding.append(funding_cum - prev_funding)
+        row = decision_rows[step] if step < len(decision_rows) else None
+        out_fee.append(float(row.get("hedge_fee", 0.0)) if row is not None else 0.0)
+        prev_pnl, prev_funding = pnl_cum, funding_cum
+    return out_pnl, out_funding, out_fee
+
+
 def run_parity_check(
     sim_env: LpEnvironment,
     backtest_ledger: BacktestLedger,
@@ -514,11 +617,12 @@ def run_parity_check(
     no-op HOLD policy when ``policy is None``); the backtester is run over the
     identical episode window with the same config and policy.  The two per-step
     series are aligned by decision time and the per-step ``sim - backtest``
-    differences are pooled across every episode.  ``passed`` is true when every
-    mean drift lies within ``tolerance`` and the per-step ``max|drift|`` of the
-    gas and slippage series does too; the fee/IL/PnL maxima are reported
-    alongside (a one-step execution shift must fail, not cancel into a false
-    pass).
+    differences are pooled across every episode (including the S20 hedge mark
+    PnL, funding and fee series when the overlay is enabled).  ``passed`` is
+    true when every mean drift lies within ``tolerance`` and the per-step
+    ``max|drift|`` of the spike-prone gas/slippage/hedge series does too; the
+    fee/IL/PnL maxima are reported alongside (a one-step execution shift must
+    fail, not cancel into a false pass).
 
     Before the numeric comparison the action **executed in each numeric bucket**
     is checked to be identical across the two worlds -- same action type and
@@ -565,6 +669,9 @@ def run_parity_check(
     pnl_drifts: list[float] = []
     gas_drifts: list[float] = []
     slippage_drifts: list[float] = []
+    hedge_pnl_drifts: list[float] = []
+    hedge_funding_drifts: list[float] = []
+    hedge_fee_drifts: list[float] = []
 
     for seed in chosen:
         (
@@ -573,6 +680,9 @@ def run_parity_check(
             sim_pnl,
             sim_gas,
             sim_slippage,
+            sim_hedge_pnl,
+            sim_hedge_funding,
+            sim_hedge_fee,
             decision_times,
             decisions,
         ) = _sim_step_series(sim_env, active_policy, seed)
@@ -594,6 +704,9 @@ def run_parity_check(
         bt_fees, bt_il, bt_pnl, bt_gas, bt_slippage = _per_step_backtest(
             ledger, market_view, window, decision_times, decision_rows
         )
+        bt_hedge_pnl, bt_hedge_funding, bt_hedge_fee = _per_step_hedge(
+            ledger, market_view, window, decision_times, decision_rows
+        )
 
         for i in range(min(len(sim_fees), len(bt_fees))):
             fee_drifts.append(sim_fees[i] - bt_fees[i])
@@ -601,6 +714,11 @@ def run_parity_check(
             pnl_drifts.append(sim_pnl[i] - bt_pnl[i])
             gas_drifts.append(sim_gas[i] - bt_gas[i])
             slippage_drifts.append(sim_slippage[i] - bt_slippage[i])
+            hedge_pnl_drifts.append(sim_hedge_pnl[i] - bt_hedge_pnl[i])
+            hedge_funding_drifts.append(
+                sim_hedge_funding[i] - bt_hedge_funding[i]
+            )
+            hedge_fee_drifts.append(sim_hedge_fee[i] - bt_hedge_fee[i])
 
     if not fee_drifts:
         raise ParityError(
@@ -626,4 +744,13 @@ def run_parity_check(
         pnl_drift_max=float(np.max(np.abs(pnl_drifts))),
         gas_drift_max=float(np.max(np.abs(gas_drifts))),
         slippage_drift_max=float(np.max(np.abs(slippage_drifts))),
+        hedge_pnl_drift_mean=float(np.mean(hedge_pnl_drifts)),
+        hedge_pnl_drift_std=float(np.std(hedge_pnl_drifts)),
+        hedge_funding_drift_mean=float(np.mean(hedge_funding_drifts)),
+        hedge_funding_drift_std=float(np.std(hedge_funding_drifts)),
+        hedge_fee_drift_mean=float(np.mean(hedge_fee_drifts)),
+        hedge_fee_drift_std=float(np.std(hedge_fee_drifts)),
+        hedge_pnl_drift_max=float(np.max(np.abs(hedge_pnl_drifts))),
+        hedge_funding_drift_max=float(np.max(np.abs(hedge_funding_drifts))),
+        hedge_fee_drift_max=float(np.max(np.abs(hedge_fee_drifts))),
     )
