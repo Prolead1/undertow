@@ -255,12 +255,14 @@ def test_mixed_collision_with_repeated_losing_type_still_aborts(
         [*swap_rows, duplicate], schema=SCHEMA_REGISTRY["swap"]
     )
 
-    with caplog.at_level(logging.WARNING, logger="undertow.data.transforms.align"):
-        with pytest.raises(ValidationError, match="duplicate merge keys"):
-            build_event_tape(
-                streams, pool=data.pool, gas=data.gas, reference=data.reference,
-                regime=data.regime, fee_growth=data.fee_growth,
-            )
+    with (
+        caplog.at_level(logging.WARNING, logger="undertow.data.transforms.align"),
+        pytest.raises(ValidationError, match="duplicate merge keys"),
+    ):
+        build_event_tape(
+            streams, pool=data.pool, gas=data.gas, reference=data.reference,
+            regime=data.regime, fee_growth=data.fee_growth,
+        )
     assert _align_warning_messages(caplog) == []
 
 
@@ -284,12 +286,14 @@ def test_resolvable_collision_beside_a_mixed_key_collapses_then_aborts(
     streams["burn"] = pa.Table.from_pylist(burn_rows, schema=SCHEMA_REGISTRY["burn"])
     streams["swap"] = pa.Table.from_pylist(swap_rows, schema=SCHEMA_REGISTRY["swap"])
 
-    with caplog.at_level(logging.WARNING, logger="undertow.data.transforms.align"):
-        with pytest.raises(ValidationError, match="duplicate merge keys"):
-            build_event_tape(
-                streams, pool=data.pool, gas=data.gas, reference=data.reference,
-                regime=data.regime, fee_growth=data.fee_growth,
-            )
+    with (
+        caplog.at_level(logging.WARNING, logger="undertow.data.transforms.align"),
+        pytest.raises(ValidationError, match="duplicate merge keys"),
+    ):
+        build_event_tape(
+            streams, pool=data.pool, gas=data.gas, reference=data.reference,
+            regime=data.regime, fee_growth=data.fee_growth,
+        )
     warnings = _align_warning_messages(caplog)
     assert len(warnings) == 1, warnings
     assert "collapsed 1 cross-stream" in warnings[0]
@@ -313,12 +317,14 @@ def test_resolvable_collision_beside_a_mixed_loser_key_collapses_then_aborts(
         row["block_timestamp"] = target["block_timestamp"]
     streams["swap"] = pa.Table.from_pylist(swap_rows, schema=SCHEMA_REGISTRY["swap"])
 
-    with caplog.at_level(logging.WARNING, logger="undertow.data.transforms.align"):
-        with pytest.raises(ValidationError, match="duplicate merge keys"):
-            build_event_tape(
-                streams, pool=data.pool, gas=data.gas, reference=data.reference,
-                regime=data.regime, fee_growth=data.fee_growth,
-            )
+    with (
+        caplog.at_level(logging.WARNING, logger="undertow.data.transforms.align"),
+        pytest.raises(ValidationError, match="duplicate merge keys"),
+    ):
+        build_event_tape(
+            streams, pool=data.pool, gas=data.gas, reference=data.reference,
+            regime=data.regime, fee_growth=data.fee_growth,
+        )
     warnings = _align_warning_messages(caplog)
     assert len(warnings) == 1, warnings
     assert "collapsed 1 cross-stream" in warnings[0]
