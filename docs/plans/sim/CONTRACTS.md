@@ -758,10 +758,13 @@ def compute_reward(
 
     ``il_change`` is the step change in the strategy's value over the **fixed
     initial HODL basket** (the deposit deployed at episode start held outside
-    the pool): the environment measures it on the pre-action position, exactly
-    as the backtester's ledger does.  The reward is therefore the change in
-    ``excess_vs_hodl``; its episode sum is the reported excess over HODL
-    (ADR-029).  The benchmark is never rebased at a rebalance."""
+    the pool).  Under ADR-031 the action executes at the interval's start, so
+    the step's ``il_change`` is measured on the **post-action** position over
+    the interval that follows it, exactly as the backtester's ledger does (the
+    earlier ADR-029 note said pre-action; ADR-031 supersedes it).  The reward is
+    therefore the change in ``excess_vs_hodl``; its episode sum is the reported
+    excess over HODL (ADR-029).  The benchmark is never rebased at a
+    rebalance."""
     ...
 ```
 
@@ -914,7 +917,15 @@ class LpEnvironment(gym.Env):
 
     def step(self, action_idx: int) -> tuple[np.ndarray, float, bool, bool, dict]:
         """Returns (observation, reward, terminated, truncated, info).
-        info carries the full RewardBreakdown as a dict."""
+        info carries the full RewardBreakdown as a dict.
+
+        Step ordering (ADR-031): the action is chosen from the observation at
+        the decision state and executed **at that state** (gas/slippage priced
+        from the decision tape row) before the market advances; the interval's
+        events then accrue to the post-action position, and fees/IL/equity/
+        reward/observation are measured on it.  ``reset`` leaves that decision
+        state fully populated.  This matches the backtester's same-event
+        execution and on-chain latency."""
         ...
 ```
 
