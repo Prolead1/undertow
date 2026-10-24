@@ -344,18 +344,22 @@ class TestEvaluatePolicy:
 
 class TestObservationAdapter:
     def test_round_trips_length_and_regime(self) -> None:
-        vector = [0.0] * 21
+        vector = [0.0] * 24
         vector[15] = 1.0  # bear ordinal
         vector[18], vector[19], vector[20] = -3.0, 5.0, 8.0  # ADR-029 geometry
+        vector[21], vector[22], vector[23] = 0.75, -0.002, 0.0001  # S20 hedge
         observation = observation_from_vector(vector)
         assert observation.regime == "bear"
-        assert observation.to_vector().shape == (21,)
+        assert observation.to_vector().shape == (24,)
         assert observation.distance_to_lower_bound_spacings == -3.0
         assert observation.distance_to_upper_bound_spacings == 5.0
         assert observation.position_width_spacings == 8.0
+        assert observation.hedge_short_ratio == 0.75
+        assert observation.hedge_equity_frac == -0.002
+        assert observation.funding_rate_recent == 0.0001
 
     def test_wrong_length_raises(self) -> None:
-        with pytest.raises(EvaluationError, match="length 21"):
+        with pytest.raises(EvaluationError, match="length 24"):
             observation_from_vector([0.0] * 17)
 
 

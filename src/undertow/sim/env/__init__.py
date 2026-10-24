@@ -16,6 +16,7 @@ from undertow.sim.env.observations import (
 from undertow.sim.env.reward import (
     RewardBreakdown,
     compute_reward,
+    compute_reward_economics,
     normalize_reward,
 )
 
@@ -26,5 +27,6 @@ __all__ = [
     "ObservationBuilder",
     "RewardBreakdown",
     "compute_reward",
+    "compute_reward_economics",
     "normalize_reward",
 ]

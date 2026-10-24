@@ -29,6 +29,7 @@ from undertow.data import (
     PoolConfig,
     load_data_config,
     load_fee_growth,
+    load_funding,
     load_gas_feed,
     load_reference_feed,
     load_regime_labels,
@@ -117,6 +118,14 @@ class MarketView:
     #: so the backtester can warm its exact fee engine from the lane-start
     #: ``pool_state`` to the window start (ADR-018). ``None`` for a full lane.
     warmup: pl.DataFrame | None = None
+    #: Binance USDT-perp funding feed (``FUNDING_SCHEMA`` as polars), sorted by
+    #: ``funding_time`` and restricted to the configured primary symbol. ``None``
+    #: (or empty) when the dataset carries no funding stream; a view without
+    #: funding is valid and accrues zero (S20).  The hedge marks against the
+    #: sim's own reference price, so the stream's nullable ``mark_price`` is not
+    #: used (2005/3288 rows are null in 2022-23); it is returned by
+    #: :meth:`funding_at` for callers that want it.
+    funding: pl.DataFrame | None = None
 
     # ------------------------------------------------------------------
     # Invariants (CONTRACTS §4.1)
@@ -191,6 +200,31 @@ class MarketView:
     # ------------------------------------------------------------------
     # Query methods (CONTRACTS §4)
     # ------------------------------------------------------------------
+    def funding_at(self, timestamp: datetime) -> tuple[float, float] | None:
+        """As-of (backward) funding settlement at or before ``timestamp``.
+
+        Returns ``(funding_rate, mark_price)`` of the latest settlement with
+        ``funding_time <= timestamp``, or ``None`` before the first settlement
+        (or when the view has no funding feed).  ``mark_price`` is the stream's
+        raw value and may be ``NaN`` where Binance omitted it — the hedge marks
+        against the sim's own reference price and consumes only the rate (S20).
+        Raises ``LookAheadError`` when ``timestamp`` is past the active wall.
+        """
+        self._check_time(timestamp)
+        funding = self.funding
+        if funding is None or funding.height == 0:
+            return None
+        times = funding["funding_time"]
+        idx = int(times.search_sorted(timestamp, side="right")) - 1
+        if idx < 0:
+            return None
+        rate = float(funding["funding_rate"][idx])
+        raw_mark = (
+            funding["mark_price"][idx] if "mark_price" in funding.columns else None
+        )
+        mark = float("nan") if raw_mark is None else float(raw_mark)
+        return rate, mark
+
     def slice(self, start_seq: int, end_seq: int) -> MarketView:
         """Return a sub-view over ``[start_seq, end_seq)``.
 
@@ -247,6 +281,7 @@ class MarketView:
                 pool=self.pool,
                 pool_state=self.pool_state,
                 warmup=warmup,
+                funding=self.funding,
             )
         return MarketView(
             train=None,
@@ -263,6 +298,7 @@ class MarketView:
             pool=self.pool,
             pool_state=self.pool_state,
             warmup=warmup,
+            funding=self.funding,
         )
 
     def tape_at(self, seq: int) -> dict[str, object]:
@@ -486,9 +522,13 @@ def build_market_view(
     gas = _sort(_to_polars(load_gas_feed(data_config)), ["block_number"])
     regimes = _sort(_to_polars(load_regime_labels(data_config)), ["timestamp"])
     fee_growth = _sort(_to_polars(load_fee_growth(data_config)), ["block_number", "tick"])
-    # One series, always: the feed carries the primary + cross-check symbols.
+    funding = _sort(
+        _to_polars(load_funding(data_config)), ["symbol", "funding_time"]
+    )
+    # One series, always: the feeds carry the primary + cross-check symbols.
     reference = _select_primary_symbol(reference, data_config.reference_symbol, "reference")
     regimes = _select_primary_symbol(regimes, data_config.reference_symbol, "regime")
+    funding = _select_primary_symbol(funding, data_config.reference_symbol, "funding")
 
     def _state_at(active: pl.DataFrame) -> pl.DataFrame | None:
         """The pool-state snapshot for ``active``'s first block (or ``None``).
@@ -533,6 +573,7 @@ def build_market_view(
             episode_config=episode_config,
             pool=data_config.pool,
             pool_state=_state_at(active),
+            funding=funding if funding.height else None,
         )
 
     start, end = split_config.eval_start_utc, split_config.eval_end_utc
@@ -553,4 +594,5 @@ def build_market_view(
         episode_config=episode_config,
         pool=data_config.pool,
         pool_state=_state_at(active),
+        funding=funding if funding.height else None,
     )

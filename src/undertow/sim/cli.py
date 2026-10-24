@@ -348,10 +348,11 @@ class _CheckpointPolicy:
     def _validate_observation_space(model: object) -> None:
         """Reject checkpoints trained on a different observation contract.
 
-        ADR-029 appended three band-geometry features, so an 18-dim checkpoint
-        cannot be evaluated against the 21-dim environment.  Failing here with
-        an actionable message beats a cryptic shape error deep inside the
-        backtester.
+        ADR-029 appended three band-geometry features (18 -> 21) and S20
+        appended three hedge-overlay features (21 -> 24), so an older
+        checkpoint cannot be evaluated against the current environment.
+        Failing here with an actionable message beats a cryptic shape error
+        deep inside the backtester.
         """
         space = getattr(model, "observation_space", None)
         shape = getattr(space, "shape", None)
@@ -361,7 +362,8 @@ class _CheckpointPolicy:
             raise CliError(
                 f"checkpoint was trained on observation shape {tuple(shape)}, but "
                 f"this build expects {(OBSERVATION_VECTOR_LENGTH,)}; retrain the "
-                "agent so it sees the band-geometry features (ADR-029)."
+                "agent so it sees the band-geometry (ADR-029) and hedge-overlay "
+                "(S20) features."
             )
 
     @property

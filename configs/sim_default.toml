@@ -33,6 +33,16 @@ gas_enabled = true
 slippage_enabled = true
 il_enabled = true
 risk_penalty_enabled = false
+hedge_enabled = true  # gated by [hedge] enabled; kept true so the overlay counts when on
+
+[hedge]
+# S20 short-perp delta overlay (ADR-030).  Disabled by default: with
+# `enabled = false` every existing LP-only number/observation is unchanged.
+enabled = false
+fee_bps = 5.0
+funding_enabled = true
+ratio = 1.0  # deterministic overlay target = ratio * LP ETH delta
+ratios = [0.0, 0.25, 0.5, 0.75, 1.0]  # S20b action head (unused here)
 
 [split]
 train_start_utc = 2022-01-01T00:00:00Z

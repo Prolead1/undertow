@@ -15,7 +15,9 @@ Each friction term is gated by an ablation flag on
 returned :class:`RewardBreakdown`, but the input is never interpreted as
 "free": the ungated net economics always survive in ``pnl_net`` so the
 evaluation runner (S15) can decompose any ablation run and no cost term is
-silently dropped.
+silently dropped.  :func:`compute_reward_economics` exposes the same values as
+a full ungated breakdown (S20) so the parity harness compares true economics
+rather than the agent's ablated objective.
 
 Sign convention (do not double-negate)
 --------------------------------------
@@ -72,6 +74,13 @@ class RewardBreakdown:
     # Reference values for debugging / the ledger.
     pnl_net: float = 0.0
     equity: float = 0.0
+    # --- S20 hedge extensions (defaulted; appended after the frozen fields) ---
+    #: Signed mark PnL the step's re-hedge crystallised / the interval moved.
+    hedge_pnl: float = 0.0
+    #: Signed funding income accrued this step (positive = a short is paid).
+    hedge_funding: float = 0.0
+    #: Signed perp trading cost this step (``<= 0``).
+    hedge_fee: float = 0.0
 
 
 def compute_reward(
@@ -81,14 +90,25 @@ def compute_reward(
     il_change: float,
     pnl_volatility: float,
     config: RewardConfig,
+    *,
+    hedge_pnl: float = 0.0,
+    hedge_funding: float = 0.0,
+    hedge_fee: float = 0.0,
 ) -> RewardBreakdown:
     """Compute the step reward per eq (1) of §9.2.
 
     ``fees_earned``, ``gas_cost`` and ``slippage_cost`` are entered as positive
     magnitudes; the cost terms are stored negative in the returned breakdown.
     Each term is gated by its ``*_enabled`` flag in ``config`` — a disabled term
-    is ``0.0`` in the breakdown, but ``pnl_net`` is always the ungated
-    ``fees_earned - gas_cost - slippage_cost + il_change``.
+    is ``0.0`` in the breakdown, but ``pnl_net`` is always the ungated economic
+    total, including the hedge terms (S20).
+
+    ``hedge_pnl`` is the signed mark PnL contribution, ``hedge_funding`` the
+    signed funding income (positive = a short is paid), and ``hedge_fee`` the
+    **signed** perp trading cost (``<= 0``) — unlike ``gas_cost``/
+    ``slippage_cost`` it is already a negative USDC amount.  All three are
+    entered directly; the hedge terms are gated by ``config.hedge_enabled``
+    for the RQ1 ablation.
 
     ``equity`` is left at ``0.0``; the caller (S12/S11) fills it with the
     current equity after this step. Normalization by initial capital is applied
@@ -104,10 +124,31 @@ def compute_reward(
         else 0.0
     )
 
-    reward = fees + gas + slippage + il + risk
+    hedge_pnl_gated = hedge_pnl if config.hedge_enabled else 0.0
+    hedge_funding_gated = hedge_funding if config.hedge_enabled else 0.0
+    hedge_fee_gated = hedge_fee if config.hedge_enabled else 0.0
+
+    reward = (
+        fees
+        + gas
+        + slippage
+        + il
+        + risk
+        + hedge_pnl_gated
+        + hedge_funding_gated
+        + hedge_fee_gated
+    )
     # Ungated on purpose: the ablation flags change the objective the agent
     # optimizes, never the economic record.
-    pnl_net = fees_earned - gas_cost - slippage_cost + il_change
+    pnl_net = (
+        fees_earned
+        - gas_cost
+        - slippage_cost
+        + il_change
+        + hedge_pnl
+        + hedge_funding
+        + hedge_fee
+    )
 
     return RewardBreakdown(
         fees=fees,
@@ -118,6 +159,63 @@ def compute_reward(
         reward=reward,
         pnl_net=pnl_net,
         equity=0.0,
+        hedge_pnl=hedge_pnl_gated,
+        hedge_funding=hedge_funding_gated,
+        hedge_fee=hedge_fee_gated,
+    )
+
+
+def compute_reward_economics(
+    fees_earned: float,
+    gas_cost: float,
+    slippage_cost: float,
+    il_change: float,
+    *,
+    equity: float = 0.0,
+    hedge_pnl: float = 0.0,
+    hedge_funding: float = 0.0,
+    hedge_fee: float = 0.0,
+) -> RewardBreakdown:
+    """The **ungated** economic decomposition for audit and parity (S20).
+
+    :func:`compute_reward` applies the RQ1 ablation flags to the *learning*
+    objective; the underlying economics are independent of those flags, so the
+    environment additionally exposes them unablated in
+    ``info["reward_breakdown_economics"]``.  Without that payload an ablation
+    (e.g. ``reward.hedge_enabled = false`` with ``hedge.enabled = true``) would
+    make the gated term read ``0`` every step while the backtester still
+    records the economic magnitude, turning a correct match into a false
+    parity failure.
+
+    Signs and definitions mirror the ungated terms of :func:`compute_reward`
+    exactly: ``gas``/``slippage`` are negative cost magnitudes, ``hedge_fee``
+    is signed (``<= 0``), ``fees``/``hedge_funding`` are signed income and
+    ``il_change`` is the signed excess-vs-HODL change.  ``reward`` and
+    ``pnl_net`` are both the ungated cash sum (the risk penalty is a
+    preference, not an economic cash flow, so it is excluded); ``equity`` is
+    whatever the caller supplies.
+    """
+    cash = (
+        float(fees_earned)
+        - float(gas_cost)
+        - float(slippage_cost)
+        + float(il_change)
+        + float(hedge_pnl)
+        + float(hedge_funding)
+        + float(hedge_fee)
+    )
+    return RewardBreakdown(
+        fees=float(fees_earned),
+        gas=-float(gas_cost),
+        slippage=-float(slippage_cost),
+        il_change=float(il_change),
+        risk_penalty=0.0,
+        reward=cash,
+        pnl_net=cash,
+        equity=float(equity),
+        hedge_pnl=float(hedge_pnl),
+        hedge_funding=float(hedge_funding),
+        hedge_fee=float(hedge_fee),
     )
 
 
@@ -151,4 +249,7 @@ def normalize_reward(
         reward=breakdown.reward * inv,
         pnl_net=breakdown.pnl_net * inv,
         equity=breakdown.equity * inv,
+        hedge_pnl=breakdown.hedge_pnl * inv,
+        hedge_funding=breakdown.hedge_funding * inv,
+        hedge_fee=breakdown.hedge_fee * inv,
     )

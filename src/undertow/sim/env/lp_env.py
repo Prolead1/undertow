@@ -53,7 +53,7 @@ same window seed.
 
 from __future__ import annotations
 
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterator
 from dataclasses import asdict, replace
 from datetime import datetime
@@ -73,9 +73,15 @@ from undertow.sim.env.observations import (
     Observation,
     ObservationBuilder,
 )
-from undertow.sim.env.reward import RewardBreakdown, compute_reward, normalize_reward
+from undertow.sim.env.reward import (
+    RewardBreakdown,
+    compute_reward,
+    compute_reward_economics,
+    normalize_reward,
+)
 from undertow.sim.frictions.gas import GasModel
 from undertow.sim.frictions.slippage import SlippageModel
+from undertow.sim.hedge import ETH_DELTA_EPS, HedgeAccount
 from undertow.sim.marketview import MarketView
 from undertow.sim.prices.base import PriceProcess, human_price_to_triplet
 from undertow.sim.prices.replay import ReplayPriceProcess
@@ -212,6 +218,18 @@ class LpEnvironment(gym.Env):
         # engine's current raw sqrt and misvalue the terminal step.
         self._last_mark_price: float = 0.0
 
+        # -- Hedge overlay (S20) --
+        # The account is rebuilt on every reset.  ``_hedge_pending_fee`` is the
+        # reset trade's fee, folded into the first step's breakdown so the
+        # episode's reward accounts for the initial perp cost.
+        self._hedge: HedgeAccount | None = None
+        self._hedge_equity: float = 0.0
+        self._hedge_pending_fee: float = 0.0
+        self._hedge_last_funding_time: datetime | None = None
+        self._funding_times: list[datetime] = []
+        self._funding_rates: list[float] = []
+        self._build_funding_index()
+
         # Replay event tape (populated on reset for the replay mode).
         self._bar_close_times: list[datetime] = []
         self._ev_times: list[datetime] = []
@@ -222,6 +240,22 @@ class LpEnvironment(gym.Env):
         self._ev_amount1: list[object] = []
         self._ev_rows: list[dict[str, object]] = []
         self._event_idx: int = 0
+
+    def _build_funding_index(self) -> None:
+        """Cache the view's funding settlements for O(log n) step lookups.
+
+        The funding frame is fixed per view, so the sorted ``(funding_time,
+        funding_rate)`` arrays are built once.  A view without funding leaves
+        empty arrays; the overlay then accrues zero (S20).
+        """
+        funding = self.market_view.funding
+        if funding is None or funding.height == 0:
+            self._funding_times = []
+            self._funding_rates = []
+            return
+        frame = funding.sort("funding_time")
+        self._funding_times = cast(list[datetime], frame["funding_time"].to_list())
+        self._funding_rates = [float(rate) for rate in frame["funding_rate"].to_list()]
 
     # ------------------------------------------------------------------
     # Construction-time snapshot of the external pool
@@ -594,6 +628,23 @@ class LpEnvironment(gym.Env):
         # The deposit deployed here is the episode's fixed HODL basket.
         self._initial_position = self._position
 
+        # Reset the hedge overlay and establish its initial target short at the
+        # entry decision mark: ``ratio * position.amount1(sqrt)`` (S20).  A
+        # disabled hedge leaves the account flat and the fee at zero.
+        self._hedge = HedgeAccount(
+            fee_bps=float(self.config.hedge.fee_bps),
+            funding_enabled=bool(self.config.hedge.funding_enabled),
+        )
+        self._hedge_pending_fee = 0.0
+        self._hedge_last_funding_time = entry_time
+        self._hedge_equity = 0.0
+        if self.config.hedge.enabled:
+            target_short = float(self.config.hedge.ratio) * self._position.amount1(
+                entry_sqrt
+            )
+            self._hedge_pending_fee = self._hedge.trade_to(target_short, entry_price)
+            self._hedge_equity = self._hedge.equity(entry_price)
+
         self._equity = self._capital
         self._last_fees_usdc = 0.0
         self._collected_fees_usdc = 0.0
@@ -611,6 +662,7 @@ class LpEnvironment(gym.Env):
             observation=observation,
             breakdown=RewardBreakdown(equity=self._equity),
             raw=RewardBreakdown(equity=self._equity),
+            economics=RewardBreakdown(equity=self._equity),
             action=self._action_lookup[0],
             action_index=0,
         )
@@ -623,8 +675,9 @@ class LpEnvironment(gym.Env):
 
         Returns ``(observation, reward, terminated, truncated, info)`` where
         ``reward`` is capital-normalized and ``info`` carries the full
-        :class:`RewardBreakdown` under ``"reward_breakdown"`` (normalized) and
-        ``"reward_breakdown_raw"`` (USDC).
+        :class:`RewardBreakdown` under ``"reward_breakdown"`` (normalized),
+        ``"reward_breakdown_raw"`` (USDC, ablation-gated) and
+        ``"reward_breakdown_economics"`` (USDC, ungated; S20 parity payload).
 
         Execution timing (ADR-031): the action is chosen from the observation
         at the **decision state** -- the pool ``sqrt_price``/``tick``, mark
@@ -672,6 +725,20 @@ class LpEnvironment(gym.Env):
                     decision_sqrt, decision_price
                 )
 
+        # 2b. Re-hedge the deterministic delta overlay at the same decision
+        # state (ADR-031): the target is ``ratio *`` the post-action LP ETH
+        # delta at the decision mark, and the perp fee is charged there.  The
+        # reset trade's fee (if any) is folded in so the first step's reward
+        # accounts for it and episode equity reconciles.
+        hedge_fee_magnitude = 0.0
+        if self.config.hedge.enabled:
+            assert self._hedge is not None
+            assert self._position is not None, "reset deploys a position before any step"
+            target_short = float(self.config.hedge.ratio) * self._position.amount1(
+                decision_sqrt
+            )
+            hedge_fee_magnitude = self._hedge.trade_to(target_short, decision_price)
+
         # 3. Advance the market one interval; its events accrue to the
         # post-action position.
         if self.is_replay:
@@ -701,6 +768,23 @@ class LpEnvironment(gym.Env):
         self._equity = equity
         self._pnl_history.append(equity)
 
+        # 4b. Mark the hedge over the interval and accrue any 8 h funding
+        # settlements in it, then record the account's equity at the interval
+        # end.  The short was established at the decision mark above, so
+        # ``mark_pnl(price)`` is exactly this interval's mark contribution;
+        # ``hedge_pnl`` excludes funding and fees by construction.
+        hedge_pnl = 0.0
+        hedge_funding = 0.0
+        if self.config.hedge.enabled:
+            assert self._hedge is not None
+            hedge_pnl = self._hedge.mark_pnl(price)
+            hedge_funding = self._accrue_hedge_funding(price)
+            self._hedge_equity = self._hedge.equity(price)
+        else:
+            self._hedge_equity = 0.0
+        hedge_fee = -(hedge_fee_magnitude + self._hedge_pending_fee)
+        self._hedge_pending_fee = 0.0
+
         raw_breakdown = compute_reward(
             fees_earned=fees_earned,
             gas_cost=gas_cost,
@@ -708,11 +792,24 @@ class LpEnvironment(gym.Env):
             il_change=il_change,
             pnl_volatility=self._pnl_volatility(),
             config=self.config.reward,
+            hedge_pnl=hedge_pnl,
+            hedge_funding=hedge_funding,
+            hedge_fee=hedge_fee,
         )
-        raw_breakdown = replace(
-            raw_breakdown,
+        raw_breakdown = replace(raw_breakdown, equity=equity)
+        # The ungated economics payload (S20): the parity harness compares the
+        # true terms, so an RQ1 ablation (reward.gas_enabled/hedge_enabled/
+        # ... = false) cannot turn a correct sim/backtester match into a false
+        # failure.  ``reward_breakdown_raw`` stays gated exactly as before.
+        economics_breakdown = compute_reward_economics(
+            fees_earned=fees_earned,
+            gas_cost=gas_cost,
+            slippage_cost=slippage_cost,
+            il_change=il_change,
             equity=equity,
-            pnl_net=fees_earned - gas_cost - slippage_cost + il_change,
+            hedge_pnl=hedge_pnl,
+            hedge_funding=hedge_funding,
+            hedge_fee=hedge_fee,
         )
         breakdown = normalize_reward(
             raw_breakdown, self._capital, self.config.reward
@@ -733,6 +830,7 @@ class LpEnvironment(gym.Env):
             observation=observation,
             breakdown=breakdown,
             raw=raw_breakdown,
+            economics=economics_breakdown,
             action=action,
             action_index=int(action_idx),
         )
@@ -979,6 +1077,56 @@ class LpEnvironment(gym.Env):
             )
         )
 
+    def _hedge_observation_fields(self) -> tuple[float, float]:
+        """``(hedge_short_ratio, hedge_equity_frac)`` for the observation.
+
+        The ratio is the short size over the LP's live ETH delta (0 when the
+        hedge is disabled, or the delta is ~0); the equity fraction marks the
+        account at the last accounting mark (:attr:`_last_mark_price`), the
+        same price the LP equity and observation use.
+        """
+        account = self._hedge
+        if account is None or not self.config.hedge.enabled or self._position is None:
+            return 0.0, 0.0
+        eth_delta = self._position.amount1(self.pool_engine.state.sqrt_price)
+        ratio = account.short_size / eth_delta if eth_delta > ETH_DELTA_EPS else 0.0
+        equity_frac = account.equity(self._last_mark_price) / self._capital
+        return float(ratio), float(equity_frac)
+
+    def _accrue_hedge_funding(self, fallback_mark: float) -> float:
+        """Accrue every funding settlement in ``(last step end, this end]``.
+
+        The 8 h settlements come from the view's funding feed, but the **mark**
+        is the sim's own reference close at the settlement time (the stream's
+        nullable ``mark_price`` is never used; S20).  The short held through the
+        interval was established at the decision mark at the interval's start,
+        so it is the right size for every settlement inside it.
+        """
+        account = self._hedge
+        at_time = self._last_at_time
+        after = self._hedge_last_funding_time
+        if (
+            account is None
+            or at_time is None
+            or after is None
+            or not self._funding_times
+        ):
+            if at_time is not None:
+                self._hedge_last_funding_time = at_time
+            return 0.0
+        start = bisect_right(self._funding_times, after)
+        end = bisect_right(self._funding_times, at_time)
+        total = 0.0
+        for index in range(start, end):
+            settlement_time = self._funding_times[index]
+            mark = self.market_view.reference_close(settlement_time)
+            total += account.accrue_funding(
+                self._funding_rates[index],
+                fallback_mark if mark is None else mark,
+            )
+        self._hedge_last_funding_time = at_time
+        return total
+
     def _pnl_volatility(self) -> float:
         """Trailing std of per-step equity changes over the risk window."""
         window = int(self.config.reward.risk_rolling_window_steps)
@@ -1090,6 +1238,7 @@ class LpEnvironment(gym.Env):
     ) -> Observation:
         if self._position is None:
             raise EnvError("cannot observe without an open position")
+        hedge_short_ratio, hedge_equity_frac = self._hedge_observation_fields()
         observation: Observation = self._builder.build_at(
             at_time=at_time,
             tape_row=tape_row,
@@ -1102,6 +1251,9 @@ class LpEnvironment(gym.Env):
             entry_sqrt_price=self._entry_sqrt,
             initial_capital=self._capital,
             hodl_position=self._initial_position,
+            hedge_short_ratio=hedge_short_ratio,
+            hedge_equity_frac=hedge_equity_frac,
+            hedge_enabled=self.config.hedge.enabled,
         )
         return observation
 
@@ -1112,6 +1264,7 @@ class LpEnvironment(gym.Env):
         observation: Observation,
         breakdown: RewardBreakdown,
         raw: RewardBreakdown,
+        economics: RewardBreakdown,
         action: Action,
         action_index: int,
     ) -> dict[str, Any]:
@@ -1123,14 +1276,21 @@ class LpEnvironment(gym.Env):
         peeking at ``LpEnvironment`` internals (CONTRACTS.md §2.1).  The
         ``entry_price`` field is the **episode** entry (the fixed HODL anchor,
         ADR-029), not a per-rebalance entry.
+
+        Three breakdowns are exposed: ``reward_breakdown`` (normalized),
+        ``reward_breakdown_raw`` (USDC, ablation-gated) and
+        ``reward_breakdown_economics`` (USDC, **ungated** — the true economic
+        terms the parity harness compares across the ablation flags, S20).
         """
         return {
             "reward_breakdown": asdict(breakdown),
             "reward_breakdown_raw": asdict(raw),
+            "reward_breakdown_economics": asdict(economics),
             "action": action,
             "action_type": action.action_type,
             "step_in_episode": self._step_count,
             "equity": self._equity,
+            "hedge_equity": float(self._hedge_equity),
             "position_id": self._position_id,
             "tick_lower": int(self._position.tick_lower)
             if self._position is not None

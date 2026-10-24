@@ -12,7 +12,12 @@ import dataclasses
 import pytest
 
 from undertow.sim.config import RewardConfig
-from undertow.sim.env import RewardBreakdown, compute_reward, normalize_reward
+from undertow.sim.env import (
+    RewardBreakdown,
+    compute_reward,
+    compute_reward_economics,
+    normalize_reward,
+)
 
 
 def _config(**overrides: object) -> RewardConfig:
@@ -264,6 +269,179 @@ class TestNormalizeReward:
 
 
 # ---------------------------------------------------------------------------
+# S20 hedge terms
+# ---------------------------------------------------------------------------
+class TestHedgeTerms:
+    def test_hedge_terms_are_summed_with_their_signs(self) -> None:
+        b = compute_reward(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            _config(risk_penalty_enabled=False),
+            hedge_pnl=-12.5,
+            hedge_funding=1.5,
+            hedge_fee=-0.2,
+        )
+        assert b.hedge_pnl == pytest.approx(-12.5)
+        assert b.hedge_funding == pytest.approx(1.5)
+        assert b.hedge_fee == pytest.approx(-0.2)
+        assert b.reward == pytest.approx(-12.5 + 1.5 - 0.2)
+        # The ungated economic total carries the same terms.
+        assert b.pnl_net == pytest.approx(-12.5 + 1.5 - 0.2)
+
+    def test_hedge_terms_gated_by_flag_but_pnl_net_is_not(self) -> None:
+        cfg = _config(hedge_enabled=False, risk_penalty_enabled=False)
+        b = compute_reward(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            cfg,
+            hedge_pnl=-12.5,
+            hedge_funding=1.5,
+            hedge_fee=-0.2,
+        )
+        assert b.hedge_pnl == 0.0
+        assert b.hedge_funding == 0.0
+        assert b.hedge_fee == 0.0
+        assert b.reward == 0.0  # every other term is zero here
+        assert b.pnl_net == pytest.approx(-12.5 + 1.5 - 0.2)
+
+    def test_default_hedge_args_are_zero_and_reward_unchanged(self) -> None:
+        cfg = _config(risk_penalty_enabled=False)
+        without = compute_reward(10.0, 5.0, 3.0, -15.0, 0.0, cfg)
+        with_defaults = compute_reward(
+            10.0, 5.0, 3.0, -15.0, 0.0, cfg, hedge_pnl=0.0, hedge_funding=0.0, hedge_fee=0.0
+        )
+        assert without.hedge_pnl == 0.0
+        assert without.hedge_funding == 0.0
+        assert without.hedge_fee == 0.0
+        assert without == with_defaults
+
+    def test_normalization_scales_the_hedge_fields(self) -> None:
+        cfg = _config(risk_penalty_enabled=False)
+        b = compute_reward(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            cfg,
+            hedge_pnl=-12.5,
+            hedge_funding=1.5,
+            hedge_fee=-0.2,
+        )
+        n = normalize_reward(b, 100_000.0, cfg)
+        factor = 1.0 / 100_000.0
+        assert n.hedge_pnl == pytest.approx(b.hedge_pnl * factor)
+        assert n.hedge_funding == pytest.approx(b.hedge_funding * factor)
+        assert n.hedge_fee == pytest.approx(b.hedge_fee * factor)
+        assert n.reward == pytest.approx(b.reward * factor)
+        assert n.pnl_net == pytest.approx(b.pnl_net * factor)
+
+
+# ---------------------------------------------------------------------------
+# S20 ungated economics payload
+# ---------------------------------------------------------------------------
+class TestComputeRewardEconomics:
+    """``compute_reward_economics`` is the ablation-independent cash view.
+
+    The parity harness compares the simulator's economics against the
+    backtester, so an RQ1 flag must not change these values; only the learning
+    ``reward`` (and its gated breakdown) may depend on the flags.
+    """
+
+    def test_terms_are_ungated_and_match_the_pnl_net_of_a_flagged_reward(
+        self,
+    ) -> None:
+        # Every friction and the hedge term ablated: the gated breakdown reads
+        # zero, while the economics payload keeps the true magnitudes.
+        cfg = _config(
+            fees_enabled=False,
+            gas_enabled=False,
+            slippage_enabled=False,
+            il_enabled=False,
+            risk_penalty_enabled=False,
+            hedge_enabled=False,
+        )
+        gated = compute_reward(
+            100.0,
+            10.0,
+            5.0,
+            -40.0,
+            6.0,
+            cfg,
+            hedge_pnl=-12.5,
+            hedge_funding=1.5,
+            hedge_fee=-0.2,
+        )
+        economics = compute_reward_economics(
+            100.0,
+            10.0,
+            5.0,
+            -40.0,
+            equity=77.0,
+            hedge_pnl=-12.5,
+            hedge_funding=1.5,
+            hedge_fee=-0.2,
+        )
+        assert economics.fees == 100.0
+        assert economics.gas == -10.0
+        assert economics.slippage == -5.0
+        assert economics.il_change == -40.0
+        assert economics.hedge_pnl == -12.5
+        assert economics.hedge_funding == 1.5
+        assert economics.hedge_fee == -0.2
+        assert economics.risk_penalty == 0.0
+        assert economics.equity == 77.0
+        # reward and pnl_net are the ungated cash sum; the gated reward is 0.
+        expected = 100.0 - 10.0 - 5.0 - 40.0 - 12.5 + 1.5 - 0.2
+        assert economics.reward == pytest.approx(expected)
+        assert economics.pnl_net == pytest.approx(expected)
+        assert gated.reward == 0.0
+        assert gated.pnl_net == pytest.approx(expected)
+
+    def test_matches_compute_reward_with_every_flag_enabled(self) -> None:
+        """With nothing ablated the two views agree field for field."""
+        cfg = _config(risk_penalty_enabled=False)
+        reward = compute_reward(
+            12.0,
+            3.0,
+            1.5,
+            -7.0,
+            0.0,
+            cfg,
+            hedge_pnl=-2.0,
+            hedge_funding=0.75,
+            hedge_fee=-0.05,
+        )
+        economics = compute_reward_economics(
+            12.0,
+            3.0,
+            1.5,
+            -7.0,
+            hedge_pnl=-2.0,
+            hedge_funding=0.75,
+            hedge_fee=-0.05,
+        )
+        assert economics == reward
+
+    def test_defaults_are_all_zero(self) -> None:
+        economics = compute_reward_economics(0.0, 0.0, 0.0, 0.0)
+        assert economics == RewardBreakdown()
+
+    def test_does_not_normalize(self) -> None:
+        # The payload is USDC, like ``reward_breakdown_raw``; normalization is
+        # applied only by ``normalize_reward`` at the env boundary.
+        economics = compute_reward_economics(1_000.0, 12.0, 6.0, -300.0)
+        assert economics.fees == 1_000.0
+        assert economics.pnl_net == pytest.approx(682.0)
+
+
+# ---------------------------------------------------------------------------
 # Dataclass contract / field accessibility
 # ---------------------------------------------------------------------------
 class TestRewardBreakdownShape:
@@ -278,6 +456,9 @@ class TestRewardBreakdownShape:
             "reward",
             "pnl_net",
             "equity",
+            "hedge_pnl",
+            "hedge_funding",
+            "hedge_fee",
         ):
             value = getattr(b, name)
             assert isinstance(value, float), name
@@ -293,6 +474,9 @@ class TestRewardBreakdownShape:
             "reward",
             "pnl_net",
             "equity",
+            "hedge_pnl",
+            "hedge_funding",
+            "hedge_fee",
         ],
     )
     def test_defaults_are_zero(self, name: str) -> None:

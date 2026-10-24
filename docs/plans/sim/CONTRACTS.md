@@ -155,6 +155,15 @@ class RewardConfig:
     slippage_enabled: bool = True
     il_enabled: bool = True
     risk_penalty_enabled: bool = False
+    hedge_enabled: bool = True          # S20: gates the hedge terms (RQ1 ablation)
+
+@dataclass(frozen=True, slots=True)
+class HedgeConfig:                       # S20 additive, disabled by default
+    enabled: bool = False
+    fee_bps: float = 5.0
+    funding_enabled: bool = True
+    ratio: float = 1.0                   # deterministic overlay target fraction
+    ratios: Sequence[float] = (0.0, 0.25, 0.5, 0.75, 1.0)  # S20b action head
 
 @dataclass(frozen=True, slots=True)
 class SplitConfig:
@@ -196,6 +205,7 @@ class SimConfig:
     price_mode: PriceMode = PriceMode.REPLAY
     seed: int = 0
     output_dir: Path | None = None
+    hedge: HedgeConfig = field(default_factory=HedgeConfig)  # S20 additive
 
     def rng(self) -> np.random.Generator: ...  # constructs np.random.default_rng(self.seed)
 
@@ -734,8 +744,15 @@ class RewardBreakdown:
     risk_penalty: float = 0.0          # −λ * σ_PnL; ≤ 0
     reward: float = 0.0                # sum of the above
     # Reference values for debugging
-    pnl_net: float = 0.0               # ΔPnL after all costs
+    pnl_net: float = 0.0               # ΔPnL after all costs, hedge included (ungated)
     equity: float = 0.0               # current equity
+    # S20 additive (defaulted, appended after the frozen fields): the hedge
+    # overlay's step contribution.  `hedge_pnl`/`hedge_funding` are signed;
+    # `hedge_fee` ≤ 0.  Gated by `RewardConfig.hedge_enabled` in `reward`, but
+    # always present ungated in `pnl_net`.
+    hedge_pnl: float = 0.0
+    hedge_funding: float = 0.0
+    hedge_fee: float = 0.0
 
 def compute_reward(
     fees_earned: float,
@@ -744,6 +761,10 @@ def compute_reward(
     il_change: float,
     pnl_volatility: float,
     config: RewardConfig,
+    *,
+    hedge_pnl: float = 0.0,          # signed USDC
+    hedge_funding: float = 0.0,      # signed USDC (positive = short is paid)
+    hedge_fee: float = 0.0,          # signed USDC cost (≤ 0)
 ) -> RewardBreakdown:
     """Compute the step reward per eq (1) of §9.2 (roadmap eq (2)).
 
@@ -765,6 +786,26 @@ def compute_reward(
     therefore the change in ``excess_vs_hodl``; its episode sum is the reported
     excess over HODL (ADR-029).  The benchmark is never rebased at a
     rebalance."""
+    ...
+
+def compute_reward_economics(
+    fees_earned: float,
+    gas_cost: float,
+    slippage_cost: float,
+    il_change: float,
+    *,
+    equity: float = 0.0,
+    hedge_pnl: float = 0.0,
+    hedge_funding: float = 0.0,
+    hedge_fee: float = 0.0,
+) -> RewardBreakdown:
+    """S20: the ungated economic breakdown (no ablation flags).
+
+    Same signs as ``compute_reward``'s ungated terms; ``reward``/``pnl_net``
+    are the ungated cash sum and ``equity`` is the caller's mark.  The
+    environment exposes it as ``info["reward_breakdown_economics"]`` so the
+    parity harness compares true economics rather than the agent's ablated
+    objective."""
     ...
 ```
 
@@ -883,12 +924,20 @@ class Observation:
     distance_to_upper_bound_spacings: float   # (tick_upper - tick) / tick_spacing
     position_width_spacings: float            # (tick_upper - tick_lower) / tick_spacing
 
+    # S20 additive (defaulted, appended at indices 21--23):
+    # All three are zero when `HedgeConfig.enabled` is false, even when the
+    # view carries a funding stream (the disabled overlay is the LP-only path).
+    hedge_short_ratio: float = 0.0   # short_size / max(LP ETH delta, eps); 0 when disabled
+    hedge_equity_frac: float = 0.0   # hedge equity / initial capital
+    funding_rate_recent: float = 0.0 # as-of 8 h funding rate; 0 when absent
+
     def to_vector(self) -> np.ndarray:
         """Flatten to a 1-D float64 array for the policy network.
 
-        The vector length is ``OBSERVATION_VECTOR_LENGTH`` (21): the three
-        geometry features are appended at indices 18--20 so the ordinal
-        positions of the original 18 features stay stable (ADR-029)."""
+        The vector length is ``OBSERVATION_VECTOR_LENGTH`` (24): the three
+        geometry features are appended at indices 18--20 (ADR-029) and the
+        three hedge features at 21--23 (S20), so all earlier ordinal positions
+        stay stable."""
         ...
 ```
 
@@ -925,7 +974,22 @@ class LpEnvironment(gym.Env):
         events then accrue to the post-action position, and fees/IL/equity/
         reward/observation are measured on it.  ``reset`` leaves that decision
         state fully populated.  This matches the backtester's same-event
-        execution and on-chain latency."""
+        execution and on-chain latency.
+
+        S20 hedge overlay (when ``SimConfig.hedge.enabled``): the account is
+        reset and its initial target short (``ratio * position.amount1``) traded
+        at ``reset``; each ``step`` re-hedges at the same decision state as the
+        LP action (ADR-031), accrues any 8 h funding settlements in the
+        interval using the sim's own reference price (never the funding
+        stream's nullable ``mark_price``), and reports the step's
+        ``hedge_pnl``/``hedge_funding``/``hedge_fee`` in the breakdown.  With
+        the feature disabled every term and observation dimension is the
+        LP-only value.
+
+        ``info`` carries three breakdowns: ``reward_breakdown`` (normalized),
+        ``reward_breakdown_raw`` (USDC, ablation-gated) and
+        ``reward_breakdown_economics`` (USDC, **ungated**; the true economic
+        terms the parity harness compares across RQ1 flags, S20)."""
         ...
 ```
 
@@ -950,6 +1014,9 @@ class BacktestLedger:
     git_commit: str
     policy_name: str
     split: str                            # "train" or "eval"
+    # S20 additive (defaulted): per-event hedge series
+    # (step, hedge_pnl, hedge_funding, hedge_fee); None when the overlay is off.
+    hedge_curve: pl.DataFrame | None = None
 
 @dataclass(frozen=True, slots=True)
 class BacktestResult:
@@ -1096,6 +1163,17 @@ class ParityReport:
     tolerance: float                 # stated, justified tolerance
     passed: bool                     # all drifts within tolerance
     justification: str               # prose justification of the tolerance
+    # S20 additive (defaulted): hedge series drifts; `passed` also requires
+    # their means and per-step maxima to be within tolerance.
+    hedge_pnl_drift_mean: float = 0.0
+    hedge_pnl_drift_std: float = 0.0
+    hedge_funding_drift_mean: float = 0.0
+    hedge_funding_drift_std: float = 0.0
+    hedge_fee_drift_mean: float = 0.0
+    hedge_fee_drift_std: float = 0.0
+    hedge_pnl_drift_max: float = 0.0
+    hedge_funding_drift_max: float = 0.0
+    hedge_fee_drift_max: float = 0.0
 
 @dataclass(frozen=True, slots=True)
 class LookAheadReport:
@@ -1107,7 +1185,13 @@ class LookAheadReport:
 def run_parity_check(sim_env: LpEnvironment, backtest_ledger: BacktestLedger,
                      num_episodes: int = 10, seeds: Sequence[int] = (0, 1, 2, 3, 4)
                      ) -> ParityReport:
-    """Run sim and backtester on identical inputs and quantify the drift."""
+    """Run sim and backtester on identical inputs and quantify the drift.
+
+    The simulator's per-step series come from the **ungated**
+    ``info["reward_breakdown_economics"]`` payload (S20), not the ablation-gated
+    ``reward_breakdown_raw``: an RQ1 flag (e.g. ``reward.hedge_enabled=false``)
+    zeroes a gated term while the backtester still records its full magnitude,
+    which would otherwise turn a correct match into a false parity failure."""
     ...
 
 def run_lookahead_probes(market_view: MarketView, env: LpEnvironment,

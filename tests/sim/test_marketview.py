@@ -14,7 +14,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from undertow.data import FEE_GROWTH_SCHEMA, DataConfig
+from undertow.data import FEE_GROWTH_SCHEMA, FUNDING_SCHEMA, DataConfig
 from undertow.sim.config import EpisodeConfig, SplitConfig
 from undertow.sim.marketview import MarketView, build_market_view
 from undertow.sim.types import LookAheadError, MarketViewError
@@ -47,6 +47,8 @@ def _patch_loaders(monkeypatch: pytest.MonkeyPatch, view: MarketView) -> None:
     monkeypatch.setattr(mv, "load_regime_labels", lambda cfg: view.regimes.to_arrow())
     # No boundary snapshot in the synthetic fixtures → empty (pool_state is None).
     monkeypatch.setattr(mv, "load_fee_growth", lambda cfg: FEE_GROWTH_SCHEMA.empty_table())
+    # No funding stream in the synthetic fixtures → empty, `funding=None`.
+    monkeypatch.setattr(mv, "load_funding", lambda cfg: FUNDING_SCHEMA.empty_table())
 
 
 def _train_view_with_bounds(view: MarketView, start: datetime, end: datetime) -> MarketView:
@@ -687,6 +689,98 @@ class TestReferenceSymbolSelection:
 # ---------------------------------------------------------------------------
 # Fixture contract
 # ---------------------------------------------------------------------------
+
+
+class TestFundingAt:
+    """S20: the as-of funding lookup the hedge overlay consumes."""
+
+    @staticmethod
+    def _funded_view(
+        view: MarketView,
+        *,
+        rates: tuple[float, ...] = (0.001, -0.002),
+        marks: tuple[float | None, ...] | None = None,
+        symbol: str = "ETHUSDC",
+    ) -> MarketView:
+        closes = view.reference.sort("close_time")["close_time"].to_list()
+        times = [closes[i] for i in range(len(rates))]
+        funding = pl.DataFrame(
+            {
+                "funding_time": times,
+                "symbol": [symbol] * len(rates),
+                "funding_rate": list(rates),
+                "mark_price": list(marks) if marks is not None else [None] * len(rates),
+                "is_gap_filled": [False] * len(rates),
+            }
+        )
+        return replace(view, funding=funding)
+
+    def test_view_without_funding_returns_none(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        assert tiny_market_view.funding is None
+        assert tiny_market_view.funding_at(tiny_market_view.active_start_utc) is None
+
+    def test_as_of_lookup_is_backward_and_signed(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        view = self._funded_view(tiny_market_view, marks=(3020.0, 3050.0))
+        closes = view.reference.sort("close_time")["close_time"].to_list()
+        assert view.funding_at(closes[0] - timedelta(minutes=1)) is None
+        assert view.funding_at(closes[0]) == (0.001, 3020.0)
+        # Between the two settlements the first one is still the as-of row.
+        assert view.funding_at(closes[1] - timedelta(minutes=1)) == (0.001, 3020.0)
+        assert view.funding_at(closes[1]) == (-0.002, 3050.0)
+        assert view.funding_at(closes[2]) == (-0.002, 3050.0)
+
+    def test_null_mark_price_is_nan(self, tiny_market_view: MarketView) -> None:
+        import math
+
+        view = self._funded_view(tiny_market_view, marks=(None, None))
+        closes = view.reference.sort("close_time")["close_time"].to_list()
+        settlement = view.funding_at(closes[0])
+        assert settlement is not None
+        rate, mark = settlement
+        assert rate == 0.001
+        assert math.isnan(mark)
+
+    def test_past_the_wall_raises(self, tiny_market_view: MarketView) -> None:
+        view = self._funded_view(tiny_market_view)
+        with pytest.raises(LookAheadError):
+            view.funding_at(
+                tiny_market_view.active_end_utc + timedelta(minutes=1)
+            )
+
+    def test_slice_propagates_funding(self, tiny_market_view: MarketView) -> None:
+        view = self._funded_view(tiny_market_view)
+        sub = view.slice(0, 10)
+        assert sub.funding is view.funding
+
+    def test_build_market_view_loads_and_selects_primary_funding(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tiny_data_config: DataConfig,
+        tiny_market_view: MarketView,
+    ) -> None:
+        import undertow.sim.marketview as mv
+
+        _patch_loaders(monkeypatch, tiny_market_view)
+        closes = tiny_market_view.reference.sort("close_time")["close_time"].to_list()
+        frame = pl.DataFrame(
+            {
+                "funding_time": [closes[0]],
+                "symbol": ["ETHUSDC"],
+                "funding_rate": [0.0007],
+                "mark_price": [None],
+                "is_gap_filled": [False],
+            }
+        )
+        monkeypatch.setattr(mv, "load_funding", lambda cfg: frame)
+        view = build_market_view(tiny_data_config, _TINY_SPLIT)
+        assert view.funding is not None
+        assert view.funding["symbol"].unique().to_list() == ["ETHUSDC"]
+        assert view.funding_at(closes[0]) is not None
+        assert view.funding_at(closes[0])[0] == pytest.approx(0.0007)
 
 
 class TestTinyFixture:

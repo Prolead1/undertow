@@ -63,7 +63,7 @@ REGIME_ORDINAL: dict[str, int] = {
 }
 
 #: Length of :meth:`Observation.to_vector` — one scalar per field.
-OBSERVATION_VECTOR_LENGTH: int = 21
+OBSERVATION_VECTOR_LENGTH: int = 24
 
 #: 10-minute reference bars per year (6 per hour x 24 h x 365.25 d).
 _STEPS_PER_YEAR: float = 6.0 * 24.0 * 365.25
@@ -112,6 +112,13 @@ class Observation:
     distance_to_upper_bound_spacings: float  # (tick_upper - tick) / tick_spacing
     position_width_spacings: float  # (tick_upper - tick_lower) / tick_spacing
 
+    # -- Hedge overlay (S20); appended at indices 21--23 (ADR-029 pattern) --
+    #: All three are zero when ``HedgeConfig.enabled`` is false (the LP-only
+    #: path), even if the view carries a funding stream.
+    hedge_short_ratio: float = 0.0  # short_size / LP ETH delta; 0 when disabled
+    hedge_equity_frac: float = 0.0  # hedge equity / initial capital
+    funding_rate_recent: float = 0.0  # as-of 8 h funding rate; 0 when absent
+
     def to_vector(self) -> np.ndarray:
         """Flatten to a stable-order 1-D ``float64`` array for the policy network.
 
@@ -142,6 +149,9 @@ class Observation:
                 float(self.distance_to_lower_bound_spacings),
                 float(self.distance_to_upper_bound_spacings),
                 float(self.position_width_spacings),
+                float(self.hedge_short_ratio),
+                float(self.hedge_equity_frac),
+                float(self.funding_rate_recent),
             ],
             dtype=np.float64,
         )
@@ -282,6 +292,17 @@ class ObservationBuilder:
         )
         return self._ref_closes[:idx]
 
+    def funding_rate_recent(self, at_time: datetime) -> float:
+        """As-of 8 h funding rate at ``at_time`` (``0.0`` when absent).
+
+        Reads through :meth:`~undertow.sim.marketview.MarketView.funding_at`;
+        a view without a funding feed returns ``0.0`` (the feature is defined
+        rather than ``NaN``).  The stream's ``mark_price`` is deliberately not
+        used: the hedge marks against the sim's own reference price (S20).
+        """
+        settlement = self.market_view.funding_at(at_time)
+        return 0.0 if settlement is None else float(settlement[0])
+
     def rolling_price_features(
         self, at_time: datetime
     ) -> tuple[float | None, float, float, float]:
@@ -353,6 +374,9 @@ class ObservationBuilder:
         entry_sqrt_price: SqrtPrice,
         initial_capital: Wealth,
         hodl_position: Position | None = None,
+        hedge_short_ratio: float = 0.0,
+        hedge_equity_frac: float = 0.0,
+        hedge_enabled: bool = True,
     ) -> Observation:
         """Assemble the observation at tape seq ``step`` (CONTRACTS §11).
 
@@ -363,7 +387,10 @@ class ObservationBuilder:
         the market view). ``hodl_position`` is the fixed initial HODL basket
         used as the IL benchmark (ADR-029); when omitted the position itself is
         used, which preserves the original behaviour. Raises ``ValueError`` for
-        non-positive capital.
+        non-positive capital.  ``hedge_enabled=False`` zeroes the three S20
+        appended features (indices 21--23), including ``funding_rate_recent``
+        even when the view carries a funding stream, so a disabled overlay is
+        exactly the LP-only observation.
         """
         tape_row = self.market_view.tape_at(int(step))
         step_in_episode = int(step) - self.episode_start
@@ -379,6 +406,9 @@ class ObservationBuilder:
             entry_sqrt_price=entry_sqrt_price,
             initial_capital=initial_capital,
             hodl_position=hodl_position,
+            hedge_short_ratio=hedge_short_ratio,
+            hedge_equity_frac=hedge_equity_frac,
+            hedge_enabled=hedge_enabled,
         )
 
     def build_at(
@@ -395,6 +425,9 @@ class ObservationBuilder:
         entry_sqrt_price: SqrtPrice,
         initial_capital: Wealth,
         hodl_position: Position | None = None,
+        hedge_short_ratio: float = 0.0,
+        hedge_equity_frac: float = 0.0,
+        hedge_enabled: bool = True,
     ) -> Observation:
         """Assemble an observation at an explicit timestamp.
 
@@ -406,6 +439,11 @@ class ObservationBuilder:
         ``entry_price``/``entry_sqrt_price`` are the **episode** entry (the
         fixed HODL anchor, ADR-029), not necessarily the current position's
         entry. Raises ``ValueError`` for non-positive ``initial_capital``.
+
+        ``hedge_enabled=False`` zeroes all three appended S20 features (the two
+        caller-supplied hedge fields and ``funding_rate_recent``), so a view
+        with a funding stream still produces the LP-only vector when the overlay
+        is off.
         """
         del gas_model  # part of the frozen signature; nothing to read from it here
         if initial_capital <= 0.0:
@@ -452,6 +490,13 @@ class ObservationBuilder:
 
         gas_price_recent, _, _ = self._gas_price_recent(tape_row)
 
+        if hedge_enabled:
+            funding_rate_recent = self.funding_rate_recent(at_time)
+        else:
+            hedge_short_ratio = 0.0
+            hedge_equity_frac = 0.0
+            funding_rate_recent = 0.0
+
         return Observation(
             price=price,
             sqrt_price=sqrt_price,
@@ -483,4 +528,7 @@ class ObservationBuilder:
                 (float(position.tick_upper) - float(position.tick_lower))
                 / float(position.tick_spacing)
             ),
+            hedge_short_ratio=float(hedge_short_ratio),
+            hedge_equity_frac=float(hedge_equity_frac),
+            funding_rate_recent=float(funding_rate_recent),
         )
