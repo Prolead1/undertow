@@ -41,9 +41,14 @@ the builder only ever reads reference bars at or before it.
 
 Determinism
 -----------
-:meth:`reset` seeds a private :class:`numpy.random.Generator` from ``seed`` (or
-``SimConfig.seed`` when ``seed`` is ``None``); the same seed reproduces the
-same episode window, price stream and observation sequence.
+A seeded :meth:`reset` is reproducible: ``reset(seed=k)`` always rebuilds window
+``k`` — the same episode window, price stream and observation sequence — no
+matter how many resets preceded it.  A no-seed reset (exactly what SB3's
+``VecEnv`` auto-reset calls) instead advances to the next window, walking
+``SimConfig.seed``, ``SimConfig.seed + 1``, ... so a training loop samples a
+fresh market window every episode rather than replaying one.  The private
+:class:`numpy.random.Generator` that drives the price process is seeded from the
+same window seed.
 """
 
 from __future__ import annotations
@@ -168,9 +173,12 @@ class LpEnvironment(gym.Env):
         self._builder = ObservationBuilder(market_view)
         self._capture_pool_base()
 
-        # State populated by reset().
-        self._seed: int = int(config.seed)
-        self._rng: np.random.Generator = np.random.default_rng(self._seed)
+        # State populated by reset().  ``_base_seed`` anchors the run and
+        # ``_episode_index`` advances on every no-seed reset (SB3's auto-reset),
+        # so successive windows are seeded ``base, base + 1, ...``.
+        self._base_seed: int = int(config.seed)
+        self._episode_index: int = -1
+        self._rng: np.random.Generator = np.random.default_rng(self._base_seed)
         self._start_seq: int = 0
         self._end_seq: int = 0
         self._external_seeded: bool = False
@@ -480,8 +488,16 @@ class LpEnvironment(gym.Env):
         """Start a fresh episode and return ``(observation_vector, info)``."""
         del options  # no reset options are defined
         if seed is not None:
-            self._seed = int(seed)
-        self._rng = np.random.default_rng(self._seed)
+            # A seeded reset is reproducible: start again at that exact window,
+            # however many resets preceded it.
+            self._base_seed = int(seed)
+            self._episode_index = 0
+        else:
+            # SB3's auto-reset passes no seed; advance to the next window so a
+            # training loop samples a new episode instead of replaying one.
+            self._episode_index += 1
+        window_seed = self._base_seed + self._episode_index
+        self._rng = np.random.default_rng(window_seed)
 
         episode = self.config.episode
         config_steps = int(
@@ -497,7 +513,7 @@ class LpEnvironment(gym.Env):
         # ``episode_config`` (or none), and the re-created price process below uses
         # ``episode.step_minutes``. The +1 step is a buffer for the last decision.
         start_seq, end_seq = self.market_view.build_episode(
-            self._seed, max_steps=config_steps + 1, episode_config=episode
+            window_seed, max_steps=config_steps + 1, episode_config=episode
         )
         self._start_seq = int(start_seq)
         self._end_seq = int(end_seq)
