@@ -16,7 +16,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from undertow.data import FEE_GROWTH_SCHEMA, FUNDING_SCHEMA, DataConfig
+from undertow.data import FUNDING_SCHEMA, DataConfig, ValidationError
 from undertow.sim.config import EpisodeConfig, SplitConfig
 from undertow.sim.marketview import MarketView, build_market_view
 from undertow.sim.types import LookAheadError, MarketViewError
@@ -39,16 +39,52 @@ _TINY_SPLIT = SplitConfig(
 # ---------------------------------------------------------------------------
 
 
-def _patch_loaders(monkeypatch: pytest.MonkeyPatch, view: MarketView) -> None:
-    """Make ``build_market_view`` read this fixture's frames as pyarrow tables."""
+class _FakeDataset:
+    """Structural stand-in for the one ``undertow.data.Dataset`` build.
+
+    Mirrors ``Dataset.require`` for the five streams ``build_market_view`` reads
+    (the tape + reference/gas/regime required, fee_growth optional).
+    """
+
+    _FIELDS = {
+        "event_tape": "tape",
+        "tape": "tape",
+        "reference": "reference",
+        "gas": "gas",
+        "regime": "regime",
+    }
+
+    def __init__(
+        self, view: MarketView, *, fee_growth: pl.DataFrame | None = None
+    ) -> None:
+        assert view.train is not None  # the fixtures patched in are train views
+        self.tape = view.train.to_arrow()
+        self.reference = view.reference.to_arrow()
+        self.gas = view.gas.to_arrow()
+        self.regime = view.regimes.to_arrow()
+        self.fee_growth = (
+            fee_growth.to_arrow() if fee_growth is not None else None
+        )
+
+    def require(self, name: str) -> object:
+        table = getattr(self, self._FIELDS[name])
+        if table is None:
+            raise ValidationError(f"stream {name!r} is absent from this dataset")
+        return table
+
+
+def _patch_loaders(
+    monkeypatch: pytest.MonkeyPatch,
+    view: MarketView,
+    *,
+    fee_growth: pl.DataFrame | None = None,
+) -> None:
+    """Make ``build_market_view`` read this fixture's frames from one dataset build."""
     import undertow.sim.marketview as mv
 
-    monkeypatch.setattr(mv, "load_tape", lambda cfg: view.train.to_arrow())
-    monkeypatch.setattr(mv, "load_reference_feed", lambda cfg: view.reference.to_arrow())
-    monkeypatch.setattr(mv, "load_gas_feed", lambda cfg: view.gas.to_arrow())
-    monkeypatch.setattr(mv, "load_regime_labels", lambda cfg: view.regimes.to_arrow())
-    # No boundary snapshot in the synthetic fixtures → empty (pool_state is None).
-    monkeypatch.setattr(mv, "load_fee_growth", lambda cfg: FEE_GROWTH_SCHEMA.empty_table())
+    monkeypatch.setattr(
+        mv, "load_dataset", lambda cfg: _FakeDataset(view, fee_growth=fee_growth)
+    )
     # No funding stream in the synthetic fixtures → empty, `funding=None`.
     monkeypatch.setattr(mv, "load_funding", lambda cfg: FUNDING_SCHEMA.empty_table())
 
@@ -646,9 +682,52 @@ class TestBuildMarketView:
         def _boom(cfg: object) -> object:
             raise NotImplementedError("pending T16")
 
-        monkeypatch.setattr(mv, "load_tape", _boom)
+        monkeypatch.setattr(mv, "load_dataset", _boom)
         with pytest.raises(NotImplementedError, match="pending T16"):
             build_market_view(tiny_data_config, _TINY_SPLIT)
+
+    def test_missing_required_stream_raises(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tiny_data_config: DataConfig,
+        tiny_market_view: MarketView,
+    ) -> None:
+        """A required stream goes through ``Dataset.require``, not the optional
+        path: only ``fee_growth`` may be absent (and then becomes an empty table)."""
+        import undertow.sim.marketview as mv
+
+        fake = _FakeDataset(tiny_market_view)
+        fake.gas = None
+        monkeypatch.setattr(mv, "load_dataset", lambda cfg: fake)
+        monkeypatch.setattr(mv, "load_funding", lambda cfg: FUNDING_SCHEMA.empty_table())
+        with pytest.raises(ValidationError, match="gas"):
+            build_market_view(tiny_data_config, _TINY_SPLIT)
+
+    def test_dataset_is_built_once_for_all_streams(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tiny_data_config: DataConfig,
+        tiny_market_view: MarketView,
+    ) -> None:
+        """Perf regression: the five streams come from a single dataset build.
+
+        Calling one loader per stream rebuilt the whole event tape five times
+        (~5x view-load time and most of the peak RSS).
+        """
+        import undertow.sim.marketview as mv
+
+        calls = {"count": 0}
+        fake = _FakeDataset(tiny_market_view)
+
+        def counting(cfg: object) -> object:
+            calls["count"] += 1
+            return fake
+
+        monkeypatch.setattr(mv, "load_dataset", counting)
+        monkeypatch.setattr(mv, "load_funding", lambda cfg: FUNDING_SCHEMA.empty_table())
+        view = build_market_view(tiny_data_config, _TINY_SPLIT)
+        assert calls["count"] == 1
+        assert view.step_count() == tiny_market_view.step_count()
 
 
 class TestReferenceSymbolSelection:
@@ -891,12 +970,9 @@ def test_build_market_view_selects_the_seed_block_before_the_first_event(
     tiny_data_config: DataConfig,
     tiny_market_view: MarketView,
 ) -> None:
-    import undertow.sim.marketview as mv
-
-    _patch_loaders(monkeypatch, tiny_market_view)
     first = int(tiny_market_view.train["block_number"].min())
     frame = _fee_growth_frame([first, first - 1], str(tiny_data_config.pool.address))
-    monkeypatch.setattr(mv, "load_fee_growth", lambda cfg: frame)
+    _patch_loaders(monkeypatch, tiny_market_view, fee_growth=frame)
     view = build_market_view(tiny_data_config, _TINY_SPLIT)
     assert view.pool_state is not None
     assert view.pool_state["block_number"].to_list() == [first - 1]
@@ -908,12 +984,9 @@ def test_build_market_view_warns_when_only_the_wrong_seed_block_is_present(
     tiny_market_view: MarketView,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    import undertow.sim.marketview as mv
-
-    _patch_loaders(monkeypatch, tiny_market_view)
     first = int(tiny_market_view.train["block_number"].min())
     frame = _fee_growth_frame([first], str(tiny_data_config.pool.address))
-    monkeypatch.setattr(mv, "load_fee_growth", lambda cfg: frame)
+    _patch_loaders(monkeypatch, tiny_market_view, fee_growth=frame)
     with caplog.at_level(logging.WARNING, logger="undertow.sim.marketview"):
         view = build_market_view(tiny_data_config, _TINY_SPLIT)
     assert view.pool_state is None

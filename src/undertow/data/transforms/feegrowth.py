@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import logging
 import warnings
+from bisect import bisect_right
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -293,6 +294,13 @@ class FeeGrowthTracker:
         self.current_tick = initial.current_tick
         self.current_liquidity = initial.current_liquidity
         self.ticks: dict[int, TickState] = dict(initial.ticks)
+        # Ascending lattice keys, cached across swaps so crossing selection can
+        # bisect instead of scanning (or re-sorting) the whole tick dict on every
+        # swap.  The mutators clear it; ``_sorted_tick_keys_len`` additionally
+        # catches direct ``ticks`` mutations that change the key count (the
+        # facade's ``register_position`` adds sentinel ticks without calling them).
+        self._sorted_tick_keys: list[int] | None = None
+        self._sorted_tick_keys_len: int = -1
         self._current_sqrt_price_x96: int | None = initial.current_sqrt_price_x96
         self._exact = initial.exact
         self._fee_protocol: int = initial.fee_protocol
@@ -354,15 +362,19 @@ class FeeGrowthTracker:
         pre_tick_value = int(pre_tick)
         post_tick_value = int(post_tick)
         upward = post_tick_value > pre_tick_value
+        # The half-open interval is ``(min, max]``: a downward swap recording
+        # ``T-1`` must still cross ``T`` on the next upward move (ADR-021).
+        # ``bisect_right`` puts equal keys on the excluded side, matching that
+        # convention, and the cached key list keeps this O(log n + crossed).
+        keys = self._tick_keys()
         if upward:
-            crossed = sorted(
-                t for t in self.ticks if pre_tick_value < t <= post_tick_value
-            )
+            lo = bisect_right(keys, pre_tick_value)
+            hi = bisect_right(keys, post_tick_value)
+            crossed = keys[lo:hi]
         else:
-            crossed = sorted(
-                (t for t in self.ticks if post_tick_value < t <= pre_tick_value),
-                reverse=True,
-            )
+            lo = bisect_right(keys, post_tick_value)
+            hi = bisect_right(keys, pre_tick_value)
+            crossed = keys[lo:hi][::-1]
 
         # Walk the segments: [pre_price, boundary_1] .. [boundary_n, post_price],
         # each with the liquidity active in it (after the crossings so far).
@@ -461,6 +473,10 @@ class FeeGrowthTracker:
             self.block_number = BlockNumber(_as_int(row["block_number"]))
             return
 
+        # The key set may change below (a tick initialized or uninitialized).
+        # Clear before mutating so even an aborted inconsistent event cannot
+        # leave a stale index behind.
+        self._sorted_tick_keys = None
         for t, d in ((tick_lower, delta), (tick_upper, -delta)):
             before = self.ticks.get(t)
             gross_before = before.liquidity_gross if before is not None else 0
@@ -488,6 +504,23 @@ class FeeGrowthTracker:
         if tick_lower <= self.current_tick < tick_upper:  # half-open [lower, upper)
             self.current_liquidity += delta
         self.block_number = BlockNumber(_as_int(row["block_number"]))
+
+    def _tick_keys(self) -> list[int]:
+        """Ascending lattice keys, refreshed only when the key set may have changed.
+
+        Crossing selection runs once per swap, so rebuilding this list per call
+        (or scanning the whole dict) is O(#ticks) per event and dominated the
+        replay on the dense 0.05 % tape.  ``apply_liquidity_event`` and
+        ``restore`` clear the cache explicitly; the length check additionally
+        catches direct ``ticks`` additions (``FeeGrowthReplay.register_position``
+        seeds sentinel boundaries straight into the dict).
+        """
+        keys = self._sorted_tick_keys
+        if keys is None or self._sorted_tick_keys_len != len(self.ticks):
+            keys = sorted(self.ticks)
+            self._sorted_tick_keys = keys
+            self._sorted_tick_keys_len = len(self.ticks)
+        return keys
 
     def cross_tick(self, tick: int, upward: bool) -> None:
         """Mirror ``Tick.cross``: flip ``fee_growth_outside`` to the global minus
@@ -590,6 +623,8 @@ class FeeGrowthTracker:
         self.current_tick = state.current_tick
         self.current_liquidity = state.current_liquidity
         self.ticks = dict(state.ticks)
+        self._sorted_tick_keys = None
+        self._sorted_tick_keys_len = -1
         self._current_sqrt_price_x96 = state.current_sqrt_price_x96
         self._exact = state.exact
         self._fee_protocol = state.fee_protocol
