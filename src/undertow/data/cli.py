@@ -1,9 +1,10 @@
 """``undertow-data`` CLI — the entry point for the data pipeline (T14).
 
-Four subcommands: ``pull``, ``verify``, ``snapshot``, ``info``. Each delegates to
-``pipeline.py``; this module does argument parsing, exit codes, and human/machine output
-and nothing else. The reviewer will check that orchestration logic lives in
-``pipeline.py``, not here.
+Subcommands: ``pull``, ``verify``, ``snapshot``, ``info``, ``pool-state`` and
+``fetch-data``. Each delegates to ``pipeline.py`` / ``release.py``; this module
+does argument parsing, exit codes, and human/machine output and nothing else.
+The reviewer will check that orchestration logic lives in ``pipeline.py`` / the
+fetchers, not here.
 
 Exit codes: ``0`` ok, ``1`` critical check failed, ``2`` config error, ``3`` fetch error.
 """
@@ -31,6 +32,7 @@ from undertow.data.pipeline_report import (
     PullReport,
     SnapshotReport,
 )
+from undertow.data.release import DatasetAsset, fetch_datasets
 from undertow.data.types import ConfigError, FetchError, Route, ValidationError
 
 
@@ -143,6 +145,37 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     pool_p.add_argument("--config", required=True, help="path to TOML config file")
     pool_p.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="machine-readable JSON output",
+    )
+
+    # --- fetch-data (T20: datasets live on the GitHub release, not in git) ---
+    fetch_p = sub.add_parser(
+        "fetch-data",
+        help="download the validated datasets from the release assets",
+    )
+    fetch_p.add_argument(
+        "--dataset",
+        action="append",
+        dest="datasets",
+        default=None,
+        help="dataset to fetch (repeatable; default: all)",
+    )
+    fetch_p.add_argument(
+        "--out",
+        type=Path,
+        default=Path("data/datasets"),
+        help="destination directory (default: data/datasets)",
+    )
+    fetch_p.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="re-download and replace datasets that are already present",
+    )
+    fetch_p.add_argument(
         "--json",
         action="store_true",
         default=False,
@@ -414,6 +447,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_info(args)
         elif args.command == "pool-state":
             return _cmd_pool_state(args)
+        elif args.command == "fetch-data":
+            return _cmd_fetch_data(args)
         else:
             parser.print_help()
             return 2
@@ -527,6 +562,57 @@ def _cmd_pool_state(args: argparse.Namespace) -> int:
             f"{result.min_block}..{result.max_block}"
         )
     )
+    return 0
+
+
+def _cmd_fetch_data(args: argparse.Namespace) -> int:
+    """Download + checksum-verify + extract the release datasets.
+
+    Progress goes to stderr (so ``--json`` keeps stdout parseable) and is
+    throttled to ~20 updates per asset instead of one line per MiB.
+    """
+    last_bucket = -1
+
+    def _show(asset: DatasetAsset, done: int, total: int) -> None:
+        nonlocal last_bucket
+        bucket = int(done * 20 / max(total, 1))
+        if bucket == last_bucket:
+            return
+        last_bucket = bucket
+        print(
+            f"\r  {asset.dataset}: {done / 1_000_000:.0f}/{total / 1_000_000:.0f} MB "
+            f"({bucket * 5}%)",
+            end="",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    datasets = tuple(args.datasets) if args.datasets else None
+    outcomes = fetch_datasets(
+        args.out,
+        datasets=datasets,
+        force=args.force,
+        progress=None if args.quiet else _show,
+    )
+    if not args.json:
+        if not args.quiet:
+            print(file=sys.stderr)  # terminate the progress line
+        for outcome in outcomes:
+            print(f"{outcome.dataset}: {outcome.status} -> {outcome.path}")
+    else:
+        print(
+            json.dumps(
+                [
+                    {
+                        "dataset": outcome.dataset,
+                        "status": outcome.status,
+                        "path": str(outcome.path),
+                    }
+                    for outcome in outcomes
+                ],
+                indent=2,
+            )
+        )
     return 0
 
 
