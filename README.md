@@ -21,6 +21,32 @@ undertow/
 uv sync
 ```
 
+## Dataset
+
+The validated datasets are **not stored in git** (they would add ~1.1 GB to every
+clone, plus another ~1 GB per future revision). They are published as
+checksum-pinned release assets under the
+[`data-v1`](https://github.com/Prolead1/undertow/releases/tag/data-v1) tag; fetch
+them once after cloning:
+
+```bash
+uv sync
+uv run undertow-data fetch-data   # download + SHA-256 verify + extract to data/datasets/
+```
+
+Then run the 0.05 % pool backtest:
+
+```bash
+uv run undertow-sim backtest --config configs/sim_eth_usdc_500.toml \
+    --data-config configs/eth_usdc_500.toml
+```
+
+`fetch-data` skips datasets that are already present (`--force` re-downloads),
+accepts `--dataset eth_usdc_500` for a single set and `--json` for scripts.
+`data/cache/` — the raw API responses used only to rebuild a dataset — stays
+local; rebuilding needs `GRAPH_API_KEY` / `ETH_RPC_URL` and
+`uv run undertow-data snapshot --config configs/eth_usdc_500.toml`.
+
 ## Status
 
 - [x] Data pipeline scaffolding (T00)

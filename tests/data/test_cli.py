@@ -364,6 +364,79 @@ reference_base_url = "http://localhost/ref"
     assert result == 1
 
 
+def test_fetch_data_delegates_and_prints_outcomes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """fetch-data forwards --dataset/--out/--force and prints one line per dataset."""
+    from undertow.data import cli as cli_module
+    from undertow.data.release import FetchOutcome
+
+    captured: dict[str, object] = {}
+
+    def fake_fetch(output_dir, *, datasets=None, force=False, progress=None):
+        captured["output_dir"] = Path(output_dir)
+        captured["datasets"] = datasets
+        captured["force"] = force
+        return [
+            FetchOutcome("eth_usdc_500", "fetched", Path(output_dir) / "eth_usdc_500")
+        ]
+
+    with patch.object(cli_module, "fetch_datasets", fake_fetch):
+        result = main(
+            ["fetch-data", "--dataset", "eth_usdc_500", "--out", str(tmp_path)]
+        )
+
+    assert result == 0
+    assert captured["output_dir"] == tmp_path
+    assert captured["datasets"] == ("eth_usdc_500",)
+    assert captured["force"] is False
+    assert "eth_usdc_500: fetched" in capsys.readouterr().out
+
+
+def test_fetch_data_json_output(capsys: pytest.CaptureFixture[str]) -> None:
+    """--json emits machine-readable outcomes and nothing else on stdout."""
+    from undertow.data import cli as cli_module
+    from undertow.data.release import FetchOutcome
+
+    def fake_fetch(output_dir, **kwargs):
+        return [
+            FetchOutcome("eth_usdc_3000", "already_present", Path(output_dir) / "eth_usdc_3000")
+        ]
+
+    with patch.object(cli_module, "fetch_datasets", fake_fetch):
+        result = main(["fetch-data", "--json"])
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == [
+        {
+            "dataset": "eth_usdc_3000",
+            "status": "already_present",
+            "path": str(Path("data/datasets") / "eth_usdc_3000"),
+        }
+    ]
+
+
+def test_fetch_data_quiet_suppresses_progress(capsys: pytest.CaptureFixture[str]) -> None:
+    """--quiet must pass no progress callback (stderr stays clean)."""
+    from undertow.data import cli as cli_module
+    from undertow.data.release import FetchOutcome
+
+    captured: dict[str, object] = {}
+
+    def fake_fetch(output_dir, *, datasets=None, force=False, progress=None):
+        captured["progress"] = progress
+        return [
+            FetchOutcome("eth_usdc_500", "fetched", Path(output_dir) / "eth_usdc_500")
+        ]
+
+    with patch.object(cli_module, "fetch_datasets", fake_fetch):
+        result = main(["--quiet", "fetch-data"])
+
+    assert result == 0
+    assert captured["progress"] is None
+
+
 def _write_pull_config(tmp_path: Path) -> Path:
     """Minimal valid config whose log_dir points inside ``tmp_path``."""
     toml_path = tmp_path / "test.toml"

@@ -44,8 +44,9 @@ Legend: `todo` · `in-progress` · `in-review` (code-reviewer running / findings
 |---|---|---|---|---|---|---|
 | T17 liquidity-check null | merged | bug-data-liquidity-check-null | #93 | 1826 passed, 7 skipped, 94.20% cov | APPROVE | check skips on absent/all/partially-null swap liquidity; snapshot unblocked |
 | T18 thegraph reorg duplicates (fetch) | merged | bug-data-thegraph-reorg-duplicates | #95 | 1831 passed, 7 skipped, 94.23% cov | APPROVE | within-page + across-chunk dedup by largest id; pull no longer aborts |
-| T18 addendum (tape collapse) | pr-open | bug-data-tape-cross-stream-collapse | #96 | 1942 passed, 7 skipped, 94.42% cov | APPROVE (x4) | cross-stream `(block, log)` collisions collapse `mint > burn > swap > collect`; 0.05% tape builds |
-| T19 fork-region RPC repair | pr-open | bug-data-tape-cross-stream-collapse | #96 | n/a (one-off data repair) | n/a | 1,422-block fork span replaced with canonical RPC rows; 0 residual mismatches; tape 7,112,636 → 7,112,899 |
+| T18 addendum (tape collapse) | merged | bug-data-tape-cross-stream-collapse | #96 | 1942 passed, 7 skipped, 94.42% cov | APPROVE (x4) | cross-stream `(block, log)` collisions collapse `mint > burn > swap > collect`; 0.05% tape builds |
+| T19 fork-region RPC repair | merged | bug-data-tape-cross-stream-collapse | #96 | n/a (one-off data repair) | n/a | 1,422-block fork span replaced with canonical RPC rows; 0 residual mismatches; tape 7,112,636 → 7,112,899 |
+| T20 release data artifacts | pr-open | feature-data-release-fetch | (PR) | see PR | see PR | datasets moved to release `data-v1` + `undertow-data fetch-data`; PR #97 (data in git) closed, `.git` 942 MB → 2.3 MB |
 
 ## All tasks complete — data module v1 merged 🎉
 
