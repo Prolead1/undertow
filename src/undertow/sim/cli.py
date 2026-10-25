@@ -58,8 +58,9 @@ from undertow.sim.policies import (
 )
 from undertow.sim.prices import CalibratedPriceProcess
 from undertow.sim.prices.regime_jump import MRSJDParams
-from undertow.sim.train import train_ppo
+from undertow.sim.train import TrainingResult, train_ppo
 from undertow.sim.train.envs import EnvFactory, fit_calibrated
+from undertow.sim.train.view_builder import read_builder_params, spawn_view_builder
 from undertow.sim.types import Action, PriceMode
 
 __all__ = ["main"]
@@ -229,6 +230,23 @@ def _load_config(path_str: str | Path) -> SimConfig:
         raise CliError(f"failed to load sim config {path}: {exc}", EXIT_CONFIG) from exc
 
 
+def _require_data_config(data_config_path: str | Path) -> Path:
+    """Validate a data-config path, or raise the shared ``EXIT_CONFIG`` error.
+
+    Used both by the in-process loader and by the subprocess-builder path so
+    the two report a missing snapshot identically instead of the builder's
+    generic non-zero exit.
+    """
+    data_path = Path(data_config_path)
+    if not data_path.is_file():
+        raise CliError(
+            f"data config not found: {data_path}. Build the snapshot first with "
+            f"'undertow-data snapshot --config {data_path}'.",
+            EXIT_CONFIG,
+        )
+    return data_path
+
+
 def _load_market_view(
     config: SimConfig, data_config_path: str | Path, split: str
 ) -> MarketView:
@@ -240,13 +258,7 @@ def _load_market_view(
     placeholders are left literal: loading a dataset must not require
     ``GRAPH_API_KEY``/``ETH_RPC_URL``.
     """
-    data_path = Path(data_config_path)
-    if not data_path.is_file():
-        raise CliError(
-            f"data config not found: {data_path}. Build the snapshot first with "
-            f"'undertow-data snapshot --config {data_path}'.",
-            EXIT_CONFIG,
-        )
+    data_path = _require_data_config(data_config_path)
     try:
         return load_market_view(
             data_path,
@@ -648,9 +660,9 @@ def _train_env_factory(
 ) -> Callable[[], LpEnvironment]:
     """Pick the environment factory for the configured vector-env backend.
 
-    ``subproc`` returns a picklable :class:`EnvFactory` that rebuilds the view in
-    each worker process; ``dummy`` keeps the in-process closure over ``view``.
-    Calibrated params are fitted once here, in the parent.
+    ``subproc`` returns a picklable :class:`EnvFactory` whose workers map the
+    shared view ``_cmd_train`` publishes; ``dummy`` keeps the in-process closure
+    over ``view``.  Calibrated params are fitted once here, in the parent.
     """
     if config.training.vec_env != "subproc":
         return _make_env_factory(view, config)
@@ -667,21 +679,8 @@ def _train_env_factory(
     )
 
 
-def _cmd_train(args: argparse.Namespace, config: SimConfig, view: MarketView, output: Path) -> int:
-    """Train PPO across the configured seeds and write checkpoints + manifests."""
-    env_factory = _train_env_factory(args, config, view)
-    # Process-parallel workers must not each rebuild the multi-GB view: publish
-    # it once as memory-mappable IPC frames and point the pickled factories at
-    # them. A single-slot subproc run uses DummyVecEnv and shares ``view``, and
-    # the dummy backend shares the in-process view directly, so neither pays.
-    shared_view_dir: Path | None = None
-    if isinstance(env_factory, EnvFactory) and int(config.training.parallel_envs) > 1:
-        shared_view_dir = env_factory.publish_shared_view(output / "_shared_view")
-    try:
-        result = train_ppo(env_factory, config, log_dir=output)
-    finally:
-        if shared_view_dir is not None:
-            shutil.rmtree(shared_view_dir, ignore_errors=True)
+def _write_training_summary(result: TrainingResult, output: Path) -> None:
+    """Persist the per-seed manifest digest next to the checkpoints."""
     payload = {
         "seeds": [int(seed) for seed in result.seeds],
         "best_checkpoint": str(result.best_checkpoint),
@@ -705,6 +704,65 @@ def _cmd_train(args: argparse.Namespace, config: SimConfig, view: MarketView, ou
     print(f"Training complete: {len(result.manifests)} seed(s)")
     print(f"  best checkpoint:  {result.best_checkpoint}")
     print(f"  artifacts:        {output}")
+
+
+def _cmd_train(args: argparse.Namespace, config: SimConfig, view: MarketView, output: Path) -> int:
+    """Train PPO in-process (dummy backend, an injected view, or one slot).
+
+    Subproc runs with a real config go through :func:`_cmd_train_shared`, which
+    never loads the dataset in this process.
+    """
+    env_factory = _train_env_factory(args, config, view)
+    # Process-parallel workers must not each rebuild the multi-GB view: publish
+    # it once as memory-mappable IPC frames and point the pickled factories at
+    # them. A single-slot subproc run uses DummyVecEnv and shares ``view``, and
+    # the dummy backend shares the in-process view directly, so neither pays.
+    shared_view_dir: Path | None = None
+    if isinstance(env_factory, EnvFactory) and config.training.uses_worker_processes:
+        shared_view_dir = env_factory.publish_shared_view(output / "_shared_view")
+    try:
+        result = train_ppo(env_factory, config, log_dir=output)
+    finally:
+        if shared_view_dir is not None:
+            shutil.rmtree(shared_view_dir, ignore_errors=True)
+    _write_training_summary(result, output)
+    return EXIT_OK
+
+
+def _cmd_train_shared(args: argparse.Namespace, config: SimConfig, output: Path) -> int:
+    """Train PPO with the view built once, in a short-lived subprocess.
+
+    The parent never loads the parquet dataset: the builder publishes IPC frames
+    (plus calibrated params) and exits, taking its allocator arenas with it, so
+    the long-lived training process only maps the artifact.  The directory is
+    removed once every worker has closed.
+    """
+    # Validate before spawning so a missing snapshot or a calibrated eval-split
+    # request is the same EXIT_CONFIG error the in-process path reports, not a
+    # generic child failure.
+    _require_data_config(args.data_config)
+    if config.price_mode is PriceMode.CALIBRATED and args.split != "train":
+        raise CliError(
+            "calibrated price mode must be trained on the train split "
+            "(fitting on eval data would be look-ahead).",
+            EXIT_CONFIG,
+        )
+    shared_view_dir = output / "_shared_view"
+    try:
+        spawn_view_builder(config, Path(args.data_config), args.split, shared_view_dir)
+        params, initial_price = read_builder_params(shared_view_dir)
+        env_factory = EnvFactory(
+            data_config_path=Path(args.data_config),
+            split=args.split,
+            config=config,
+            mrsjd_params=params,
+            initial_price=initial_price,
+            _shared_dir=shared_view_dir,
+        )
+        result = train_ppo(env_factory, config, log_dir=output)
+    finally:
+        shutil.rmtree(shared_view_dir, ignore_errors=True)
+    _write_training_summary(result, output)
     return EXIT_OK
 
 
@@ -763,6 +821,16 @@ def _run(args: argparse.Namespace, market_view: MarketView | None) -> int:
         validate_policy_name(args.policy)
     if args.command == "evaluate" and not Path(args.checkpoint).is_file():
         raise CliError(f"checkpoint not found: {args.checkpoint}", EXIT_CONFIG)
+
+    # Subproc training builds the view in a builder subprocess so the
+    # long-lived parent only maps the published IPC frames. Injected views
+    # (the test seam) and in-process backends keep the direct load below.
+    if (
+        args.command == "train"
+        and market_view is None
+        and config.training.uses_worker_processes
+    ):
+        return _cmd_train_shared(args, config, output)
 
     view = market_view if market_view is not None else _load_market_view(
         config, args.data_config, args.split

@@ -45,14 +45,22 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SIM_CONFIG = REPO_ROOT / "configs" / "sim_default.toml"
 
 
-def _write_train_config(path: Path, *, vec_env: str, parallel_envs: int) -> Path:
-    """Copy ``sim_default.toml`` with a different vector-env backend."""
+def _write_train_config(
+    path: Path,
+    *,
+    vec_env: str,
+    parallel_envs: int,
+    price_mode: str | None = None,
+) -> Path:
+    """Copy ``sim_default.toml`` with a different backend (and price mode)."""
     lines = []
     for line in SIM_CONFIG.read_text(encoding="utf-8").splitlines():
         if line.startswith("vec_env ="):
             line = f'vec_env = "{vec_env}"'
         elif line.startswith("parallel_envs ="):
             line = f"parallel_envs = {parallel_envs}"
+        elif price_mode is not None and line.startswith("mode ="):
+            line = f'mode = "{price_mode}"'
         lines.append(line)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
@@ -876,6 +884,161 @@ class TestTrainEvaluateSuccessPaths:
 
         assert exit_code == 0
         assert seen.get("exists") is False
+
+    def test_train_subproc_builds_the_view_out_of_process(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Without an injected view, a multi-slot subproc run must never load the
+        dataset in the parent: the builder subprocess publishes IPC frames and
+        the parent's factory maps them."""
+        import undertow.sim.cli as cli
+
+        config_path = _write_train_config(
+            tmp_path / "subproc.toml", vec_env="subproc", parallel_envs=4
+        )
+        shared_dir = tmp_path / "_shared_view"
+        marker = shared_dir / "view_meta.pkl"
+        sentinel_params = object()
+        seen: dict[str, object] = {}
+
+        def fake_spawn_view_builder(
+            config: object,
+            data_config_path: Path,
+            split: str,
+            directory: Path,
+        ) -> Path:
+            seen["spawn"] = (data_config_path, split)
+            Path(directory).mkdir(parents=True, exist_ok=True)
+            marker.write_bytes(b"meta")
+            return Path(directory)
+
+        def fake_train_ppo(
+            env_fn: object, config: object, log_dir: Path | None = None
+        ) -> object:
+            seen["marker_during"] = marker.is_file()
+            seen["factory_view"] = env_fn._view
+            seen["factory_shared"] = env_fn._shared_dir
+            seen["factory_params"] = env_fn.mrsjd_params
+            return _fake_training_result(log_dir)
+
+        monkeypatch.setattr(cli, "spawn_view_builder", fake_spawn_view_builder)
+        monkeypatch.setattr(
+            cli, "read_builder_params", lambda directory: (sentinel_params, 123.0)
+        )
+        monkeypatch.setattr(cli, "train_ppo", fake_train_ppo)
+        monkeypatch.setattr(
+            cli,
+            "_load_market_view",
+            lambda *args, **kwargs: pytest.fail("parent loaded the dataset"),
+        )
+
+        exit_code = cli.main(
+            ["train", "--config", str(config_path), "--output", str(tmp_path)]
+        )
+
+        assert exit_code == 0
+        assert seen["spawn"] == (Path(cli.DEFAULT_DATA_CONFIG), "train")
+        assert seen["marker_during"] is True
+        assert seen["factory_view"] is None
+        assert seen["factory_shared"] == shared_dir
+        assert seen["factory_params"] is sentinel_params
+        assert not shared_dir.exists()
+
+    def test_train_subproc_cleans_up_when_training_fails(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import undertow.sim.cli as cli
+        from undertow.sim.cli import EXIT_ERROR
+
+        config_path = _write_train_config(
+            tmp_path / "subproc.toml", vec_env="subproc", parallel_envs=4
+        )
+        shared_dir = tmp_path / "_shared_view"
+
+        def fake_spawn_view_builder(
+            config: object,
+            data_config_path: Path,
+            split: str,
+            directory: Path,
+        ) -> Path:
+            Path(directory).mkdir(parents=True, exist_ok=True)
+            (Path(directory) / "view_meta.pkl").write_bytes(b"meta")
+            return Path(directory)
+
+        def failing_train_ppo(
+            env_fn: object, config: object, log_dir: Path | None = None
+        ) -> object:
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(cli, "spawn_view_builder", fake_spawn_view_builder)
+        monkeypatch.setattr(cli, "read_builder_params", lambda directory: (None, None))
+        monkeypatch.setattr(cli, "train_ppo", failing_train_ppo)
+
+        exit_code = cli.main(
+            ["train", "--config", str(config_path), "--output", str(tmp_path)]
+        )
+
+        assert exit_code == EXIT_ERROR
+        assert not shared_dir.exists()
+
+    def test_train_subproc_validates_before_spawning(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The builder route must report the same EXIT_CONFIG errors as the
+        in-process loader, not a generic child failure."""
+        import undertow.sim.cli as cli
+        from undertow.sim.cli import EXIT_CONFIG
+
+        monkeypatch.setattr(
+            cli,
+            "spawn_view_builder",
+            lambda *args, **kwargs: pytest.fail("builder must not be spawned"),
+        )
+
+        # A missing snapshot is a config error, not a builder exit code.
+        subproc_config = _write_train_config(
+            tmp_path / "subproc.toml", vec_env="subproc", parallel_envs=4
+        )
+        exit_code = cli.main(
+            [
+                "train",
+                "--config",
+                str(subproc_config),
+                "--data-config",
+                str(tmp_path / "missing.toml"),
+                "--output",
+                str(tmp_path),
+            ]
+        )
+        assert exit_code == EXIT_CONFIG
+
+        # Calibrated training on the eval split is look-ahead: EXIT_CONFIG.
+        calibrated_config = _write_train_config(
+            tmp_path / "calibrated.toml",
+            vec_env="subproc",
+            parallel_envs=4,
+            price_mode="calibrated",
+        )
+        exit_code = cli.main(
+            [
+                "train",
+                "--config",
+                str(calibrated_config),
+                "--data-config",
+                str(cli.DEFAULT_DATA_CONFIG),
+                "--split",
+                "eval",
+                "--output",
+                str(tmp_path),
+            ]
+        )
+        assert exit_code == EXIT_CONFIG
 
     def test_evaluate_wires_checkpoint_and_writes_results(
         self,

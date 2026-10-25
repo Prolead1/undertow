@@ -38,6 +38,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv, VecMonitor
 
+from undertow.sim.config import uses_worker_processes
 from undertow.sim.train.rollouts import RolloutRecorder, rows_from_env
 from undertow.sim.train.runs import (
     RunManifest,
@@ -265,7 +266,7 @@ def _make_vec_env(
         )
     parallel = max(1, int(parallel_envs))
     vec_env: VecEnv
-    if backend == "subproc" and parallel > 1:
+    if uses_worker_processes(backend, parallel):
         # SB3 defaults to forkserver where available and spawn otherwise; both
         # are thread-safe (plain ``fork`` after torch import can deadlock).
         vec_env = SubprocVecEnv([env_fn for _ in range(parallel)])

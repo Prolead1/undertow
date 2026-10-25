@@ -246,6 +246,21 @@ class TestTrainingConfig:
         with pytest.raises(SimConfigError, match="vec_env"):
             TrainingConfig(vec_env="threads")  # type: ignore[arg-type]
 
+    def test_uses_worker_processes_matches_the_vector_env_choice(self) -> None:
+        assert TrainingConfig().uses_worker_processes is False  # dummy default
+        assert (
+            TrainingConfig(vec_env="dummy", parallel_envs=4).uses_worker_processes
+            is False
+        )
+        assert (
+            TrainingConfig(vec_env="subproc", parallel_envs=1).uses_worker_processes
+            is False
+        )
+        assert (
+            TrainingConfig(vec_env="subproc", parallel_envs=4).uses_worker_processes
+            is True
+        )
+
 
 # ---------------------------------------------------------------------------
 # BacktestConfig

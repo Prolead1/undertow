@@ -140,6 +140,16 @@ class SplitConfig:
             )
 
 
+def uses_worker_processes(vec_env: str, parallel_envs: int) -> bool:
+    """Whether a vector-env backend/width runs one OS process per slot.
+
+    The single implementation behind :attr:`TrainingConfig.uses_worker_processes`
+    and ``ppo_runner._make_vec_env``'s backend choice, so the CLI's builder
+    decision and the vector-env construction cannot drift apart.
+    """
+    return vec_env == "subproc" and int(parallel_envs) > 1
+
+
 @dataclass(frozen=True, slots=True)
 class TrainingConfig:
     algorithm: Literal["ppo"] = "ppo"
@@ -168,6 +178,11 @@ class TrainingConfig:
     record_rollouts: bool = True
     #: Maximum evaluation episodes recorded when ``record_rollouts`` is true (U06).
     rollout_max_episodes: int = 5
+
+    @property
+    def uses_worker_processes(self) -> bool:
+        """True when training runs one OS process per parallel slot."""
+        return uses_worker_processes(self.vec_env, self.parallel_envs)
 
     def __post_init__(self) -> None:
         if self.vec_env not in ("dummy", "subproc"):
