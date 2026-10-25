@@ -182,16 +182,19 @@ def test_fee_growth_inside_matches_manual_volume_share() -> None:
     post = Tick(ENTRY_TICK + 30)
     result = engine.step(calc_sqrt_price_a(post), post, 10_000.0, 0.0)
     fee0 = 10_000.0 * FEE_TIER_BPS / FEE_DENOMINATOR
-    assert result["fees_accrued"][pid1][0] == pytest.approx(fee0 * l1 / total)
-    assert result["fees_accrued"][pid2][0] == pytest.approx(fee0 * l2 / total)
+    # ADR-035: both positions are active in the segment, so the denominator is
+    # the augmented liquidity ``total + l1 + l2``.
+    denominator = total + l1 + l2
+    assert result["fees_accrued"][pid1][0] == pytest.approx(fee0 * l1 / denominator)
+    assert result["fees_accrued"][pid2][0] == pytest.approx(fee0 * l2 / denominator)
     # position_fees and the returned mapping agree.
     assert engine.position_fees(pid1) == pytest.approx(result["fees_accrued"][pid1])
 
     back = Tick(ENTRY_TICK)
     result1 = engine.step(calc_sqrt_price_a(back), back, 0.0, 4_000.0)
     fee1 = 4_000.0 * FEE_TIER_BPS / FEE_DENOMINATOR
-    assert result1["fees_accrued"][pid1][1] == pytest.approx(fee1 * l1 / total)
-    assert result1["fees_accrued"][pid2][1] == pytest.approx(fee1 * l2 / total)
+    assert result1["fees_accrued"][pid1][1] == pytest.approx(fee1 * l1 / denominator)
+    assert result1["fees_accrued"][pid2][1] == pytest.approx(fee1 * l2 / denominator)
 
 
 # ---------------------------------------------------------------------------
@@ -222,14 +225,19 @@ def test_step_volume_accrues_to_in_range_position() -> None:
     fee0 = 1_000.0 * FEE_TIER_BPS / FEE_DENOMINATOR
     assert engine.state.fee_growth_global_0 == pytest.approx(fee0 / 4_000.0)
     assert engine.state.fee_growth_global_1 == 0.0
-    assert result["fees_accrued"][pid][0] == pytest.approx(fee0 * liquidity / 4_000.0)
+    # ADR-035: the position's share uses the augmented denominator.
+    assert result["fees_accrued"][pid][0] == pytest.approx(
+        fee0 * liquidity / (4_000.0 + liquidity)
+    )
     assert result["pool_fee_earned_0"] == pytest.approx(fee0)
 
     back = Tick(ENTRY_TICK)
     result1 = engine.step(calc_sqrt_price_a(back), back, 0.0, 500.0)
     fee1 = 500.0 * FEE_TIER_BPS / FEE_DENOMINATOR
     assert engine.state.fee_growth_global_1 == pytest.approx(fee1 / 4_000.0)
-    assert result1["fees_accrued"][pid][1] == pytest.approx(fee1 * liquidity / 4_000.0)
+    assert result1["fees_accrued"][pid][1] == pytest.approx(
+        fee1 * liquidity / (4_000.0 + liquidity)
+    )
     assert result1["pool_fee_earned_1"] == pytest.approx(fee1)
 
 
@@ -326,10 +334,11 @@ def test_close_position_returns_accrued_fees() -> None:
     engine.step(calc_sqrt_price_a(in_tick), in_tick, 100.0, 0.0)
 
     accrued = engine.position_fees(pid)
-    assert accrued[0] == pytest.approx(0.3)
+    # ADR-035: external and marginal liquidity are equal, so the share is 1/2.
+    assert accrued[0] == pytest.approx(0.15)
     returned = engine.close_position(pid)
     assert returned == pytest.approx(accrued)
-    assert returned[0] == pytest.approx(0.3)
+    assert returned[0] == pytest.approx(0.15)
     assert returned[0] > 0.0
 
 
@@ -366,13 +375,14 @@ def test_position_fees_zero_immediately_after_open() -> None:
     assert engine.position_fees(pid) == (0.0, 0.0)
 
 
-def test_position_fees_treats_an_unwound_boundary_tick_as_uninitialized() -> None:
-    """Parity with ``FeeGrowthTracker.accrue``: an absent boundary reads 0.
+def test_unwound_boundary_ticks_leave_the_marginal_ledger_alone() -> None:
+    """ADR-035: the marginal ledger does not read inside growth at all.
 
     A real mint/burn stream can fully unwind an external tick after the agent
-    opened a position on it; the exact tracker reads
-    ``fee_growth_outside = 0`` for the now-uninitialized tick instead of
-    raising, and the engine steps must do the same.
+    opened a position on it.  The growth path needed an uninitialized-tick
+    fallback for that case; the per-segment ledger is independent of the tick
+    struct, so the unwind cannot create a phantom fee and a step that cannot
+    apportion any external liquidity credits nothing.
     """
     engine = _engine(liquidity=0.0)
     lower, upper = Tick(ENTRY_TICK - 120), Tick(ENTRY_TICK + 120)
@@ -394,16 +404,10 @@ def test_position_fees_treats_an_unwound_boundary_tick_as_uninitialized() -> Non
     assert lower not in engine.ticks
     assert upper not in engine.ticks
 
-    engine.state.fee_growth_global_0 = 0.25
-    engine.state.fee_growth_global_1 = 0.5
-    inside_0, inside_1 = engine.state.fee_growth_inside(
-        lower, upper, 0.0, 0.0, 0.0, 0.0
-    )
-    snapshot_0, snapshot_1 = engine.position_fee_snapshots[pid]
-    assert engine.position_fees(pid) == pytest.approx(
-        (100.0 * (inside_0 - snapshot_0), 100.0 * (inside_1 - snapshot_1))
-    )
-    assert engine.position_fees(pid)[0] > 0.0
+    post = Tick(ENTRY_TICK + 30)
+    result = engine.step(calc_sqrt_price_a(post), post, 1_000.0, 0.0)
+    assert result["fees_accrued"][pid] == (0.0, 0.0)
+    assert engine.position_fees(pid) == (0.0, 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -887,7 +891,8 @@ def test_step_zero_liquidity_reports_nominal_fee_without_growth() -> None:
     assert engine.state.fee_growth_global_0 == 0.0
 
 
-def test_position_snapshot_mirrors_engine_and_humanises_fees() -> None:
+def test_position_fees_are_the_marginal_share_in_human_units() -> None:
+    """ADR-035: the ledger holds ``fee * L_pos / (L_pos + L_pool)``."""
     engine = _engine(liquidity=1.0)
     pid = engine.open_position(Tick(ENTRY_TICK - 120), Tick(ENTRY_TICK + 120), 1.0)
     in_tick = Tick(ENTRY_TICK + 30)
@@ -895,21 +900,9 @@ def test_position_snapshot_mirrors_engine_and_humanises_fees() -> None:
 
     raw = engine.position_fees(pid)
     position = engine.positions[pid]
-    lower_ts = engine.ticks[position.tick_lower]
-    upper_ts = engine.ticks[position.tick_upper]
-    inside = engine.state.fee_growth_inside(
-        position.tick_lower,
-        position.tick_upper,
-        lower_ts.fee_growth_outside_0,
-        lower_ts.fee_growth_outside_1,
-        upper_ts.fee_growth_outside_0,
-        upper_ts.fee_growth_outside_1,
-    )
-    human = position.uncollected_fees(inside[0], inside[1])
 
-    assert raw[0] == pytest.approx(0.3)
-    assert human[0] == pytest.approx(raw[0] / 10.0**position.dec0)
-    assert human[0] == pytest.approx(3.0e-7)
+    assert raw[0] == pytest.approx(0.15)
+    assert raw[0] / 10.0**position.dec0 == pytest.approx(1.5e-7)
 
 
 def test_step_updates_sqrt_price_within_same_tick() -> None:
@@ -1101,4 +1094,6 @@ def test_step_applies_protocol_fee_split_before_lp_distribution() -> None:
     assert engine.state.fee_growth_global_0 < gross_fee / 4_000.0
     # The reported gross pool fee is unchanged; the cut is simply not LP income.
     assert result["pool_fee_earned_0"] == pytest.approx(gross_fee)
-    assert result["fees_accrued"][pid][0] == pytest.approx(lp_fee * 2_000.0 / 4_000.0)
+    assert result["fees_accrued"][pid][0] == pytest.approx(
+        lp_fee * 2_000.0 / 6_000.0
+    )

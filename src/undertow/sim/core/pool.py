@@ -34,14 +34,17 @@ The agent's positions are **marginal** (ADR-019): :meth:`PoolEngine.open_positio
 seeds the position's boundary ticks with the ``liquidity_gross=1,
 liquidity_net=0`` sentinel of ``FeeGrowthReplay.register_position`` and does
 **not** add the agent's ``L`` to ``state.liquidity``.  ``state.liquidity`` is
-therefore the *external* pool liquidity (seeded from the on-chain snapshot),
-which is exactly the denominator the backtester distributes fee growth over.
+therefore the *external* pool liquidity (seeded from the on-chain snapshot).
 
-Fee accrual is therefore ``fees_raw = L * Δfee_growth`` with **no unit
-conversion**.  Humanising the reported token fees is the job of the reporting
-boundary (``Position.uncollected_fees`` divides by ``10**dec0``/``10**dec1``);
-:meth:`PoolEngine.position_fees` deliberately returns the raw value so the
-formula matches ``CONTRACTS.md`` §6 exactly.
+Fee accrual walks each swap segment and credits an active position
+``fee_segment * L_agent / (L_agent + L_external_segment)`` (ADR-035; the
+augmented marginal denominator), so the position can never be credited more
+than the fee the pool actually took.  ``state.fee_growth_global_*`` still
+accrues on the external ``L`` for protocol-level state.  Humanising the
+reported token fees is the job of the reporting boundary
+(``Position.uncollected_fees`` divides by ``10**dec0``/``10**dec1``);
+:meth:`PoolEngine.position_fees` deliberately returns the raw ledger value so
+``CONTRACTS.md`` §6 matches.
 
 Equation numbers in comments refer to roadmap §10.2.4.
 """
@@ -311,10 +314,10 @@ class PoolEngine:
 
     ``state.liquidity`` is the pool's **external** active liquidity (ADR-019).
     Agent-owned positions are *marginal*: :meth:`open_position` never adds their
-    ``L`` to ``state.liquidity``; it only seeds sentinel boundary ticks (and the
-    per-position inside snapshot) so the agent's ``L * Δfee_growth_inside``
-    entitlement is computed against the external fee-growth denominator, exactly
-    like the backtester's ``FeeGrowthReplay``.
+    ``L`` to ``state.liquidity``; it only seeds sentinel boundary ticks.  Fees
+    are accrued per swap segment on the augmented denominator
+    ``L_agent + L_external`` (ADR-035), exactly like the backtester's
+    ``FeeGrowthReplay``.
     """
 
     state: PoolState
@@ -323,6 +326,9 @@ class PoolEngine:
     position_fee_snapshots: dict[int, tuple[float, float]] = field(
         default_factory=dict
     )
+    #: Raw token fees accrued to each marginal position by ADR-035's exact
+    #: per-segment share; :meth:`position_fees` returns this ledger.
+    position_accrued: dict[int, tuple[float, float]] = field(default_factory=dict)
     _next_position_id: int = 0
     #: Memoised ``tick_to_sqrt_price_x96(tick)`` boundaries (the exact path calls
     #: it per tick per swap; the Decimal conversion is expensive).
@@ -545,9 +551,8 @@ class PoolEngine:
         boundary tick is seeded only when absent, with the protocol seeding
         convention and the sentinel ``liquidity_gross=1, liquidity_net=0`` of
         ``FeeGrowthReplay.register_position``; the agent's ``L`` is **not** added
-        to ``state.liquidity``.  The ``Position`` and its ``fee_growth_inside``
-        snapshot are recorded as before (``position_fees`` stays
-        ``L_agent * Δfee_growth_inside``).
+        to ``state.liquidity``.  The ``Position`` is recorded and its ADR-035
+        per-segment fee ledger is initialised at zero.
         """
         spacing = int(self.state.tick_spacing)
         if spacing <= 0:
@@ -577,6 +582,7 @@ class PoolEngine:
         position_id = self._next_position_id
         self._next_position_id += 1
         self.positions[position_id] = position
+        self.position_accrued[position_id] = (0.0, 0.0)
 
         lower_ts = self.ticks[lower]
         upper_ts = self.ticks[upper]
@@ -609,41 +615,54 @@ class PoolEngine:
         fees = self.position_fees(position_id)
         del self.positions[position_id]
         del self.position_fee_snapshots[position_id]
+        del self.position_accrued[position_id]
         return fees
 
     def position_fees(self, position_id: int) -> tuple[float, float]:
         """Current uncollected **raw** fees for ``position_id``.
 
-        ``fees = L * (fg_inside_current - fg_inside_snapshot)`` per token,
-        where ``fg_inside`` is recomputed from the live lattice.  The result is
-        **raw** token units and is deliberately *not* humanised here; the
-        reporting accessor is ``Position.uncollected_fees``, which subtracts
-        the Position's mirror snapshot (kept in sync at open) and divides by
-        ``10**dec0``/``10**dec1`` (ADR-009).  Mixing the two accessors mixes
-        raw and human units.
+        The ledger is written by :meth:`step` during the per-segment swap walk:
+        each marginal position earns ``lp_fee * L_pos / (L_pos + L_external)`` of
+        the segment's LP fee (ADR-035), so a position can never be credited more
+        than the fee actually taken.  The result is **raw** token units and is
+        deliberately *not* humanised here; the reporting accessor divides by
+        ``10**dec0``/``10**dec1`` (ADR-009).
         """
-        position = self.positions.get(position_id)
-        if position is None:
+        accrued = self.position_accrued.get(position_id)
+        if position_id not in self.positions or accrued is None:
             raise PositionError(f"unknown position_id {position_id}")
-        # A boundary tick can be absent: the external stream may have fully
-        # unwound it after the position was opened, and ``Tick.update`` clears
-        # the struct.  Mirror ``FeeGrowthTracker.accrue`` — an uninitialized
-        # boundary reads ``fee_growth_outside = 0`` rather than failing.
-        lower_ts = self.ticks.get(position.tick_lower)
-        upper_ts = self.ticks.get(position.tick_upper)
-        inside_0, inside_1 = self.state.fee_growth_inside(
-            position.tick_lower,
-            position.tick_upper,
-            lower_ts.fee_growth_outside_0 if lower_ts is not None else 0.0,
-            lower_ts.fee_growth_outside_1 if lower_ts is not None else 0.0,
-            upper_ts.fee_growth_outside_0 if upper_ts is not None else 0.0,
-            upper_ts.fee_growth_outside_1 if upper_ts is not None else 0.0,
-        )
-        snapshot_0, snapshot_1 = self.position_fee_snapshots[position_id]
-        return (
-            position.liquidity * (inside_0 - snapshot_0),
-            position.liquidity * (inside_1 - snapshot_1),
-        )
+        return accrued
+
+    def _accrue_marginal_fees(
+        self, seg_tick: Tick, liquidity: float, lp_fee: float, input_token: int
+    ) -> None:
+        """Credit each marginal position its exact share of a segment's LP fee.
+
+        The denominator is the **augmented** liquidity
+        ``L_external + sum(L_marginal_active)``, so a position earns
+        ``lp_fee * L_pos / (L_pos + L_external)`` — the documented marginal
+        share (PLAN §7).  The previous global-growth path implied
+        ``lp_fee * L_pos / L_external``, which can exceed the fee actually taken
+        when a thin tick segment's external liquidity is smaller than the
+        position's own ``L`` (ADR-035).
+        """
+        active = [
+            (position_id, position.liquidity)
+            for position_id, position in self.positions.items()
+            if position.tick_lower <= seg_tick < position.tick_upper
+        ]
+        if not active:
+            return
+        denominator = liquidity + math.fsum(amount for _pid, amount in active)
+        if denominator <= 0.0:
+            return
+        for position_id, amount in active:
+            share = lp_fee * amount / denominator
+            accrued_0, accrued_1 = self.position_accrued[position_id]
+            if input_token == 0:
+                self.position_accrued[position_id] = (accrued_0 + share, accrued_1)
+            else:
+                self.position_accrued[position_id] = (accrued_0, accrued_1 + share)
 
     # -- Core step --------------------------------------------------------
     def step(
@@ -715,27 +734,31 @@ class PoolEngine:
         # the liquidity active in it.  We walk the same boundary prices the
         # lattice exposes (``calc_sqrt_price_a``) and keep ``lo <= hi`` so the
         # per-segment amount formulas are direction-free.
-        segments: list[tuple[float, float, float]] = []
+        segments: list[tuple[float, float, float, Tick]] = []
         price = pre_price
         liquidity = float(self.state.liquidity)
+        seg_tick = pre_tick
         for tick in walk:
             boundary = self._boundary_x96(tick) / float(Q96)
             lo, hi = (price, boundary) if price <= boundary else (boundary, price)
-            segments.append((lo, hi, liquidity))
+            segments.append((lo, hi, liquidity, seg_tick))
             net = float(self.ticks[tick].liquidity_net)
             liquidity = liquidity + net if upward else liquidity - net
             price = boundary
+            # Downward, the segment after crossing ``tick`` spans ticks below
+            # it; the half-open activity predicate then needs ``tick - 1``.
+            seg_tick = tick if upward else Tick(int(tick) - 1)
         if post_price != price:
             lo, hi = (
                 (price, post_price) if price <= post_price else (post_price, price)
             )
-            segments.append((lo, hi, liquidity))
+            segments.append((lo, hi, liquidity, seg_tick))
 
         # Per-segment net inputs and the proportional gross allocation.  If no
         # segment has liquidity there is nothing to accrue (and, mirroring the
         # tracker, no tick to cross: the pool is empty).
         nets: list[float] = []
-        for lo, hi, liquidity in segments:
+        for lo, hi, liquidity, _seg_tick in segments:
             if input_token == 0:
                 net = liquidity * (1.0 / lo - 1.0 / hi)
             elif input_token == 1:
@@ -749,7 +772,7 @@ class PoolEngine:
         # and must rebalance the active liquidity.  (For a real swap this is the
         # tracker's own ``net_total > 0`` gate, since a positive segment net is
         # equivalent to positive segment liquidity.)
-        has_liquidity = any(liq > 0.0 for _lo, _hi, liq in segments)
+        has_liquidity = any(liq > 0.0 for _lo, _hi, liq, _seg_tick in segments)
         do_fees = input_token in (0, 1) and net_total > 0.0
 
         if has_liquidity:
@@ -760,7 +783,7 @@ class PoolEngine:
                 else (fee_protocol >> 4) & 0x0F
             )
             allocated = 0.0
-            for i, ((_lo, _hi, liquidity), net) in enumerate(
+            for i, ((_lo, _hi, liquidity, seg_tick), net) in enumerate(
                 zip(segments, nets, strict=True)
             ):
                 if do_fees:
@@ -789,6 +812,9 @@ class PoolEngine:
                                 self.state.fee_growth_global_0 += lp_fee / liquidity
                             else:
                                 self.state.fee_growth_global_1 += lp_fee / liquidity
+                            self._accrue_marginal_fees(
+                                seg_tick, liquidity, lp_fee, input_token
+                            )
                 if i < len(walk):
                     self._cross_one(walk[i], upward)
 

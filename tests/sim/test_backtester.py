@@ -572,9 +572,9 @@ def _tape_columns_cumulative_fees(
 
 def test_fee_accrual_is_exact_integer_q128() -> None:
     # A mint funds the pool liquidity; a token0-in swap that stays in range then
-    # accrues exactly ``(L_pos * Δgrowth) >> 128`` on the Q128 integers.  For an
-    # in-range, no-crossing swap the exact path must agree with the derived
-    # tape-columns path (ADR-013's cross-check).
+    # accrues exactly the ADR-035 marginal share ``fee * L_pos // (L_pos + L_pool)``
+    # (the augmented denominator), not the unbounded ``(L_pos * Δgrowth) >> 128``
+    # the tape-columns path implies.
     lp = 10**18
     gross = 10**12
     fee = gross * _FEE_PIPS // 1_000_000
@@ -594,7 +594,7 @@ def test_fee_accrual_is_exact_integer_q128() -> None:
     )
     ledger = run_backtest(HODLPolicy(), view, _PINNED_SIM_CONFIG)
     position_liquidity = int(round(_initial_position().liquidity))
-    expected_raw = (position_liquidity * inc) >> 128
+    expected_raw = fee * position_liquidity // (position_liquidity + lp)
     expected_fee = expected_raw / 10**DEC0
 
     fees = ledger.equity_curve["fees"].to_list()
@@ -611,7 +611,10 @@ def test_fee_accrual_is_exact_integer_q128() -> None:
         position_liquidity,
         _ENTRY_PRICE,
     )
-    assert tape_columns[-1] == pytest.approx(sum(fees), rel=1e-12)
+    # ADR-035: the superseded tape-columns path overstates the share (it omits
+    # the position's own liquidity from the denominator); it is no longer the
+    # exact comparison, only a strict upper bound.
+    assert tape_columns[-1] > sum(fees)
 
 
 def test_hodl_credits_the_first_tape_event_fee() -> None:
@@ -632,7 +635,6 @@ def test_hodl_credits_the_first_tape_event_fee() -> None:
     lp = 10**18
     gross = 10**12
     fee = gross * _FEE_PIPS // 1_000_000
-    inc = (fee << 128) // lp
     pool = default_pools()["USDC_WETH_3000"]
 
     # The first swap must move the price (a same-price swap has a zero-length
@@ -678,7 +680,7 @@ def test_hodl_credits_the_first_tape_event_fee() -> None:
 
     ledger = run_backtest(HODLPolicy(), view, _PINNED_SIM_CONFIG)
     position_liquidity = int(round(deployed.liquidity))
-    expected_raw = (position_liquidity * inc) >> 128
+    expected_raw = fee * position_liquidity // (position_liquidity + lp)
     expected_fee = expected_raw / 10**DEC0
 
     fees = ledger.equity_curve["fees"].to_list()
@@ -753,7 +755,10 @@ def test_exact_path_handles_a_crossed_boundary() -> None:
     )
     ledger = run_backtest(HODLPolicy(), view, _PINNED_SIM_CONFIG)
     position_liquidity = int(round(_initial_position().liquidity))
-    expected_raw = (position_liquidity * inc) >> 128
+    # The crossing leaves the post-boundary segment with zero external
+    # liquidity, so the whole event fee is apportioned to the in-range segment
+    # and the position earns the ADR-035 share of it.
+    expected_raw = fee * position_liquidity // (position_liquidity + lp)
     expected_fee = expected_raw / 10**DEC1 * _ENTRY_PRICE  # token1 (WETH) fees
 
     fees = ledger.equity_curve["fees"].to_list()
@@ -782,7 +787,6 @@ def test_exact_path_ignores_null_derived_global_columns() -> None:
     lp = 10**18
     gross = 10**12
     fee = gross * _FEE_PIPS // 1_000_000
-    inc = (fee << 128) // lp
     view = _market_view(
         minutes=[0, 10, 20],
         prices=[_ENTRY_PRICE] * 3,
@@ -798,7 +802,9 @@ def test_exact_path_ignores_null_derived_global_columns() -> None:
     )
     ledger = run_backtest(HODLPolicy(), view, _PINNED_SIM_CONFIG)
     position_liquidity = int(round(_initial_position().liquidity))
-    expected = ((position_liquidity * inc) >> 128) / 10**DEC0
+    expected = (
+        fee * position_liquidity // (position_liquidity + lp) / 10**DEC0
+    )
     assert ledger.equity_curve["fees"][2] == pytest.approx(expected, rel=1e-12)
 
 

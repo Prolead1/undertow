@@ -198,7 +198,9 @@ class FeeGrowthReplay:
                 "expected one of swap/mint/burn/collect/flash"
             )
 
-    def register_position(self, *, tick_lower: int, tick_upper: int) -> None:
+    def register_position(
+        self, *, tick_lower: int, tick_upper: int, liquidity: int = 0
+    ) -> None:
         """Seed a synthetic position's boundary ticks in the tracker lattice.
 
         The backtester's position is *marginal*: it does not contribute pool
@@ -215,6 +217,11 @@ class FeeGrowthReplay:
         sentinel ``liquidity_gross=1`` with ``liquidity_net=0`` keeps the tick
         initialised without contributing to ``current_liquidity`` (the
         marginal-agent model).  An already-initialised tick is left untouched.
+
+        When ``liquidity > 0`` the position is also registered as the tracker's
+        marginal ledger (ADR-035): each swap segment then credits it
+        ``lp_fee * L_pos / (L_pos + L_external)``, the bounded marginal share,
+        instead of the unbounded growth-path entitlement.
         """
         tracker = self._tracker
         current_tick = tracker.current_tick
@@ -228,6 +235,10 @@ class FeeGrowthReplay:
             else:
                 outside_0, outside_1 = 0, 0
             tracker.ticks[tick] = TickState(outside_0, outside_1, 1, 0, True)
+        if int(liquidity) > 0:
+            tracker.register_marginal_position(
+                int(tick_lower), int(tick_upper), int(liquidity)
+            )
 
     def accrue(
         self,

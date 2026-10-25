@@ -232,6 +232,12 @@ class FeeGrowthState:
     fee_protocol: int = field(default=0, kw_only=True)
     # --- ADR-013 extension (defaulted, keyword-only) ---
     fee_pips: int | None = field(default=None, kw_only=True)
+    # --- ADR-035 marginal-position ledger (defaulted, keyword-only) ---
+    marginal_position: tuple[int, int, int] | None = field(default=None, kw_only=True)
+    marginal_accrued_0: int = field(default=0, kw_only=True)
+    marginal_accrued_1: int = field(default=0, kw_only=True)
+    marginal_returned_0: int = field(default=0, kw_only=True)
+    marginal_returned_1: int = field(default=0, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -305,6 +311,49 @@ class FeeGrowthTracker:
         self._exact = initial.exact
         self._fee_protocol: int = initial.fee_protocol
         self._fee_pips: int | None = initial.fee_pips
+        # ADR-035: the single marginal (agent) position accrues its exact
+        # per-segment share of the LP fee on the augmented liquidity
+        # denominator; these are its ledger and last-returned cursors.
+        self.marginal_position: tuple[int, int, int] | None = initial.marginal_position
+        self.marginal_accrued = [initial.marginal_accrued_0, initial.marginal_accrued_1]
+        self.marginal_returned = [initial.marginal_returned_0, initial.marginal_returned_1]
+
+    def register_marginal_position(
+        self, tick_lower: int, tick_upper: int, liquidity: int
+    ) -> None:
+        """Register the marginal position that accrues ADR-035 shares.
+
+        Resets the accrued/returned cursors; the backtester calls this at
+        deployment and after every rebalance so a new band starts from zero.
+        Only one marginal position is tracked (the backtester's); registering
+        again replaces the previous band and its ledger.
+        """
+        self.marginal_position = (int(tick_lower), int(tick_upper), int(liquidity))
+        self.marginal_accrued = [0, 0]
+        self.marginal_returned = [0, 0]
+
+    def _accrue_marginal_fees(
+        self, seg_tick: int, liquidity: int, lp_fee: int, input_token: int
+    ) -> None:
+        """Credit the marginal position its share of one segment's LP fee.
+
+        The denominator ``liquidity + L_pos`` is the augmented active liquidity,
+        so the credit is ``lp_fee * L_pos / (L_pos + L_external)`` — the
+        documented marginal share (PLAN §7) — never the unbounded
+        ``lp_fee * L_pos / L_external`` (ADR-035).
+        """
+        position = self.marginal_position
+        if position is None:
+            return
+        lower, upper, pos_liquidity = position
+        if not (lower <= seg_tick < upper):
+            return
+        denominator = liquidity + pos_liquidity
+        if denominator <= 0:
+            return
+        share = lp_fee * pos_liquidity // denominator
+        if share > 0:
+            self.marginal_accrued[input_token] += share
 
     # -- event application --------------------------------------------------
 
@@ -378,21 +427,25 @@ class FeeGrowthTracker:
 
         # Walk the segments: [pre_price, boundary_1] .. [boundary_n, post_price],
         # each with the liquidity active in it (after the crossings so far).
-        segments: list[tuple[int, int, int]] = []
+        segments: list[tuple[int, int, int, int]] = []
         price = pre_price
         liq = self.current_liquidity
+        seg_tick = pre_tick_value
         for t in crossed:
             boundary = tick_to_sqrt_price_x96(t)
-            segments.append((price, boundary, liq))
+            segments.append((price, boundary, liq, seg_tick))
             net = self.ticks[t].liquidity_net
             liq = liq + net if upward else liq - net
             price = boundary
+            # Downward, the segment after crossing ``t`` spans ticks below it;
+            # the half-open activity predicate then needs ``t - 1``.
+            seg_tick = t if upward else t - 1
         if post_price != price:  # skip a degenerate zero-length final segment
-            segments.append((price, post_price, liq))
+            segments.append((price, post_price, liq, seg_tick))
 
         # Per-segment net inputs (the protocol's own per-step formula).
         nets: list[int] = []
-        for a, b, L in segments:
+        for a, b, L, _seg_tick in segments:
             if input_token == 0:
                 nets.append(get_amount0_delta(a, b, L, True))
             else:
@@ -402,7 +455,9 @@ class FeeGrowthTracker:
         if net_total > 0:
             fee_pips = self._fee_pips if self._fee_pips is not None else self.pool.fee_tier.value
             allocated = 0
-            for i, ((_a, _b, L), net) in enumerate(zip(segments, nets, strict=True)):
+            for i, ((_a, _b, L, seg_tick), net) in enumerate(
+                zip(segments, nets, strict=True)
+            ):
                 if i == len(segments) - 1:
                     gross_seg = gross_in - allocated  # last segment absorbs the floor remainder
                 else:
@@ -421,6 +476,9 @@ class FeeGrowthTracker:
                             self.fee_growth_global_1_x128 = wrapping_add_256(
                                 self.fee_growth_global_1_x128, inc
                             )
+                        self._accrue_marginal_fees(
+                            seg_tick, L, lp_fee, input_token
+                        )
                 if i < len(crossed):
                     # update-then-cross order: the tick's outside sees the global
                     # including this segment's fee, exactly like Pool.swap.
@@ -565,6 +623,10 @@ class FeeGrowthTracker:
         them as the position's ``feeGrowthInside*Last``). Boundary ticks missing
         from the tracker read as ``fee_growth_outside = 0``, the protocol's
         default for an uninitialized tick.
+
+        For the registered marginal position (ADR-035) the returned fees are the
+        per-segment ledger delta and the ``liquidity`` argument is not consulted
+        (the registered ``L`` governs); every other key keeps the growth formula.
         """
         lower = self.ticks.get(key.tick_lower)
         upper = self.ticks.get(key.tick_upper)
@@ -589,9 +651,23 @@ class FeeGrowthTracker:
             out1_lower,
             out1_upper,
         )
+        marginal = self.marginal_position
+        if marginal is not None and (
+            key.tick_lower,
+            key.tick_upper,
+        ) == (marginal[0], marginal[1]):
+            # ADR-035: the marginal position returns its per-segment ledger
+            # delta, not the unbounded growth-path fee.
+            fees0 = self.marginal_accrued[0] - self.marginal_returned[0]
+            fees1 = self.marginal_accrued[1] - self.marginal_returned[1]
+            self.marginal_returned[0] = self.marginal_accrued[0]
+            self.marginal_returned[1] = self.marginal_accrued[1]
+        else:
+            fees0 = uncollected_fees(liquidity, g0, g_inside_0_last)
+            fees1 = uncollected_fees(liquidity, g1, g_inside_1_last)
         return FeeAccrual(
-            fees0=uncollected_fees(liquidity, g0, g_inside_0_last),
-            fees1=uncollected_fees(liquidity, g1, g_inside_1_last),
+            fees0=fees0,
+            fees1=fees1,
             g_inside_0_last=g0,
             g_inside_1_last=g1,
             block_number=self.block_number,
@@ -613,6 +689,11 @@ class FeeGrowthTracker:
             exact=self._exact,
             fee_protocol=self._fee_protocol,
             fee_pips=self._fee_pips,
+            marginal_position=self.marginal_position,
+            marginal_accrued_0=self.marginal_accrued[0],
+            marginal_accrued_1=self.marginal_accrued[1],
+            marginal_returned_0=self.marginal_returned[0],
+            marginal_returned_1=self.marginal_returned[1],
         )
 
     def restore(self, state: FeeGrowthState) -> None:
@@ -629,6 +710,15 @@ class FeeGrowthTracker:
         self._exact = state.exact
         self._fee_protocol = state.fee_protocol
         self._fee_pips = state.fee_pips
+        self.marginal_position = state.marginal_position
+        self.marginal_accrued = [
+            state.marginal_accrued_0,
+            state.marginal_accrued_1,
+        ]
+        self.marginal_returned = [
+            state.marginal_returned_0,
+            state.marginal_returned_1,
+        ]
 
     # -- reconciliation -----------------------------------------------------
 
