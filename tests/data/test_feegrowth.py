@@ -444,6 +444,172 @@ def test_burn_uninitializes_tick() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Tick-index cache for crossing selection.
+# ---------------------------------------------------------------------------
+
+
+def test_tick_index_is_reused_across_swaps_and_invalidated_by_lattice_changes() -> None:
+    """The sorted key list is built once and reused; every lattice mutation
+    (mint/burn) clears it so the next crossing selection sees the new key set."""
+    t = _tracker(
+        current_liquidity=3 * 10**18,
+        ticks={60: TickState(0, 0, 10**18, -10**18, True)},
+    )
+    # Two swaps that cross no initialized tick, so the index is built and reused.
+    net1 = get_amount1_delta(Q96, tick_to_sqrt_price_x96(30), 3 * 10**18, True)
+    t.apply_swap(
+        _swap_row(
+            block=1001,
+            input_token=1,
+            gross=_gross_for(net1),
+            out=get_amount0_delta(Q96, tick_to_sqrt_price_x96(30), 3 * 10**18, False),
+            post_tick=30,
+            post_price=tick_to_sqrt_price_x96(30),
+        )
+    )
+    assert t._sorted_tick_keys == [60]
+    keys_before = t._sorted_tick_keys
+    net2 = get_amount1_delta(
+        tick_to_sqrt_price_x96(30), tick_to_sqrt_price_x96(59), 3 * 10**18, True
+    )
+    t.apply_swap(
+        _swap_row(
+            block=1002,
+            input_token=1,
+            gross=_gross_for(net2),
+            out=get_amount0_delta(
+                tick_to_sqrt_price_x96(30), tick_to_sqrt_price_x96(59), 3 * 10**18, False
+            ),
+            post_tick=59,
+            post_price=tick_to_sqrt_price_x96(59),
+        )
+    )
+    assert t._sorted_tick_keys is keys_before  # reused, not rebuilt
+
+    # A mint initializes new ticks: the index must be invalidated.
+    t.apply_liquidity_event(
+        _mint_row(block=1003, tick_lower=120, tick_upper=180, liquidity=10**18)
+    )
+    assert t._sorted_tick_keys is None
+
+    # A burn uninitializes them: invalidation again.
+    t._tick_keys()
+    t.apply_liquidity_event(
+        _burn_row(block=1004, tick_lower=120, tick_upper=180, liquidity=10**18)
+    )
+    assert t._sorted_tick_keys is None
+
+
+def test_tick_index_cache_does_not_change_the_replay_result() -> None:
+    """Replaying with the cached index and with a forced rebuild after every
+    swap yields identical state, across mints and burns that reshuffle the
+    lattice."""
+    events: list[dict[str, object]] = [
+        _mint_row(block=1001, tick_lower=-120, tick_upper=120, liquidity=10**18),
+        _mint_row(block=1002, tick_lower=60, tick_upper=180, liquidity=10**18),
+        _swap_row(
+            block=1003,
+            input_token=1,
+            gross=1000,
+            out=500,
+            post_tick=100,
+            post_price=tick_to_sqrt_price_x96(100),
+        ),
+        _burn_row(block=1004, tick_lower=60, tick_upper=180, liquidity=10**18),
+        _swap_row(
+            block=1005,
+            input_token=0,
+            gross=1000,
+            out=500,
+            post_tick=-60,
+            post_price=R[-60],
+        ),
+        _mint_row(block=1006, tick_lower=-240, tick_upper=-120, liquidity=2 * 10**18),
+        _swap_row(
+            block=1007,
+            input_token=0,
+            gross=1000,
+            out=500,
+            post_tick=-240,
+            post_price=R[-240],
+        ),
+    ]
+    cached = _tracker(current_liquidity=0)
+    fresh = _tracker(current_liquidity=0)
+    for row in events:
+        if row["event_type"] == "swap":
+            cached.apply_swap(row)
+            fresh._sorted_tick_keys = None  # force the reference path to re-sort
+            fresh.apply_swap(row)
+        else:
+            cached.apply_liquidity_event(row)
+            fresh.apply_liquidity_event(row)
+        assert cached.snapshot() == fresh.snapshot()
+
+
+def test_restore_with_same_length_lattice_clears_the_tick_index_cache() -> None:
+    """``restore`` can replace the lattice with a same-length, different-key one;
+    a stale index would miss the new ticks.  Length alone cannot catch this."""
+    t = _tracker(
+        current_tick=0,
+        current_liquidity=0,
+        ticks={
+            10: TickState(0, 0, 1, 0, True),
+            20: TickState(0, 0, 1, 0, True),
+            30: TickState(0, 0, 1, 0, True),
+        },
+    )
+    assert t._tick_keys() == [10, 20, 30]
+    replacement = FeeGrowthState(
+        block_number=1001,
+        fee_growth_global_0_x128=0,
+        fee_growth_global_1_x128=0,
+        current_tick=0,
+        current_liquidity=0,
+        ticks={
+            40: TickState(0, 0, 10**18, 0, True),
+            50: TickState(0, 0, 10**18, 10**18, True),
+            60: TickState(0, 0, 10**18, 0, True),
+        },
+        current_sqrt_price_x96=Q96,
+    )
+    t.restore(replacement)
+    assert t._sorted_tick_keys is None
+    t.apply_swap(
+        _swap_row(
+            block=1001,
+            input_token=1,
+            gross=1000,
+            out=500,
+            post_tick=55,
+            post_price=tick_to_sqrt_price_x96(55),
+        )
+    )
+    # Crossing tick 50 applies its liquidity_net; the stale [10, 20, 30] index
+    # would have selected no ticks at all and left the liquidity at 0.
+    assert t.current_liquidity == 10**18
+
+
+def test_direct_tick_additions_are_picked_up_by_the_index() -> None:
+    """The facade's ``register_position`` seeds ticks straight into the dict
+    (no mutator call); the length check must still invalidate the index."""
+    t = _tracker(current_tick=0, current_liquidity=0)
+    assert t._tick_keys() == []  # empty index built before the lattice grows
+    t.ticks[60] = TickState(0, 0, 10**18, 10**18, True)  # register_position pattern
+    t.apply_swap(
+        _swap_row(
+            block=1001,
+            input_token=1,
+            gross=1000,
+            out=500,
+            post_tick=120,
+            post_price=R[120],
+        )
+    )
+    assert t.current_liquidity == 10**18
+
+
+# ---------------------------------------------------------------------------
 # Single-segment exactness and multi-tick apportionment.
 # ---------------------------------------------------------------------------
 
