@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -669,7 +670,18 @@ def _train_env_factory(
 def _cmd_train(args: argparse.Namespace, config: SimConfig, view: MarketView, output: Path) -> int:
     """Train PPO across the configured seeds and write checkpoints + manifests."""
     env_factory = _train_env_factory(args, config, view)
-    result = train_ppo(env_factory, config, log_dir=output)
+    # Process-parallel workers must not each rebuild the multi-GB view: publish
+    # it once as memory-mappable IPC frames and point the pickled factories at
+    # them. A single-slot subproc run uses DummyVecEnv and shares ``view``, and
+    # the dummy backend shares the in-process view directly, so neither pays.
+    shared_view_dir: Path | None = None
+    if isinstance(env_factory, EnvFactory) and int(config.training.parallel_envs) > 1:
+        shared_view_dir = env_factory.publish_shared_view(output / "_shared_view")
+    try:
+        result = train_ppo(env_factory, config, log_dir=output)
+    finally:
+        if shared_view_dir is not None:
+            shutil.rmtree(shared_view_dir, ignore_errors=True)
     payload = {
         "seeds": [int(seed) for seed in result.seeds],
         "best_checkpoint": str(result.best_checkpoint),

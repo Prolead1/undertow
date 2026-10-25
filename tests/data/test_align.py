@@ -22,6 +22,7 @@ import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 
+import polars as pl
 import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 
@@ -40,6 +41,14 @@ from undertow.data.storage.manifest import DatasetManifest
 from undertow.data.storage.parquet import content_hash
 from undertow.data.transforms.align import (
     Dataset,
+    _adjacent_duplicate_mask,
+    _assert_unique_keys,
+    _build_base_tape,
+    _collapse_cross_stream_collisions,
+    _first_lookahead_row,
+    _price_from_sqrt,
+    _price_pool_column,
+    _sort_if_needed,
     assert_no_lookahead,
     build_event_tape,
 )
@@ -886,3 +895,155 @@ def test_dataset_require() -> None:
 # ``attach_reference_prices`` was removed with the per-block gas timestamp column;
 # USD conversion now happens on the tape via ``price_reference`` (exercised by the
 # as-of join tests in section 4 above).
+
+
+# ----------------------------------------------------------------------------
+# 12. Vectorised merge-key guards (memory): same behavior, no Python lists
+# ----------------------------------------------------------------------------
+
+
+def test_adjacent_duplicate_mask_marks_repeating_rows_only() -> None:
+    mask = _adjacent_duplicate_mask(
+        pa.chunked_array([[1, 1, 1, 2]]), pa.chunked_array([[0, 0, 1, 1]])
+    )
+    # Row 0 repeats nothing; row 1 repeats row 0; row 2 changes log_index;
+    # row 3 changes block_number.
+    assert mask.to_pylist() == [True, False, False]
+    assert _adjacent_duplicate_mask(
+        pa.chunked_array([[7]]), pa.chunked_array([[0]])
+    ).to_pylist() == []
+    assert _adjacent_duplicate_mask(
+        pa.chunked_array([pa.array([], type=pa.int64())]),
+        pa.chunked_array([pa.array([], type=pa.int64())]),
+    ).to_pylist() == []
+
+
+def test_assert_unique_keys_reports_each_distinct_duplicate() -> None:
+    with pytest.raises(ValidationError) as ei:
+        _assert_unique_keys(
+            pa.chunked_array([[1, 1, 2, 2, 2]]),
+            pa.chunked_array([[0, 0, 1, 2, 2]]),
+            "unit-test base",
+        )
+    message = str(ei.value)
+    assert "duplicate merge keys" in message
+    assert "2 distinct offending key(s)" in message
+    assert "the first is (block_number=1, log_index=0)" in message
+    # The remaining offending keys are listed verbatim after the first example.
+    assert "[(1, 0), (2, 2)]" in message
+
+
+def test_assert_unique_keys_passes_unique_and_short_inputs() -> None:
+    _assert_unique_keys(
+        pa.chunked_array([[1, 2]]), pa.chunked_array([[0, 1]]), "unit-test base"
+    )
+    _assert_unique_keys(
+        pa.chunked_array([[1]]), pa.chunked_array([[0]]), "unit-test base"
+    )
+    _assert_unique_keys(
+        pa.chunked_array([pa.array([], type=pa.int64())]),
+        pa.chunked_array([pa.array([], type=pa.int64())]),
+        "unit-test base",
+    )
+
+
+def test_collapse_returns_the_same_table_when_keys_are_unique() -> None:
+    """No adjacent duplicate key means no cross-stream collision: the table is
+    returned untouched instead of running 7 M-row window functions to find that out."""
+    base = _build_base_tape(build_tiny_dataset().streams)
+    assert _collapse_cross_stream_collisions(base) is base
+
+
+# ----------------------------------------------------------------------------
+# 13. Vectorised look-ahead guard (memory) — both source directions
+# ----------------------------------------------------------------------------
+
+
+def test_first_lookahead_row_returns_first_violation_and_skips_nulls() -> None:
+    assert _first_lookahead_row(
+        pa.chunked_array([[2, 3, 4]]), pa.chunked_array([[5, 3, 3]])
+    ) == 2
+    assert _first_lookahead_row(
+        pa.chunked_array([pa.array([None, None], type=pa.int64())]),
+        pa.chunked_array([[0, 0]]),
+    ) is None
+    assert _first_lookahead_row(
+        pa.chunked_array([pa.array([], type=pa.int64())]),
+        pa.chunked_array([pa.array([], type=pa.int64())]),
+    ) is None
+
+
+def test_assert_no_lookahead_catches_forward_fee_growth_block() -> None:
+    table = pa.table(
+        {
+            "block_number": pa.array([100, 101], type=pa.int64()),
+            "block_timestamp": pa.array(
+                [datetime(2023, 6, 1, tzinfo=UTC), datetime(2023, 6, 2, tzinfo=UTC)],
+                type=pa.timestamp("us", tz="UTC"),
+            ),
+            "fee_growth_global_0_x128": pa.array(["1", "2"]),
+            "_src_blk_fee_growth_global_0_x128": pa.array([101, 100], type=pa.int64()),
+        }
+    )
+    with pytest.raises(ValidationError) as ei:
+        assert_no_lookahead(table)
+    message = str(ei.value)
+    assert "carried from snapshot block 101" in message
+    assert "row's block_number 100" in message
+
+
+def test_assert_no_lookahead_passes_null_sources_and_empty_tables() -> None:
+    nulls = pa.array([None, None], type=pa.timestamp("us", tz="UTC"))
+    table = pa.table(
+        {
+            "block_number": pa.array([100, 101], type=pa.int64()),
+            "block_timestamp": pa.array(
+                [datetime(2023, 6, 1, tzinfo=UTC), datetime(2023, 6, 2, tzinfo=UTC)],
+                type=pa.timestamp("us", tz="UTC"),
+            ),
+            "price_reference": pa.array([9.0, 1.0]),
+            "_src_ts_price_reference": nulls,
+        }
+    )
+    assert_no_lookahead(table)
+    assert_no_lookahead(table.slice(0, 0))
+
+
+# ----------------------------------------------------------------------------
+# 14. Bounded-chunk price derivation and redundant-sort skipping
+# ----------------------------------------------------------------------------
+
+
+def test_price_pool_column_matches_per_row_across_chunk_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from undertow.data.transforms import align
+
+    monkeypatch.setattr(align, "_PRICE_POOL_CHUNK_ROWS", 2)
+    values = build_tiny_dataset().streams["swap"].column("sqrt_price_x96")
+    expected = [_price_from_sqrt(value, POOL) for value in values.to_pylist()]
+    assert _price_pool_column(values, POOL).to_pylist() == expected
+
+    empty = pa.chunked_array([pa.array([], type=pa.string())])
+    assert _price_pool_column(empty, POOL).to_pylist() == []
+    assert _price_pool_column(empty, POOL).type == pa.float64()
+
+
+def test_sort_if_needed_skips_ordered_and_sorts_unordered() -> None:
+    ordered = pl.DataFrame({"a": [1, 1, 2], "b": [0, 1, 0]})
+    assert _sort_if_needed(ordered, ["a", "b"]) is ordered
+
+    unordered = pl.DataFrame({"a": [2, 1, 1], "b": [0, 1, 0]})
+    sorted_frame = _sort_if_needed(unordered, ["a", "b"])
+    assert sorted_frame is not unordered
+    assert sorted_frame.rows() == [(1, 0), (1, 1), (2, 0)]
+
+    single_column = _sort_if_needed(pl.DataFrame({"a": [1, 0]}), ["a"])
+    assert single_column["a"].to_list() == [0, 1]
+
+    empty = pl.DataFrame(
+        {"a": pl.Series([], dtype=pl.Int64), "b": pl.Series([], dtype=pl.Int64)}
+    )
+    assert _sort_if_needed(empty, ["a", "b"]) is empty
+    single_row = pl.DataFrame({"a": [1], "b": [2]})
+    assert _sort_if_needed(single_row, ["a", "b"]) is single_row

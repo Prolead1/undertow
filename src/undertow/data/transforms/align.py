@@ -45,6 +45,7 @@ from typing import cast
 
 import polars as pl
 import pyarrow as pa
+import pyarrow.compute as pc
 
 from undertow.data.config import DEFAULT_REFERENCE_SYMBOL, PoolConfig
 from undertow.data.fixedpoint import sqrt_price_x96_to_price
@@ -69,6 +70,24 @@ def _arrow_frame(table: pa.Table) -> pl.DataFrame:
     ``pyarrow.Table``; every call site here passes a table.
     """
     return cast(pl.DataFrame, pl.from_arrow(table))
+
+
+def _sort_if_needed(frame: pl.DataFrame, columns: list[str]) -> pl.DataFrame:
+    """Sort ``frame`` by ``columns`` only when it is not already ordered.
+
+    The base tape is built in ``(block_number, log_index)`` order and the block
+    timeline is monotonic, so the as-of joins' required orderings usually already
+    hold. Sorting unconditionally re-allocates every buffer of a multi-million-row
+    frame; on the 0.05 % lane (6.9 M swaps) the four redundant sorts were one of
+    the build's largest transient allocations. The check is lexicographic over
+    the key struct, matching :meth:`polars.DataFrame.sort`.
+    """
+    if frame.height <= 1:
+        return frame
+    if bool(frame.select(pl.struct(columns).is_sorted()).item()):
+        return frame
+    return frame.sort(columns)
+
 
 _LOG_STREAMS: tuple[EventType, ...] = (
     EventType.SWAP,
@@ -225,6 +244,16 @@ def _collapse_cross_stream_collisions(base: pa.Table) -> pa.Table:
     stamp a dense ``seq``.
     """
     frame = _arrow_frame(base)
+    # Fast path: the usual post-T19 dataset has no adjacent duplicate keys at all.
+    # The old code then still ran two window functions plus two full-frame filters
+    # over every row (~7 M x 17 columns) just to discover ``collisions.height == 0``.
+    if base.num_rows < 2 or not bool(
+        pc.any(
+            _adjacent_duplicate_mask(base.column("block_number"), base.column("log_index"))
+        ).as_py()
+    ):
+        return base
+
     priority = pl.col("event_type").replace_strict(
         _COLLAPSE_PRIORITY, return_dtype=pl.Int8
     )
@@ -262,7 +291,28 @@ def _collapse_cross_stream_collisions(base: pa.Table) -> pa.Table:
     return collapsed.to_arrow().cast(_BASE_TAPE_SCHEMA)
 
 
-def _assert_unique_keys(block_numbers: list[int], log_indices: list[int], where: str) -> None:
+def _adjacent_duplicate_mask(
+    block_numbers: pa.ChunkedArray, log_indices: pa.ChunkedArray
+) -> pa.ChunkedArray:
+    """Pairwise mask: ``True`` where a row repeats the previous row's merge key.
+
+    The inputs must be sorted by ``(block_number, log_index)`` (every caller sorts
+    first), so a duplicate key is exactly an adjacent pair with equal keys. Both
+    tests run in Arrow — the per-row Python loop this replaces materialised the
+    two columns as multi-million-element Python lists and was the dominant peak of
+    the tape build (``to_pylist()`` on a 6.9 M-row column costs hundreds of MB).
+    """
+    n = len(block_numbers)
+    if n < 2:
+        return pa.chunked_array([pa.array([], type=pa.bool_())])
+    same_block = pc.equal(block_numbers.slice(1), block_numbers.slice(0, n - 1))
+    same_log = pc.equal(log_indices.slice(1), log_indices.slice(0, n - 1))
+    return pc.and_(same_block, same_log)
+
+
+def _assert_unique_keys(
+    block_numbers: pa.ChunkedArray, log_indices: pa.ChunkedArray, where: str
+) -> None:
     """Raise ``ValidationError`` if ``(block_number, log_index)`` is not strictly unique.
 
     The input must already be sorted ascending by ``(block_number, log_index)`` (every
@@ -273,13 +323,19 @@ def _assert_unique_keys(block_numbers: list[int], log_indices: list[int], where:
     it hides a real bug). This is the **residual** guard: cross-stream reorg
     collisions are resolved by :func:`_collapse_cross_stream_collisions` first; this
     fires on anything that survives that (same-stream duplicates, gas fan-out).
+
+    The duplicate scan is vectorised and only the offending rows (usually none) are
+    materialised as Python values.
     """
+    repeats = _adjacent_duplicate_mask(block_numbers, log_indices)
     offending: list[tuple[int, int]] = []
-    for i in range(1, len(block_numbers)):
-        if block_numbers[i] == block_numbers[i - 1] and log_indices[i] == log_indices[i - 1]:
-            key = (int(block_numbers[i]), int(log_indices[i]))
-            if key not in offending:
-                offending.append(key)
+    for index in pc.indices_nonzero(repeats).to_pylist():
+        key = (
+            int(block_numbers[index + 1].as_py()),
+            int(log_indices[index + 1].as_py()),
+        )
+        if key not in offending:
+            offending.append(key)
     if offending:
         example = offending[0]
         raise ValidationError(
@@ -310,11 +366,10 @@ def _build_base_tape(streams: Mapping[str, pa.Table]) -> pa.Table:
         validate_table(table, stream_schema, strict=True)
         parts.append(_cast_stream_to_base(table, event_type.value))
 
-    base = (
-        pa.concat_tables(parts)
-        .sort_by([("block_number", "ascending"), ("log_index", "ascending")])
-        .select(list(_BASE_TAPE_COLUMNS))  # key columns + payload, in §4.8 order
-    )
+    base = pa.concat_tables(parts)
+    base = base.sort_by(
+        [("block_number", "ascending"), ("log_index", "ascending")]
+    ).select(list(_BASE_TAPE_COLUMNS))  # key columns + payload, in §4.8 order
 
     # T18: the subgraph can serve both branches of an orphaned fork, letting two
     # different streams claim one key. Resolve those deterministically (and loudly)
@@ -322,8 +377,8 @@ def _build_base_tape(streams: Mapping[str, pa.Table]) -> pa.Table:
     base = _collapse_cross_stream_collisions(base)
 
     _assert_unique_keys(
-        base.column("block_number").to_pylist(),
-        base.column("log_index").to_pylist(),
+        base.column("block_number"),
+        base.column("log_index"),
         "build_event_tape: union of the four log streams",
     )
     base = base.append_column(
@@ -349,6 +404,31 @@ def _price_from_sqrt(sqrt_price_x96: str | None, pool: PoolConfig) -> float | No
     return float(
         sqrt_price_x96_to_price(int(sqrt_price_x96), pool.token0_decimals, pool.token1_decimals)
     )
+
+
+#: Rows processed per chunk when deriving the ``price_pool`` column. The Q64.96 ->
+#: Decimal conversion is exact and per-row, so the column is built in bounded
+#: chunks: materialising all 6.9 M row values as Python objects at once cost
+#: ~0.7 GB of peak RSS on the 0.05 % lane.
+_PRICE_POOL_CHUNK_ROWS: int = 1_000_000
+
+
+def _price_pool_column(
+    sqrt_price_x96: pa.ChunkedArray, pool: PoolConfig
+) -> pa.ChunkedArray:
+    """Derive ``price_pool`` for a whole column in bounded chunks."""
+    chunks: list[pa.Array] = []
+    for start in range(0, len(sqrt_price_x96), _PRICE_POOL_CHUNK_ROWS):
+        values = sqrt_price_x96.slice(start, _PRICE_POOL_CHUNK_ROWS).to_pylist()
+        chunks.append(
+            pa.array(
+                [_price_from_sqrt(value, pool) for value in values],
+                type=pa.float64(),
+            )
+        )
+    if not chunks:
+        return pa.chunked_array([pa.array([], type=pa.float64())])
+    return pa.chunked_array(chunks)
 
 
 def _join_fee_growth_globals(
@@ -386,7 +466,7 @@ def _join_fee_growth_globals(
         .rename({"block_number": "_snap_block"})
         .sort("_snap_block")
     )
-    joined = frame.sort("block_number").join_asof(
+    joined = _sort_if_needed(frame, ["block_number"]).join_asof(
         snapshots,
         left_on="block_number",
         right_on="_snap_block",
@@ -496,9 +576,9 @@ def build_event_tape(
         return empty_table(EVENT_TAPE_SCHEMA)
 
     # --- price_pool: derived from the row's OWN sqrt_price_x96 (swap rows only) ---
-    sqrt_values = base.column("sqrt_price_x96").to_pylist()
-    price_pool = [_price_from_sqrt(s, pool) for s in sqrt_values]
-    base = base.append_column("price_pool", pa.array(price_pool, type=pa.float64()))
+    base = base.append_column(
+        "price_pool", _price_pool_column(base.column("sqrt_price_x96"), pool)
+    )
 
     frame: pl.DataFrame = _arrow_frame(base)
 
@@ -528,7 +608,7 @@ def build_event_tape(
     ref_join = _reference_join_frame(reference, reference_symbol)
     if ref_join.height > 0:
         frame = (
-            frame.sort("block_timestamp")
+            _sort_if_needed(frame, ["block_timestamp"])
             .join_asof(
                 ref_join,
                 left_on="block_timestamp",
@@ -558,7 +638,7 @@ def build_event_tape(
     )
     if regime_join.height > 0:
         frame = (
-            frame.sort("block_timestamp")
+            _sort_if_needed(frame, ["block_timestamp"])
             .join_asof(
                 regime_join,
                 left_on="block_timestamp",
@@ -586,17 +666,20 @@ def build_event_tape(
     # left side sorted by its join key), so the canonical ``(block_number,
     # log_index)`` order is NOT guaranteed any more. Restore it and re-stamp a
     # dense ``seq`` so the RL step index is the row's position in block order.
-    frame = frame.sort(["block_number", "log_index"])
+    frame = _sort_if_needed(frame, ["block_number", "log_index"])
     frame = frame.with_columns(pl.int_range(0, pl.len()).alias("seq"))
 
     tape = frame.to_arrow()
+    # Arrow shares the column buffers with the polars frame, so the DataFrame is
+    # no longer needed and its own structures can go before the final checks.
+    del frame
     # Re-assert merge-key uniqueness on the FULLY assembled tape, not just the base
     # four-stream union: a schema-valid ``gas`` table could carry a duplicate
     # ``block_number`` (Arrow schemas express no uniqueness), which the ``left``
     # equi-join would silently fan out into two rows per block with no error here.
     _assert_unique_keys(
-        tape.column("block_number").to_pylist(),
-        tape.column("log_index").to_pylist(),
+        tape.column("block_number"),
+        tape.column("log_index"),
         "build_event_tape: assembled tape",
     )
     assert_no_lookahead(tape)  # the §10.2.3 rule, enforced here and not left to callers
@@ -606,6 +689,29 @@ def build_event_tape(
     tape = tape.select([f.name for f in EVENT_TAPE_SCHEMA]).cast(EVENT_TAPE_SCHEMA)
     validate_table(tape, EVENT_TAPE_SCHEMA, strict=True)
     return tape
+
+
+def _first_lookahead_row(
+    source: pa.ChunkedArray, bound: pa.ChunkedArray
+) -> int | None:
+    """First row where a non-null as-of ``source`` exceeds its row's ``bound``.
+
+    ``None`` when every non-null source is ``<=`` its bound. Nulls compare as
+    ``False`` — nothing to leak — matching the old per-row Python semantics.
+
+    The zero-row guard also dodges a pyarrow 25.0.1 segfault: when the bound
+    comparison leaves a zero-chunk chunked array,
+    ``pc.indices_nonzero(pc.fill_null(pc.greater(empty, empty), False))``
+    crashes (reproduced in isolation); an empty table cannot carry a
+    look-ahead row either way.
+    """
+    if len(source) == 0:
+        return None
+    mask = pc.fill_null(pc.greater(source, bound), False)
+    rows = pc.indices_nonzero(mask)
+    if len(rows) == 0:
+        return None
+    return int(rows[0].as_py())
 
 
 def assert_no_lookahead(table: pa.Table, time_col: str = "block_timestamp") -> None:
@@ -634,21 +740,11 @@ def assert_no_lookahead(table: pa.Table, time_col: str = "block_timestamp") -> N
             "guard is meaningless without it"
         )
 
-    if time_col not in table.column_names:
-        raise ValidationError(
-            f"assert_no_lookahead: time column {time_col!r} not found in the table "
-            f"(have: {table.column_names})"
-        )
-    if "block_number" not in table.column_names:
-        raise ValidationError(
-            "assert_no_lookahead: 'block_number' column not found; the block-ordering "
-            "guard is meaningless without it"
-        )
-
-    # Timestamp-sourced as-of columns. ``as_py()`` yields ``datetime`` / ``None``
-    # (NaT); None (no match) compares False against every datetime, so null rows are
-    # skipped — exactly what a backward-join check wants.
-    time_values = table.column(time_col).to_pylist()
+    # Timestamp-sourced as-of columns. A null source (no match) is skipped: it
+    # cannot have peeked at anything. The comparison is vectorised — the old
+    # per-row Python loop called ``to_pylist()`` on every 6.9 M-row source column
+    # (multi-hundred-MB each) and dominated the build's peak RSS.
+    times = table.column(time_col)
     for name in table.column_names:
         if not name.startswith(_SRC_TS_PREFIX):
             continue
@@ -658,18 +754,19 @@ def assert_no_lookahead(table: pa.Table, time_col: str = "block_timestamp") -> N
                 f"assert_no_lookahead: source column {name!r} has no matching derived "
                 f"column {derived!r}"
             )
-        src = table.column(name).to_pylist()
-        for row, (s, t) in enumerate(zip(src, time_values, strict=True)):
-            if s is not None and s > t:
-                raise ValidationError(
-                    f"assert_no_lookahead: column {derived!r} is look-ahead — the value "
-                    f"at row {row} was joined from source time {s} which is later than "
-                    f"the row's {time_col} {t}. Every as-of join must be backward-only."
-                )
+        row = _first_lookahead_row(table.column(name), times)
+        if row is not None:
+            raise ValidationError(
+                f"assert_no_lookahead: column {derived!r} is look-ahead — the value "
+                f"at row {row} was joined from source time "
+                f"{table.column(name)[row].as_py()} which is later than "
+                f"the row's {time_col} {times[row].as_py()}. "
+                "Every as-of join must be backward-only."
+            )
 
-    # Block-number-sourced as-of columns (fee-growth globals). ``None``/``NaN`` (no
-    # prior snapshot) compares False against every block, so they are skipped.
-    tape_blocks = table.column("block_number").to_pylist()
+    # Block-number-sourced as-of columns (fee-growth globals). A null source (no
+    # prior snapshot) cannot have peeked at a later block, so it is skipped too.
+    blocks = table.column("block_number")
     for name in table.column_names:
         if not name.startswith(_SRC_BLK_PREFIX):
             continue
@@ -679,15 +776,15 @@ def assert_no_lookahead(table: pa.Table, time_col: str = "block_timestamp") -> N
                 f"assert_no_lookahead: source column {name!r} has no matching derived "
                 f"column {derived!r}"
             )
-        src = table.column(name).to_pylist()
-        for row, (s, b) in enumerate(zip(src, tape_blocks, strict=True)):
-            if s is not None and s > b:
-                raise ValidationError(
-                    f"assert_no_lookahead: column {derived!r} is look-ahead — the value "
-                    f"at row {row} was carried from snapshot block {s} which is later "
-                    f"than the row's block_number {b}. Fee-growth globals may only be "
-                    "forward-filled from a PRIOR snapshot."
-                )
+        row = _first_lookahead_row(table.column(name), blocks)
+        if row is not None:
+            raise ValidationError(
+                f"assert_no_lookahead: column {derived!r} is look-ahead — the value "
+                f"at row {row} was carried from snapshot block "
+                f"{table.column(name)[row].as_py()} which is later "
+                f"than the row's block_number {blocks[row].as_py()}. "
+                "Fee-growth globals may only be forward-filled from a PRIOR snapshot."
+            )
 
 
 __all__ = [

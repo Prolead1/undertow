@@ -18,13 +18,35 @@ import pytest
 
 from undertow.data import FUNDING_SCHEMA, DataConfig, ValidationError
 from undertow.sim.config import EpisodeConfig, SplitConfig
-from undertow.sim.marketview import MarketView, build_market_view
+from undertow.sim.marketview import (
+    _SIM_TAPE_COLUMNS,
+    MarketView,
+    _sort,
+    build_market_view,
+)
 from undertow.sim.types import LookAheadError, MarketViewError
 
 _TINY_TRAIN_START = datetime(2022, 1, 1, tzinfo=UTC)
 _TINY_TRAIN_END = datetime(2022, 2, 1, tzinfo=UTC)
 _TINY_EVAL_START = datetime(2024, 1, 1, tzinfo=UTC)
 _TINY_EVAL_END = datetime(2024, 12, 31, tzinfo=UTC)
+
+
+def test_sort_helper_skips_ordered_frames_and_sorts_unordered() -> None:
+    ordered = pl.DataFrame({"open_time": [1, 2, 3], "close": [4.0, 5.0, 6.0]})
+    assert _sort(ordered, ["open_time"]) is ordered
+
+    unordered = pl.DataFrame({"open_time": [2, 1], "close": [5.0, 4.0]})
+    sorted_frame = _sort(unordered, ["open_time"])
+    assert sorted_frame is not unordered
+    assert sorted_frame["open_time"].to_list() == [1, 2]
+
+    empty = pl.DataFrame(
+        {"open_time": pl.Series([], dtype=pl.Int64), "close": pl.Series([], dtype=pl.Float64)}
+    )
+    assert _sort(empty, ["open_time"]) is empty
+    assert _sort(unordered, ["missing"]) is unordered  # no requested key present
+
 
 _TINY_SPLIT = SplitConfig(
     train_start_utc=_TINY_TRAIN_START,
@@ -590,6 +612,81 @@ class TestBuildMarketView:
         assert view.step_count() == tiny_market_view.step_count()
         assert view.train_start_utc == _TINY_TRAIN_START
 
+    def test_projects_fetch_provenance_strings(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tiny_data_config: DataConfig,
+        tiny_market_view: MarketView,
+    ) -> None:
+        """The provenance strings no sim reader touches are dropped at the door,
+        at the Arrow level, before any polars frame exists."""
+        _patch_loaders(monkeypatch, tiny_market_view)
+        view = build_market_view(tiny_data_config, _TINY_SPLIT)
+
+        source_columns = set(tiny_market_view.active_split_data().columns)
+        provenance = {"tx_hash", "pool_address", "sender", "recipient"}
+        assert provenance <= source_columns  # the fixture carries them
+
+        projected = view.active_split_data().columns
+        assert set(projected) == set(_SIM_TAPE_COLUMNS) & source_columns
+        assert provenance.isdisjoint(projected)
+        # ``tape_at`` therefore cannot hand a consumer a dropped column either.
+        row = view.tape_at(int(view.active_split_data()["seq"][0]))
+        assert provenance.isdisjoint(row)
+        assert {"event_type", "tick_lower", "liquidity_amount"} <= set(row)
+
+    def test_purges_the_arrow_arena_after_the_build(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tiny_data_config: DataConfig,
+        tiny_market_view: MarketView,
+    ) -> None:
+        """Arrow's jemalloc arena must be told to decay immediately, or the freed
+        build buffers stay resident for the life of the process."""
+        import undertow.sim.marketview as mv
+
+        calls: list[int] = []
+        monkeypatch.setattr(
+            mv.pa, "jemalloc_set_decay_ms", lambda ms: calls.append(ms), raising=False
+        )
+        _patch_loaders(monkeypatch, tiny_market_view)
+
+        build_market_view(tiny_data_config, _TINY_SPLIT)
+
+        assert calls == [0]
+
+    def test_tolerates_arrow_without_jemalloc_support(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tiny_data_config: DataConfig,
+        tiny_market_view: MarketView,
+    ) -> None:
+        """pyarrow exposes the symbol unconditionally but raises when jemalloc is
+        disabled; an older pyarrow may lack it entirely.  Neither may fail a load."""
+        import undertow.sim.marketview as mv
+
+        def _no_jemalloc(_decay_ms: int) -> None:
+            raise NotImplementedError("jemalloc support is not enabled")
+
+        monkeypatch.setattr(mv.pa, "jemalloc_set_decay_ms", _no_jemalloc)
+        _patch_loaders(monkeypatch, tiny_market_view)
+        assert build_market_view(tiny_data_config, _TINY_SPLIT).step_count() > 0
+
+        monkeypatch.delattr(mv.pa, "jemalloc_set_decay_ms", raising=False)
+        assert build_market_view(tiny_data_config, _TINY_SPLIT).step_count() > 0
+
+    def test_sim_tape_columns_drop_exactly_the_provenance_strings(self) -> None:
+        """The whitelist is deliberately the full tape schema minus four provenance
+        columns; a schema change must force a conscious keep/drop decision."""
+        from undertow.data import EVENT_TAPE_SCHEMA
+
+        assert set(EVENT_TAPE_SCHEMA.names) - set(_SIM_TAPE_COLUMNS) == {
+            "tx_hash",
+            "pool_address",
+            "sender",
+            "recipient",
+        }
+
     def test_empty_train_split_raises(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -991,6 +1088,22 @@ def test_build_market_view_warns_when_only_the_wrong_seed_block_is_present(
         view = build_market_view(tiny_data_config, _TINY_SPLIT)
     assert view.pool_state is None
     assert any("no snapshot" in record.message for record in caplog.records)
+
+
+def test_slice_of_the_whole_lane_reuses_the_active_frame(
+    tiny_market_view: MarketView,
+) -> None:
+    """A whole-lane slice must not copy the frame: ``build_replay_env`` slices the
+    full lane on every environment construction, which was a multi-GB duplicate."""
+    active = tiny_market_view.active_split_data()
+    min_seq = int(active["seq"][0])
+    last_seq = int(active["seq"][-1])
+
+    sliced = tiny_market_view.slice(min_seq, last_seq + 1)
+
+    assert sliced.active_split_data() is active
+    assert sliced.warmup is None
+    assert sliced.active_start_utc == tiny_market_view.active_start_utc
 
 
 def test_slice_composes_warmup_across_nested_slices(tiny_market_view: MarketView) -> None:

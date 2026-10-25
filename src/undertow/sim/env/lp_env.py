@@ -238,7 +238,10 @@ class LpEnvironment(gym.Env):
         self._ev_ticks: list[object] = []
         self._ev_amount0: list[object] = []
         self._ev_amount1: list[object] = []
-        self._ev_rows: list[dict[str, object]] = []
+        #: The episode window frame; single rows (liquidity events, the decision
+        #: row) are extracted on demand instead of materialising every row as a
+        #: Python dict (``to_dicts()`` cost ~10x the data it served).
+        self._ev_window: pl.DataFrame | None = None
         self._event_idx: int = 0
 
     def _build_funding_index(self) -> None:
@@ -857,17 +860,23 @@ class LpEnvironment(gym.Env):
     # Episode advance (mode-specific)
     # ------------------------------------------------------------------
     def _prepare_replay_events(self) -> None:
-        """Cache the episode window's reference bars and tape swap events."""
+        """Cache the episode window's reference bars and tape swap events.
+
+        The hot loop scans the per-column lists; the window frame is kept for
+        the occasional single-row read (a mint/burn mapping for
+        :meth:`PoolEngine.apply_liquidity_event`, the interval's decision row)
+        so the whole window is never materialised as Python dicts.
+        """
         assert isinstance(self.price_process, ReplayPriceProcess)
         self._bar_close_times = list(self.price_process.close_times)
         window = self.market_view.window(self._start_seq, self._end_seq)
+        self._ev_window = window
         self._ev_times = window["block_timestamp"].to_list()
         self._ev_types = window["event_type"].to_list()
         self._ev_sqrt_x96 = window["sqrt_price_x96"].to_list()
         self._ev_ticks = window["tick"].to_list()
         self._ev_amount0 = window["amount0"].to_list()
         self._ev_amount1 = window["amount1"].to_list()
-        self._ev_rows = window.to_dicts()
 
     def _advance_replay(
         self,
@@ -922,9 +931,19 @@ class LpEnvironment(gym.Env):
                 # External liquidity moves the fee-growth denominator exactly as
                 # the backtester's tracker does (ADR-019). ``collect``/``flash``
                 # move no fee state and are skipped, as in ``apply_event``.
-                self.pool_engine.apply_liquidity_event(self._ev_rows[index])
-            self._last_tape_row = self._ev_rows[index]
+                assert self._ev_window is not None
+                self.pool_engine.apply_liquidity_event(
+                    self._ev_window.row(index, named=True)
+                )
             self._event_idx += 1
+
+        # The decision row is the interval's last consumed event.  Extracting
+        # that one row replaces the per-event ``_ev_rows[index]`` writes.
+        if self._event_idx > 0:
+            assert self._ev_window is not None
+            self._last_tape_row = self._ev_window.row(
+                self._event_idx - 1, named=True
+            )
 
         # Fixture-only zero-volume alignment (ADR-019).  Hand-built views (the
         # shared ``tiny_market_view``) hold a constant tape price while their

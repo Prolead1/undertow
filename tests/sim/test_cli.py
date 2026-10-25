@@ -44,6 +44,40 @@ from undertow.sim.cli import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SIM_CONFIG = REPO_ROOT / "configs" / "sim_default.toml"
 
+
+def _write_train_config(path: Path, *, vec_env: str, parallel_envs: int) -> Path:
+    """Copy ``sim_default.toml`` with a different vector-env backend."""
+    lines = []
+    for line in SIM_CONFIG.read_text(encoding="utf-8").splitlines():
+        if line.startswith("vec_env ="):
+            line = f'vec_env = "{vec_env}"'
+        elif line.startswith("parallel_envs ="):
+            line = f"parallel_envs = {parallel_envs}"
+        lines.append(line)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _fake_training_result(log_dir: Path | None) -> object:
+    from undertow.sim.train import RunManifest, TrainingResult
+
+    manifest = RunManifest(
+        run_id="fake-run",
+        seed=0,
+        config_hash="deadbeef",
+        git_commit="cafe",
+        algorithm="ppo",
+        total_timesteps=10,
+        best_reward=1.5,
+        checkpoint_path=Path(log_dir or ".") / "best.zip",
+    )
+    return TrainingResult(
+        seeds=(0,),
+        manifests=(manifest,),
+        learning_curves={"mean_reward": [1.5]},
+        best_checkpoint=manifest.checkpoint_path,
+    )
+
 #: The names the S16 brief pins as the public ``undertow.sim`` surface.
 EXPECTED_EXPORTS: frozenset[str] = frozenset(
     {
@@ -746,6 +780,102 @@ class TestTrainEvaluateSuccessPaths:
         assert payload["seeds"] == [0]
         assert payload["best_checkpoint"].endswith("best.zip")
         assert payload["manifests"][0]["best_reward"] == 1.5
+
+    def test_train_publishes_and_removes_the_shared_view_for_parallel_subproc(
+        self,
+        tiny_market_view: object,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The published IPC frames must exist while ``train_ppo`` runs and the
+        multi-GB scratch directory must not leak afterwards."""
+        import undertow.sim.cli as cli
+
+        config_path = _write_train_config(
+            tmp_path / "parallel.toml", vec_env="subproc", parallel_envs=4
+        )
+        seen: dict[str, bool] = {}
+
+        def fake_train_ppo(
+            env_fn: object, config: object, log_dir: Path | None = None
+        ) -> object:
+            seen["published"] = (Path(log_dir) / "_shared_view" / "view_meta.pkl").is_file()
+            return _fake_training_result(log_dir)
+
+        monkeypatch.setattr(cli, "train_ppo", fake_train_ppo)
+        exit_code = cli.main(
+            ["train", "--config", str(config_path), "--output", str(tmp_path)],
+            market_view=tiny_market_view,
+        )
+
+        assert exit_code == 0
+        assert seen.get("published") is True
+        assert not (tmp_path / "_shared_view").exists()
+
+    def test_train_removes_the_shared_view_when_training_fails(
+        self,
+        tiny_market_view: object,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import undertow.sim.cli as cli
+        from undertow.sim.cli import EXIT_ERROR
+
+        config_path = _write_train_config(
+            tmp_path / "parallel.toml", vec_env="subproc", parallel_envs=4
+        )
+
+        def failing_train_ppo(
+            env_fn: object, config: object, log_dir: Path | None = None
+        ) -> object:
+            assert (Path(log_dir) / "_shared_view" / "view_meta.pkl").is_file()
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(cli, "train_ppo", failing_train_ppo)
+        exit_code = cli.main(
+            ["train", "--config", str(config_path), "--output", str(tmp_path)],
+            market_view=tiny_market_view,
+        )
+
+        assert exit_code == EXIT_ERROR
+        assert not (tmp_path / "_shared_view").exists()
+
+    @pytest.mark.parametrize(
+        ("vec_env", "parallel_envs"),
+        [("dummy", 4), ("subproc", 1)],
+        ids=["dummy-backend", "single-subproc-slot"],
+    )
+    def test_train_skips_the_shared_view_without_worker_processes(
+        self,
+        tiny_market_view: object,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        vec_env: str,
+        parallel_envs: int,
+    ) -> None:
+        """An in-process run shares the parent's view already; it must not write a
+        redundant multi-GB scratch copy."""
+        import undertow.sim.cli as cli
+
+        config_path = _write_train_config(
+            tmp_path / "rc.toml", vec_env=vec_env, parallel_envs=parallel_envs
+        )
+        seen: dict[str, bool] = {}
+
+        def fake_train_ppo(
+            env_fn: object, config: object, log_dir: Path | None = None
+        ) -> object:
+            seen["exists"] = (Path(log_dir) / "_shared_view").exists()
+            return _fake_training_result(log_dir)
+
+        monkeypatch.setattr(cli, "train_ppo", fake_train_ppo)
+        exit_code = cli.main(
+            ["train", "--config", str(config_path), "--output", str(tmp_path)],
+            market_view=tiny_market_view,
+        )
+
+        assert exit_code == 0
+        assert seen.get("exists") is False
 
     def test_evaluate_wires_checkpoint_and_writes_results(
         self,

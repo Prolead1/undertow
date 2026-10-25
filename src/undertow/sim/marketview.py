@@ -14,6 +14,7 @@ only through the top-level ``undertow.data`` public API
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -22,6 +23,7 @@ from typing import Literal, cast
 
 import numpy as np
 import polars as pl
+import pyarrow as pa
 
 from undertow.data import (
     FEE_GROWTH_SCHEMA,
@@ -40,6 +42,52 @@ LOGGER = logging.getLogger("undertow.sim.marketview")
 
 SplitName = Literal["train", "eval"]
 
+#: Event-tape columns the simulator consumes.  The tape also carries fetch
+#: provenance (``tx_hash``, ``pool_address``, ``sender``, ``recipient``) that no
+#: sim code reads; on the primary lane those four string columns are ~60 % of
+#: the tape's bytes, and every process (including every training worker) would
+#: otherwise hold them.  They are projected out here, at the sim's single door
+#: to history — ``build_market_view`` only.  Hand-built views passed straight to
+#: :class:`MarketView` keep whatever columns their author gave them.
+_SIM_TAPE_COLUMNS: tuple[str, ...] = (
+    "block_number",
+    "log_index",
+    "block_timestamp",
+    "event_type",
+    "amount0",
+    "amount1",
+    "sqrt_price_x96",
+    "liquidity",
+    "tick",
+    "owner",
+    "tick_lower",
+    "tick_upper",
+    "liquidity_amount",
+    "seq",
+    "price_pool",
+    "price_reference",
+    "regime",
+    "base_fee_per_gas",
+    "priority_fee_p50_wei",
+    "fee_growth_global_0_x128",
+    "fee_growth_global_1_x128",
+    "fee_growth_source",
+)
+
+
+def _release_arrow_arena() -> None:
+    """Return pyarrow's freed build buffers to the OS after a view is built.
+
+    PyArrow's jemalloc arena keeps freed event-tape buffers resident (several GB
+    on the primary lane).  Setting its decay to zero makes it purge them
+    immediately; without this the training parent — whose live view is ~1.3 GB —
+    stays multi-GB for the whole run.  A no-op where Arrow has no jemalloc (the
+    call raises ``NotImplementedError``) or an older pyarrow lacks the symbol.
+    Polars' own statically linked jemalloc exposes no equivalent in-process knob.
+    """
+    with contextlib.suppress(AttributeError, NotImplementedError):
+        pa.jemalloc_set_decay_ms(0)
+
 
 def _to_polars(table: object) -> pl.DataFrame:
     """Convert a pyarrow ``Table`` (or pass through a polars ``DataFrame``)."""
@@ -49,18 +97,26 @@ def _to_polars(table: object) -> pl.DataFrame:
 
 
 def _sort(df: pl.DataFrame, columns: list[str]) -> pl.DataFrame:
-    """Sort ``df`` by ``columns`` when they are present and the frame is non-empty."""
+    """Sort ``df`` by ``columns`` when they are present and the frame is non-empty.
+
+    A frame already ordered by the requested keys is returned untouched: the
+    event tape, reference and gas feeds arrive sorted from the pipeline, and
+    re-sorting a multi-million-row frame doubles its transient footprint for no
+    gain (the 16 GB peak on the 0.05 % lane was dominated by such copies).
+    """
     if df.height == 0:
         return df
     present = [c for c in columns if c in df.columns]
     if not present:
+        return df
+    if bool(df.select(pl.struct(present).is_sorted()).item()):
         return df
     return df.sort(present)
 
 
 def _load_dataset_tables(
     data_config: DataConfig,
-) -> tuple[object, object, object, object, object | None]:
+) -> tuple[pa.Table, pa.Table, pa.Table, pa.Table, pa.Table | None]:
     """Read the tape and its four side streams from **one** dataset build.
 
     ``build_market_view`` needs five tables.  Going through the per-stream loader
@@ -72,7 +128,9 @@ def _load_dataset_tables(
     the boundary-snapshot stream is absent), matching ``load_fee_growth``.
 
     Returns pyarrow tables (the public ``Dataset.require`` shape) for the tape,
-    reference, gas, regime and fee-growth streams, in that order.
+    reference, gas, regime and fee-growth streams, in that order.  The tape is
+    the full 26-column ``EVENT_TAPE_SCHEMA``; :func:`build_market_view` narrows
+    it to :data:`_SIM_TAPE_COLUMNS` before converting to polars.
     """
     dataset = load_dataset(data_config)
     return (
@@ -271,7 +329,16 @@ class MarketView:
                 f"slice start_seq ({start_seq}) must be < end_seq ({end_seq})"
             )
 
-        sub = active.filter((pl.col("seq") >= start_seq) & (pl.col("seq") < end_seq))
+        if start_seq == min_seq and end_seq == last_seq + 1:
+            # A slice of the whole active lane is a no-op: reuse the frame
+            # instead of copying every row with a filter. ``build_replay_env``
+            # slices the full lane at construction, so this was a multi-GB
+            # duplicate per environment process.
+            sub = active
+        else:
+            sub = active.filter(
+                (pl.col("seq") >= start_seq) & (pl.col("seq") < end_seq)
+            )
         if sub.height == 0:
             raise MarketViewError(
                 f"slice [{start_seq}, {end_seq}) produced an empty view"
@@ -285,8 +352,13 @@ class MarketView:
         sub_end = cast(datetime, sub_end_raw)
 
         # Keep the parent lane's rows before this window so the backtester can
-        # warm its exact fee engine from the lane-start pool_state.
-        prior = active.filter(pl.col("seq") < start_seq)
+        # warm its exact fee engine from the lane-start pool_state. A slice
+        # starting at the lane's first seq has no prior rows; skip the scan.
+        prior = (
+            active.filter(pl.col("seq") < start_seq)
+            if start_seq > min_seq
+            else active.clear()
+        )
         warmup: pl.DataFrame | None
         if self.warmup is not None and self.warmup.height:
             warmup = pl.concat([self.warmup, prior]) if prior.height else self.warmup
@@ -596,8 +668,12 @@ def build_market_view(
     """Load the dataset and partition it into a look-ahead-safe ``MarketView``.
 
     Historical tables are read only through the top-level ``undertow.data``
-    public API and converted from pyarrow to polars. Raises ``MarketViewError``
-    if the requested split window contains no tape rows.
+    public API and converted from pyarrow to polars.  The active tape is
+    narrowed to :data:`_SIM_TAPE_COLUMNS`: the fetch-provenance strings
+    (``tx_hash``/``pool_address``/``sender``/``recipient``) are dropped at the
+    Arrow level — a metadata-only ``Table.select`` that shares the kept
+    buffers — so no polars frame, split copy or worker ever holds them.  Raises
+    ``MarketViewError`` if the requested split window contains no tape rows.
     """
     if split not in ("train", "eval"):
         raise MarketViewError(f"build_market_view: unknown split {split!r}")
@@ -609,10 +685,16 @@ def build_market_view(
         regimes_table,
         fee_growth_table,
     ) = _load_dataset_tables(data_config)
+    # ``Table.select`` is metadata-only and shares the kept column buffers: the
+    # dropped provenance strings are released before the polars conversion and
+    # never enter a split frame.
+    tape_table = tape_table.select(
+        [name for name in _SIM_TAPE_COLUMNS if name in tape_table.column_names]
+    )
     tape = _sort(_to_polars(tape_table), ["block_number", "log_index"])
-    reference = _sort(_to_polars(reference_table), ["open_time"])
+    reference = _to_polars(reference_table)
     gas = _sort(_to_polars(gas_table), ["block_number"])
-    regimes = _sort(_to_polars(regimes_table), ["timestamp"])
+    regimes = _to_polars(regimes_table)
     fee_growth = _sort(
         _to_polars(
             fee_growth_table
@@ -621,13 +703,28 @@ def build_market_view(
         ),
         ["block_number", "tick"],
     )
-    funding = _sort(
-        _to_polars(load_funding(data_config)), ["symbol", "funding_time"]
-    )
+    funding = _to_polars(load_funding(data_config))
+    # Release the pyarrow wrappers before the split frames below are
+    # materialised: conversions that copied (rather than shared) buffers would
+    # otherwise keep the 2.4 GB of side-stream tables alive alongside them.
+    del tape_table, reference_table, gas_table, regimes_table, fee_growth_table
+    _release_arrow_arena()
+
     # One series, always: the feeds carry the primary + cross-check symbols.
-    reference = _select_primary_symbol(reference, data_config.reference_symbol, "reference")
-    regimes = _select_primary_symbol(regimes, data_config.reference_symbol, "regime")
-    funding = _select_primary_symbol(funding, data_config.reference_symbol, "funding")
+    # Restrict *before* sorting so the discarded cross-check rows are never
+    # materialised in a second sorted frame.
+    reference = _sort(
+        _select_primary_symbol(reference, data_config.reference_symbol, "reference"),
+        ["open_time"],
+    )
+    regimes = _sort(
+        _select_primary_symbol(regimes, data_config.reference_symbol, "regime"),
+        ["timestamp"],
+    )
+    funding = _sort(
+        _select_primary_symbol(funding, data_config.reference_symbol, "funding"),
+        ["symbol", "funding_time"],
+    )
 
     def _state_at(active: pl.DataFrame) -> pl.DataFrame | None:
         """The pool-state snapshot for ``active``'s first block (or ``None``).
@@ -654,6 +751,7 @@ def build_market_view(
     if split == "train":
         start, end = split_config.train_start_utc, split_config.train_end_utc
         active = _between(tape, "block_timestamp", start, end)
+        del tape  # only the split frame is retained by the view below
         if active.height == 0:
             raise MarketViewError(
                 f"train split [{start}, {end}] contains no tape rows"
@@ -677,6 +775,7 @@ def build_market_view(
 
     start, end = split_config.eval_start_utc, split_config.eval_end_utc
     active = _between(tape, "block_timestamp", start, end)
+    del tape  # only the split frame is retained by the view below
     if active.height == 0:
         raise MarketViewError(f"eval split [{start}, {end}] contains no tape rows")
     return MarketView(

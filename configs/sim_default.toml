@@ -65,9 +65,11 @@ total_timesteps = 1000000
 checkpoint_freq_steps = 100000
 log_freq_steps = 10000
 # Run each parallel_envs slot in its own process: the tape replay is Python-bound
-# and DummyVecEnv steps the slots sequentially in one core.  "dummy" is only for
-# tiny/synthetic runs (each worker holds a full MarketView, so workers are
-# memory-bound; ~4 GB each for the pinned dataset).
+# and DummyVecEnv steps the slots sequentially in one core.  The CLI publishes
+# the MarketView once as memory-mapped IPC frames that every worker shares, so
+# workers no longer rebuild (and multiply) the multi-GB event tape.  "dummy" is
+# only for tiny/synthetic runs: it shares the parent's view but steps the slots
+# sequentially in one process.
 vec_env = "subproc"
 
 [backtest]
