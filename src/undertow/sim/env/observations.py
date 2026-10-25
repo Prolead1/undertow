@@ -37,6 +37,7 @@ band.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
@@ -51,7 +52,14 @@ from undertow.sim.frictions.gas import GasModel
 from undertow.sim.marketview import MarketView
 from undertow.sim.types import LookAheadError, Price, Regime, SqrtPrice, Tick, Wealth
 
-__all__ = ["OBSERVATION_VECTOR_LENGTH", "Observation", "ObservationBuilder"]
+__all__ = [
+    "OBSERVATION_VECTOR_LENGTH",
+    "SCALED_VECTOR_INDICES",
+    "Observation",
+    "ObservationBuilder",
+    "scale_vector",
+    "unscale_vector",
+]
 
 #: Ordinal encoding of the regime labels (CONTRACTS.md §11).
 REGIME_ORDINAL: dict[str, int] = {
@@ -67,6 +75,46 @@ OBSERVATION_VECTOR_LENGTH: int = 24
 
 #: 10-minute reference bars per year (6 per hour x 24 h x 365.25 d).
 _STEPS_PER_YEAR: float = 6.0 * 24.0 * 365.25
+
+#: §11 vector positions carrying raw protocol magnitudes that span many orders
+#: (price, sqrt price, tick, position value, the two fee balances, pool
+#: liquidity, gas price and the recent ETH price).  :func:`scale_vector`
+#: compresses them to O(1) for the policy network and :func:`unscale_vector`
+#: restores the raw units; the structured ``Observation`` fields are never
+#: scaled (ADR-034).
+SCALED_VECTOR_INDICES: tuple[int, ...] = (0, 1, 2, 7, 8, 9, 11, 13, 14)
+
+
+def _signed_log1p(value: float) -> float:
+    """``log1p`` with the sign preserved, defined at zero (odd bijection)."""
+    return math.copysign(math.log1p(abs(value)), value) if value else 0.0
+
+
+def _signed_expm1(value: float) -> float:
+    """Inverse of :func:`_signed_log1p`, defined at zero."""
+    return math.copysign(math.expm1(abs(value)), value) if value else 0.0
+
+
+def scale_vector(values: Sequence[float] | np.ndarray) -> np.ndarray:
+    """Compress the heavy-tailed §11 features to O(1) for the policy network.
+
+    Only :data:`SCALED_VECTOR_INDICES` are transformed; every other position is
+    copied unchanged.  The transform is the odd, strictly increasing
+    ``sign(v) * log1p(|v|)``, so ordering and sign information survive and
+    :func:`unscale_vector` is an exact inverse (ADR-034).
+    """
+    scaled = np.asarray(values, dtype=np.float64).copy()
+    for index in SCALED_VECTOR_INDICES:
+        scaled[index] = _signed_log1p(float(scaled[index]))
+    return scaled
+
+
+def unscale_vector(values: Sequence[float] | np.ndarray) -> np.ndarray:
+    """Restore the raw §11 magnitudes compressed by :func:`scale_vector`."""
+    raw = np.asarray(values, dtype=np.float64).copy()
+    for index in SCALED_VECTOR_INDICES:
+        raw[index] = _signed_expm1(float(raw[index]))
+    return raw
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,8 +173,13 @@ class Observation:
         ``bool`` fields become ``0.0``/``1.0``; the regime string is mapped to
         its ordinal in :data:`REGIME_ORDINAL` (``unknown`` = 4 for any
         unrecognised label). The order follows the field declaration order.
+
+        The heavy-tailed features named by :data:`SCALED_VECTOR_INDICES` are
+        log-compressed by :func:`scale_vector` so every dimension reaches the
+        policy network on the same O(1) scale (ADR-034); the structured fields
+        keep their raw units and :func:`unscale_vector` recovers them exactly.
         """
-        return np.array(
+        raw = np.array(
             [
                 float(self.price),
                 float(self.sqrt_price),
@@ -155,6 +208,7 @@ class Observation:
             ],
             dtype=np.float64,
         )
+        return scale_vector(raw)
 
 
 def _human_price_from_sqrt(

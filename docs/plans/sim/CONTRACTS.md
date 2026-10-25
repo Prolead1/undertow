@@ -937,7 +937,10 @@ class Observation:
         The vector length is ``OBSERVATION_VECTOR_LENGTH`` (24): the three
         geometry features are appended at indices 18--20 (ADR-029) and the
         three hedge features at 21--23 (S20), so all earlier ordinal positions
-        stay stable."""
+        stay stable. The heavy-tailed fields at indices 0, 1, 2, 7, 8, 9, 11,
+        13 and 14 are log-compressed with ``sign(v) * log1p(|v|)`` so every
+        dimension reaches the network at O(1) scale; ``unscale_vector``
+        restores the raw units (ADR-034)."""
         ...
 ```
 

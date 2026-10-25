@@ -79,7 +79,7 @@ from undertow.sim.core.position import (
     Position,
     initial_deposit,
 )
-from undertow.sim.env.observations import ObservationBuilder
+from undertow.sim.env.observations import ObservationBuilder, scale_vector
 from undertow.sim.frictions import GasCostCalculator, ProportionalSlippageModel
 from undertow.sim.hedge import ETH_DELTA_EPS, HedgeAccount
 from undertow.sim.marketview import MarketView
@@ -168,9 +168,15 @@ class BacktestObservation:
     funding_rate_recent: float = 0.0
 
     def to_vector(self) -> np.ndarray:
-        """Flatten to a stable float64 vector (the §11 ordinal regime encoding)."""
+        """Flatten to a stable float64 vector (the §11 ordinal regime encoding).
+
+        The heavy-tailed §11 features are log-compressed exactly as
+        :meth:`undertow.sim.env.observations.Observation.to_vector` does
+        (ADR-034), so a checkpoint trained in the simulator sees the same
+        scale when the backtester replays it.
+        """
         ordinal = {"bull": 0, "bear": 1, "sideways": 2, "high_vol": 3, "unknown": 4}
-        return np.asarray(
+        raw = np.asarray(
             [
                 self.price,
                 self.sqrt_price,
@@ -199,6 +205,7 @@ class BacktestObservation:
             ],
             dtype=np.float64,
         )
+        return scale_vector(raw)
 
 
 class _TapeBuffer:

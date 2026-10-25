@@ -8,6 +8,7 @@ and the frozen-policy guarantee.
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -1327,6 +1328,10 @@ def test_backtest_observation_to_vector_is_stable() -> None:
     # features at 21..23.
     assert vector[18] == 2.0 and vector[19] == -1.0 and vector[20] == 4.0
     assert vector[21] == 0.75 and vector[22] == -0.002 and vector[23] == 0.0001
+    # ADR-034: the heavy-tailed positions are log-compressed, so the
+    # backtester's vector matches the simulator's for the same state.
+    assert vector[0] == pytest.approx(math.log1p(3000.0))
+    assert vector[11] == pytest.approx(math.log1p(float(2**80)))
 
 
 def test_observation_rolling_features_use_reference_bars_not_events() -> None:
