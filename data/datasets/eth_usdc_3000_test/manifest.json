@@ -1,0 +1,105 @@
+{
+  "created_at_utc": "2026-09-19T14:11:05.555671+00:00",
+  "dataset_id": "13eccf7a1bd5387151dbd247761b3f4cff3b8788b2a6d60ece7f711c6960133e",
+  "endpoint_hosts": {
+    "graph": "https://gateway.thegraph.com",
+    "reference": "https://api.binance.com",
+    "rpc": "https://eth-mainnet.g.alchemy.com"
+  },
+  "git_commit": "79b50039f9ca8186bff322385055c35bfd14ea8c",
+  "library_versions": {
+    "numpy": "2.5.2",
+    "polars": "1.44.1",
+    "pyarrow": "25.0.1",
+    "requests": "2.34.2",
+    "undertow": "0.1.0"
+  },
+  "pool": {
+    "address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+    "deployment_block": 12370624,
+    "fee_tier": 3000,
+    "tick_spacing": 60,
+    "token0_decimals": 6,
+    "token0_symbol": "USDC",
+    "token1_decimals": 18,
+    "token1_symbol": "WETH"
+  },
+  "schema_version": "1.0.0",
+  "streams": {
+    "burn": {
+      "content_hash": "0f58224f2725cad4e287a7df298dedfae6d1b8fa7a35d274a402baa7b1a7efaa",
+      "max_block": 19129340,
+      "min_block": 18908976,
+      "n_requests": 0,
+      "route": "thegraph",
+      "row_count": 512,
+      "warnings": []
+    },
+    "collect": {
+      "content_hash": "e147f2260ae7f94936a7dc137a9a03d79d35a622b65280e353f7e39ab3f71c75",
+      "max_block": null,
+      "min_block": null,
+      "n_requests": 0,
+      "route": "thegraph",
+      "row_count": 0,
+      "warnings": []
+    },
+    "gas": {
+      "content_hash": "2c8a45eff05cf6e02048783a54b8d665c97d4b6574595990635c8ff3b8e68a2f",
+      "max_block": 19129888,
+      "min_block": 18908894,
+      "n_requests": 0,
+      "route": "rpc",
+      "row_count": 220995,
+      "warnings": []
+    },
+    "mint": {
+      "content_hash": "73e2213cda0ef570ff58020578325b7c3216de9b7e355da20fc9154cb7fcf465",
+      "max_block": 19129105,
+      "min_block": 18912363,
+      "n_requests": 0,
+      "route": "thegraph",
+      "row_count": 268,
+      "warnings": []
+    },
+    "reference": {
+      "content_hash": "2c3a4c9c07ae78e7613491d6fd6bd25e6f0ab08be8797a2a37e832a2ab2ed2ca",
+      "max_block": null,
+      "min_block": null,
+      "n_requests": 0,
+      "route": "reference",
+      "row_count": 89280,
+      "warnings": []
+    },
+    "regime": {
+      "content_hash": "641566713ab865bf975410148205692525c5c49b5f92783651c7eff4e16344c6",
+      "max_block": null,
+      "min_block": null,
+      "n_requests": 0,
+      "route": "reference",
+      "row_count": 89280,
+      "warnings": []
+    },
+    "swap": {
+      "content_hash": "60bcb6d9e26e88aa34bdd071a5d2f8ea7fb4fab55f41b1fc8f5093466d69c162",
+      "max_block": 19129888,
+      "min_block": 18908912,
+      "n_requests": 0,
+      "route": "thegraph",
+      "row_count": 10410,
+      "warnings": []
+    }
+  },
+  "warnings": [
+    "check_reference_coverage: reference bars span [1704067259.999, 1706745599.999] but the window is [1704067200.0, 1706745599.0] \u2014 the as-of join starves at the edges",
+    "check_regime_labels_complete: handoff finding: never observed over the window: bull, bear, high_vol"
+  ],
+  "window": {
+    "end_block": null,
+    "end_utc": "2024-01-31T23:59:59+00:00",
+    "eval_start_utc": null,
+    "start_block": null,
+    "start_utc": "2024-01-01T00:00:00+00:00",
+    "train_end_utc": null
+  }
+}

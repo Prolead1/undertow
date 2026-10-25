@@ -1,0 +1,138 @@
+{
+  "created_at_utc": "2026-10-24T11:28:27.610676+00:00",
+  "dataset_id": "d5dbfefc03b7463f3c4077f7371471f30c81b1127b69499b591c8e60ccf56586",
+  "endpoint_hosts": {
+    "graph": "https://gateway.thegraph.com",
+    "reference": "https://api.binance.com",
+    "rpc": "https://eth-mainnet.g.alchemy.com"
+  },
+  "git_commit": "29ed62d476799eb368dee35c1b0271cdc761a170+dirty",
+  "library_versions": {
+    "numpy": "2.5.2",
+    "polars": "1.44.1",
+    "pyarrow": "25.0.1",
+    "requests": "2.34.2",
+    "undertow": "0.1.0"
+  },
+  "pool": {
+    "address": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+    "deployment_block": 12376729,
+    "fee_tier": 500,
+    "tick_spacing": 10,
+    "token0_decimals": 6,
+    "token0_symbol": "USDC",
+    "token1_decimals": 18,
+    "token1_symbol": "WETH"
+  },
+  "schema_version": "1.0.0",
+  "streams": {
+    "burn": {
+      "content_hash": "441d482d6b5019080dd5dab897001fbc2caa450ee8c8ef59b68849a6d8b9882d",
+      "max_block": 21525852,
+      "min_block": 13916374,
+      "n_requests": 84,
+      "route": "thegraph",
+      "row_count": 130516,
+      "warnings": [
+        "T19 fork repair: replaced blocks 16674992..16677203 (fork span 16675000..16677195) with canonical RPC rows (130516 -> 130516 row(s))"
+      ]
+    },
+    "collect": {
+      "content_hash": "e147f2260ae7f94936a7dc137a9a03d79d35a622b65280e353f7e39ab3f71c75",
+      "max_block": null,
+      "min_block": null,
+      "n_requests": 0,
+      "route": "thegraph",
+      "row_count": 0,
+      "warnings": []
+    },
+    "funding": {
+      "content_hash": "4bd42e21b7953ff2fb25455d1d00e30c00722c1c6b97a3c4f7c6f3e245fe44f8",
+      "max_block": null,
+      "min_block": null,
+      "n_requests": 0,
+      "route": "reference",
+      "row_count": 3288,
+      "warnings": []
+    },
+    "gas": {
+      "content_hash": "9db8d30a539b74420f57b4760cc0d18cb89f4f9c8fdbe885329aed17de2a3c0f",
+      "max_block": 21525890,
+      "min_block": 13916165,
+      "n_requests": 0,
+      "route": "rpc",
+      "row_count": 7609726,
+      "warnings": []
+    },
+    "mint": {
+      "content_hash": "0c866ccd9a2f85d0c434bc0867413bdc8c78e1af8028d3f0c403a99423f5cecb",
+      "max_block": 21525861,
+      "min_block": 13916330,
+      "n_requests": 0,
+      "route": "thegraph",
+      "row_count": 119781,
+      "warnings": [
+        "T19 fork repair: replaced blocks 16674992..16677203 (fork span 16675000..16677195) with canonical RPC rows (119781 -> 119781 row(s))"
+      ]
+    },
+    "reference": {
+      "content_hash": "0f689f92f3b7f7cd84fb9b63545de2afde41f18acc686c883ee9d9d0eb87c26b",
+      "max_block": null,
+      "min_block": null,
+      "n_requests": 0,
+      "route": "reference",
+      "row_count": 3156480,
+      "warnings": [
+        "ETHUSDC: bulk archive 2022-10 unavailable (ReferenceFetcher stream=reference symbol=ETHUSDC bulk archive 2022-10: HTTP 404); fell back to REST API",
+        "ETHUSDC: bulk archive 2022-11 unavailable (ReferenceFetcher stream=reference symbol=ETHUSDC bulk archive 2022-11: HTTP 404); fell back to REST API",
+        "ETHUSDC: bulk archive 2022-12 unavailable (ReferenceFetcher stream=reference symbol=ETHUSDC bulk archive 2022-12: HTTP 404); fell back to REST API",
+        "ETHUSDC: bulk archive 2023-01 unavailable (ReferenceFetcher stream=reference symbol=ETHUSDC bulk archive 2023-01: HTTP 404); fell back to REST API",
+        "ETHUSDC: bulk archive 2023-02 unavailable (ReferenceFetcher stream=reference symbol=ETHUSDC bulk archive 2023-02: HTTP 404); fell back to REST API",
+        "ETHUSDT: gap-fill: filled 80 minute bar(s), longest run 80",
+        "ETHUSDC: cross-fill: filled 236450 minute bar(s) from the densest sibling series"
+      ]
+    },
+    "regime": {
+      "content_hash": "357c711961b9e2b1ab1bcede760e14610d24b4cd183bb8249b0ec5032ce126d3",
+      "max_block": null,
+      "min_block": null,
+      "n_requests": 0,
+      "route": "reference",
+      "row_count": 3156480,
+      "warnings": []
+    },
+    "swap": {
+      "content_hash": "fdf0da5b5a82c021bfebf9aee013bf2c1809928b6ec58e856b316dfc76c19922",
+      "max_block": 21525884,
+      "min_block": 13916165,
+      "n_requests": 0,
+      "route": "thegraph",
+      "row_count": 6862602,
+      "warnings": [
+        "T19 fork repair: replaced blocks 16674992..16677203 (fork span 16675000..16677195) with canonical RPC rows (6862355 -> 6862602 row(s))"
+      ]
+    }
+  },
+  "warnings": [
+    "T19 fork repair: replaced blocks 16674992..16677203 (fork span 16675000..16677195) with canonical RPC rows (130516 -> 130516 row(s))",
+    "T19 fork repair: replaced blocks 16674992..16677203 (fork span 16675000..16677195) with canonical RPC rows (119781 -> 119781 row(s))",
+    "ETHUSDC: bulk archive 2022-10 unavailable (ReferenceFetcher stream=reference symbol=ETHUSDC bulk archive 2022-10: HTTP 404); fell back to REST API",
+    "ETHUSDC: bulk archive 2022-11 unavailable (ReferenceFetcher stream=reference symbol=ETHUSDC bulk archive 2022-11: HTTP 404); fell back to REST API",
+    "ETHUSDC: bulk archive 2022-12 unavailable (ReferenceFetcher stream=reference symbol=ETHUSDC bulk archive 2022-12: HTTP 404); fell back to REST API",
+    "ETHUSDC: bulk archive 2023-01 unavailable (ReferenceFetcher stream=reference symbol=ETHUSDC bulk archive 2023-01: HTTP 404); fell back to REST API",
+    "ETHUSDC: bulk archive 2023-02 unavailable (ReferenceFetcher stream=reference symbol=ETHUSDC bulk archive 2023-02: HTTP 404); fell back to REST API",
+    "ETHUSDT: gap-fill: filled 80 minute bar(s), longest run 80",
+    "ETHUSDC: cross-fill: filled 236450 minute bar(s) from the densest sibling series",
+    "T19 fork repair: replaced blocks 16674992..16677203 (fork span 16675000..16677195) with canonical RPC rows (6862355 -> 6862602 row(s))",
+    "check_swap_sign_convention: 128 swap(s) where amount0/amount1 are same-signed or zero; example tx_hash: ['0x07587d593a33b5a131989a8ba7b00c1914d89a7771b87eadcdb9fb4e90c90f71', '0x0806cd512dccd1603aaa4832849d55493f7f9f2b495c189ca561f1af66aee1de', '0x09ac22cf4117def34487ffb25535a296a4f13924326d46890389e58a9f84a79d', '0x0a33de7d917bf7ba82c48984ea364ed91773e8095633f85fbc66d0201d4586af']",
+    "check_reference_coverage: reference bars span [1640995259.999, 1735689599.999] but the window is [1640995200.0, 1735689599.0] \u2014 the as-of join starves at the edges"
+  ],
+  "window": {
+    "end_block": null,
+    "end_utc": "2024-12-31T23:59:59+00:00",
+    "eval_start_utc": "2024-01-01T00:00:00+00:00",
+    "start_block": null,
+    "start_utc": "2022-01-01T00:00:00+00:00",
+    "train_end_utc": "2024-01-01T00:00:00+00:00"
+  }
+}
