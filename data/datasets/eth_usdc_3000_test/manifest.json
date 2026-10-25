@@ -1,12 +1,12 @@
 {
-  "created_at_utc": "2026-09-19T14:11:05.555671+00:00",
+  "created_at_utc": "2026-10-25T03:40:33.917442+00:00",
   "dataset_id": "13eccf7a1bd5387151dbd247761b3f4cff3b8788b2a6d60ece7f711c6960133e",
   "endpoint_hosts": {
     "graph": "https://gateway.thegraph.com",
     "reference": "https://api.binance.com",
     "rpc": "https://eth-mainnet.g.alchemy.com"
   },
-  "git_commit": "79b50039f9ca8186bff322385055c35bfd14ea8c",
+  "git_commit": "1ccd63331b116f2852dd8f37bd8fdccc5d44570c",
   "library_versions": {
     "numpy": "2.5.2",
     "polars": "1.44.1",

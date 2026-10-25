@@ -1,11 +1,11 @@
 # Validation report — undertow.data
 
-Generated: 2026-10-24T11:28:27.617566+00:00
+Generated: 2026-10-25T03:40:17.812672+00:00
 - **dataset id**: `d5dbfefc03b7463f3c4077f7371471f30c81b1127b69499b591c8e60ccf56586`
 - **pool**: `0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640` (USDC/WETH, 500 bps, spacing 10)
 - **window**: 2022-01-01 00:00:00+00:00 → 2024-12-31 23:59:59+00:00 (UTC)
 - **schema version**: 1.0.0
-- **git commit**: `29ed62d476799eb368dee35c1b0271cdc761a170+dirty`
+- **git commit**: `1ccd63331b116f2852dd8f37bd8fdccc5d44570c`
 
 ## Summary — 14 check(s), 2 failed, 8 passed, 4 skipped
 
