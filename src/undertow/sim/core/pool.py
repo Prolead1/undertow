@@ -48,6 +48,7 @@ Equation numbers in comments refer to roadmap §10.2.4.
 
 from __future__ import annotations
 
+import bisect
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -113,6 +114,8 @@ def _select_crossed_ticks(
     ticks: dict[Tick, TickState],
     current_tick: Tick,
     new_tick: Tick,
+    *,
+    sorted_keys: list[Tick] | None = None,
 ) -> list[Tick]:
     """Initialized ticks strictly between ``current_tick`` and ``new_tick``.
 
@@ -127,18 +130,18 @@ def _select_crossed_ticks(
       and at ``current_tick == t`` a position with lower bound ``t`` is still
       active, so ``t`` must NOT be crossed.  Hence ``t > new_tick``.
 
-    The returned list is ascending.
+    The returned list is ascending.  ``sorted_keys`` is an optional ascending
+    key snapshot (ADR-033) so the engine can bisect instead of re-sorting the
+    lattice on every swap; the default keeps the function self-contained.
     """
-    crossed: list[Tick] = []
-    for tick in sorted(ticks):
-        if not ticks[tick].initialized:
-            continue
-        if new_tick > current_tick:
-            if current_tick < tick <= new_tick:
-                crossed.append(tick)
-        elif new_tick < tick <= current_tick:
-            crossed.append(tick)
-    return crossed
+    keys = sorted_keys if sorted_keys is not None else sorted(ticks)
+    if new_tick > current_tick:
+        lo = bisect.bisect_right(keys, current_tick)
+        hi = bisect.bisect_right(keys, new_tick)
+    else:
+        lo = bisect.bisect_right(keys, new_tick)
+        hi = bisect.bisect_right(keys, current_tick)
+    return [tick for tick in keys[lo:hi] if ticks[tick].initialized]
 
 
 @dataclass(slots=True)
@@ -323,6 +326,21 @@ class PoolEngine:
     #: Memoised ``tick_to_sqrt_price_x96(tick)`` boundaries (the exact path calls
     #: it per tick per swap; the Decimal conversion is expensive).
     _tick_sqrt_x96: dict[Tick, int] = field(default_factory=dict)
+    #: Ascending lattice keys, cached across swaps so crossing selection bisects
+    #: instead of re-sorting the dict (ADR-033).  The engine's mutators clear it;
+    #: ``_sorted_keys_len`` additionally catches direct mutations that change the
+    #: key count (test/fixture setup bypasses the mutators).
+    _sorted_keys: list[Tick] | None = field(default=None, init=False, repr=False)
+    _sorted_keys_len: int = field(default=-1, init=False, repr=False)
+
+    def _tick_keys(self) -> list[Tick]:
+        """Ascending lattice keys, refreshed when the key set may have changed."""
+        keys = self._sorted_keys
+        if keys is None or self._sorted_keys_len != len(self.ticks):
+            keys = sorted(self.ticks)
+            self._sorted_keys = keys
+            self._sorted_keys_len = len(self.ticks)
+        return keys
 
     def _boundary_x96(self, tick: Tick) -> int:
         """Exact Q64.96 boundary for ``tick``, memoised."""
@@ -331,6 +349,17 @@ class PoolEngine:
             boundary = tick_to_sqrt_price_x96(int(tick))
             self._tick_sqrt_x96[tick] = boundary
         return boundary
+
+    # -- Lattice state ---------------------------------------------------
+    def replace_ticks(self, ticks: Mapping[Tick, TickState]) -> None:
+        """Replace the whole lattice and invalidate the crossing index (ADR-033).
+
+        ``LpEnvironment`` restores its construction-time base lattice on every
+        reset and owns the ``TickState`` copies it passes in.
+        """
+        self.ticks.clear()
+        self.ticks.update(ticks)
+        self._sorted_keys = None
 
     # -- Snapshot seeding -------------------------------------------------
     @classmethod
@@ -430,6 +459,8 @@ class PoolEngine:
             raise PositionError(
                 f"apply_liquidity_event expects a mint or burn row, got {event_type!r}"
             )
+        # The key set may gain/lose a boundary tick below; drop the crossing index.
+        self._sorted_keys = None
         tick_lower = _as_int(row.get("tick_lower"))
         tick_upper = _as_int(row.get("tick_upper"))
         liquidity_amount = _as_int(row.get("liquidity_amount"))
@@ -522,6 +553,8 @@ class PoolEngine:
             raise PositionError("tick_spacing must be > 0")
         if liquidity <= 0:
             raise PositionError("liquidity must be > 0")
+        # Sentinels may add fresh keys; drop the crossing index.
+        self._sorted_keys = None
         lower = _snap_tick(tick_lower, spacing)
         upper = _snap_tick(tick_upper, spacing)
         if lower >= upper:
@@ -672,7 +705,9 @@ class PoolEngine:
         # reverses the always-ascending list.
         pre_tick = self.state.tick
         upward = post_tick > pre_tick
-        ticks_crossed = _select_crossed_ticks(self.ticks, pre_tick, post_tick)
+        ticks_crossed = _select_crossed_ticks(
+            self.ticks, pre_tick, post_tick, sorted_keys=self._tick_keys()
+        )
         walk = ticks_crossed if upward else list(reversed(ticks_crossed))
 
         # Build the segment list: [pre_price, b1] .. [bn, post_price], each with

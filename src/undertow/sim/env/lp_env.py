@@ -356,17 +356,28 @@ class LpEnvironment(gym.Env):
             frames: list[pl.DataFrame] = []
             if view.warmup is not None and view.warmup.height:
                 frames.append(view.warmup.sort("seq"))
-            frames.append(view.active_split_data().sort("seq"))
+            frames.append(view.active_split_data())
             self._warmup_source = tuple(frames)
         return self._warmup_source
 
     def _warmup_rows_between(
         self, after_seq: int, before_seq: int
     ) -> Iterator[dict[str, object]]:
-        """Yield pre-window rows with ``after_seq < seq < before_seq``."""
+        """Yield pre-window rows with ``after_seq < seq < before_seq``.
+
+        ``seq`` is dense and sorted in each frame, so the bounds are binary
+        searches plus a contiguous slice instead of a full-column mask scan
+        (ADR-033).
+        """
+        if before_seq - 1 <= after_seq:
+            return
         for frame in self._warmup_frames():
-            mask = (frame["seq"] > after_seq) & (frame["seq"] < before_seq)
-            sub = frame.filter(mask)
+            seqs = frame["seq"]
+            lo = int(seqs.search_sorted(int(after_seq), side="right"))
+            hi = int(seqs.search_sorted(int(before_seq) - 1, side="right"))
+            if hi <= lo:
+                continue
+            sub = frame.slice(lo, hi - lo)
             if sub.height:
                 yield from sub.iter_rows(named=True)
 
@@ -461,8 +472,7 @@ class LpEnvironment(gym.Env):
         state.tick_spacing = self._base_state.tick_spacing
         state.sqrt_price_x96 = self._base_state.sqrt_price_x96
         state.fee_protocol = self._base_state.fee_protocol
-        self.pool_engine.ticks.clear()
-        self.pool_engine.ticks.update(
+        self.pool_engine.replace_ticks(
             {tick: replace(ts) for tick, ts in self._base_ticks.items()}
         )
         self.pool_engine.positions.clear()
@@ -850,9 +860,7 @@ class LpEnvironment(gym.Env):
         """Cache the episode window's reference bars and tape swap events."""
         assert isinstance(self.price_process, ReplayPriceProcess)
         self._bar_close_times = list(self.price_process.close_times)
-        window = self.market_view.slice(
-            self._start_seq, self._end_seq
-        ).active_split_data()
+        window = self.market_view.window(self._start_seq, self._end_seq)
         self._ev_times = window["block_timestamp"].to_list()
         self._ev_types = window["event_type"].to_list()
         self._ev_sqrt_x96 = window["sqrt_price_x96"].to_list()

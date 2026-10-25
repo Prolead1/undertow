@@ -26,7 +26,12 @@ from undertow.data import (
     sqrt_price_x96_to_price,
     tick_to_sqrt_price_x96,
 )
-from undertow.sim.core.pool import PoolEngine, PoolState, TickState
+from undertow.sim.core.pool import (
+    PoolEngine,
+    PoolState,
+    TickState,
+    _select_crossed_ticks,
+)
 from undertow.sim.core.position import calc_sqrt_price_a
 from undertow.sim.types import PositionError, Tick, TickSpacing
 
@@ -936,6 +941,43 @@ def test_tick_cross_requires_lattice_and_fallback_selection() -> None:
     assert engine.ticks[upper].fee_growth_outside_0 == pytest.approx(0.0)
     # tick_cross does not advance the current tick; step owns that.
     assert engine.state.tick == ENTRY_TICK
+
+
+def test_step_tick_key_cache_refreshes_after_same_size_liquidity_replacements() -> None:
+    """ADR-033: the cached crossing index invalidates on mints/burns.
+
+    A burn deletes two boundary ticks and a mint adds two others, so the key
+    count is unchanged; only explicit invalidation keeps the bisect index from
+    going stale.
+    """
+    engine = _engine(liquidity=0.0)
+    _mint(engine, ENTRY_TICK - 130, ENTRY_TICK - 10, 500.0)
+    _mint(engine, ENTRY_TICK + 10, ENTRY_TICK + 130, 500.0)
+    target = Tick(ENTRY_TICK + 200)
+    engine.step(calc_sqrt_price_a(target), target)
+    assert engine._tick_keys() == sorted(engine.ticks)
+
+    engine.apply_liquidity_event(
+        {
+            "event_type": "burn",
+            "tick_lower": ENTRY_TICK - 130,
+            "tick_upper": ENTRY_TICK - 10,
+            "liquidity_amount": "500",
+        }
+    )
+    engine.apply_liquidity_event(
+        {
+            "event_type": "mint",
+            "tick_lower": ENTRY_TICK - 170,
+            "tick_upper": ENTRY_TICK - 50,
+            "liquidity_amount": "500",
+        }
+    )
+    assert engine._tick_keys() == sorted(engine.ticks)
+
+    back = Tick(ENTRY_TICK - 200)
+    result = engine.step(calc_sqrt_price_a(back), back)
+    assert result["ticks_crossed"] == _select_crossed_ticks(engine.ticks, target, back)
 
 
 def test_pool_error_paths() -> None:
