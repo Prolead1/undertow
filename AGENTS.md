@@ -35,6 +35,12 @@ Undertow is an RL-for-AMM-liquidity research codebase. Two packages:
 - `uv` for project management (`uv init`, `uv add`, `uv sync`, `uv run pytest`)
 - `pytest` for tests (with `pytest-cov` once coverage is configured)
 
+## Profiling and long-running experiments
+
+- **Hard 3-minute cap.** Never launch a profiling, memory or wall-clock measurement with a timeout longer than **180 seconds**. If a question needs longer, split it into bounded stages or ask the human first.
+- **Stream progress while it runs.** A profiling run must print phase boundaries and periodic RSS/timing samples line-buffered, and the agent must surface those samples to the human as they arrive (poll in short intervals and show the log tail) — never let a measurement run silently for minutes.
+- **Bounded smoke first.** Prefer a tiny end-to-end smoke (a few thousand steps, one seed, reduced `parallel_envs`) before scaling to the real budget.
+
 ## Reminders
 
 - This vault (`fyp/`) is NOT part of the repo — only `undertow/` is versioned. Notes stay in the vault; code lives in the repo.
