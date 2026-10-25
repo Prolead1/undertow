@@ -20,6 +20,7 @@ from decimal import Decimal
 import pytest
 
 from undertow.data import (
+    GLOBAL_TICK_SENTINEL,
     Q96,
     FeeTier,
     sqrt_price_x96_to_price,
@@ -84,6 +85,9 @@ def test_tick_state_defaults() -> None:
     assert tick.liquidity_gross == 0.0
     assert tick.liquidity_net == 0.0
     assert tick.initialized is False
+    # ADR-032: the default is the exact int seed, not a float.
+    assert isinstance(tick.liquidity_gross, int)
+    assert isinstance(tick.liquidity_net, int)
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +108,10 @@ def test_open_position_seeds_both_ticks_as_sentinels() -> None:
     assert lower_ts.liquidity_net == 0.0
     assert upper_ts.liquidity_gross == 1.0
     assert upper_ts.liquidity_net == 0.0
+    # ADR-032: sentinel seeds are ints, so a tape mint/burn at the same tick
+    # stays on the exact path.
+    assert isinstance(lower_ts.liquidity_gross, int)
+    assert isinstance(upper_ts.liquidity_gross, int)
     # The agent adds no external liquidity.
     assert engine.state.liquidity == 0.0
 
@@ -353,6 +361,46 @@ def test_position_fees_zero_immediately_after_open() -> None:
     assert engine.position_fees(pid) == (0.0, 0.0)
 
 
+def test_position_fees_treats_an_unwound_boundary_tick_as_uninitialized() -> None:
+    """Parity with ``FeeGrowthTracker.accrue``: an absent boundary reads 0.
+
+    A real mint/burn stream can fully unwind an external tick after the agent
+    opened a position on it; the exact tracker reads
+    ``fee_growth_outside = 0`` for the now-uninitialized tick instead of
+    raising, and the engine steps must do the same.
+    """
+    engine = _engine(liquidity=0.0)
+    lower, upper = Tick(ENTRY_TICK - 120), Tick(ENTRY_TICK + 120)
+    for tick, net in ((lower, 1_000), (upper, -1_000)):
+        engine.ticks[tick] = TickState(
+            liquidity_gross=1_000, liquidity_net=net, initialized=True
+        )
+    engine.state.liquidity = 1_000.0
+    pid = engine.open_position(lower, upper, 100.0)
+
+    engine.apply_liquidity_event(
+        {
+            "event_type": "burn",
+            "tick_lower": int(lower),
+            "tick_upper": int(upper),
+            "liquidity_amount": "1000",
+        }
+    )
+    assert lower not in engine.ticks
+    assert upper not in engine.ticks
+
+    engine.state.fee_growth_global_0 = 0.25
+    engine.state.fee_growth_global_1 = 0.5
+    inside_0, inside_1 = engine.state.fee_growth_inside(
+        lower, upper, 0.0, 0.0, 0.0, 0.0
+    )
+    snapshot_0, snapshot_1 = engine.position_fee_snapshots[pid]
+    assert engine.position_fees(pid) == pytest.approx(
+        (100.0 * (inside_0 - snapshot_0), 100.0 * (inside_1 - snapshot_1))
+    )
+    assert engine.position_fees(pid)[0] > 0.0
+
+
 # ---------------------------------------------------------------------------
 # 17-18. shared ticks (marginal sentinels)
 # ---------------------------------------------------------------------------
@@ -443,10 +491,193 @@ def test_apply_burn_tolerates_float64_residue_above_2_pow_53() -> None:
     assert Tick(ENTRY_TICK + 120) not in engine.ticks
 
 
+def test_apply_burn_exact_integer_path_cancels_the_real_192530_sequence() -> None:
+    """ADR-032: int-seeded snapshot rows cancel the real 0.05 % sequence exactly.
+
+    Blocks 13,958,883 -> 13,961,471: the snapshot seeds tick 192530 at 2.1e19;
+    a burn of 21,024,078,024,294,254,872 leaves exactly 4,256,735,724,701, and
+    a second burn of that amount closes the tick.  In float64 the first
+    subtraction lands 1,181 low and the second burn is rejected as
+    "inconsistent".
+    """
+    engine = _engine(liquidity=0.0)
+    lower, mid, upper = Tick(192530), Tick(193540), Tick(193980)
+    for tick, gross, net in (
+        (lower, 21_024_082_281_029_979_573, 21_024_082_281_029_979_573),
+        (mid, 9_410_179_362_650_141, -3_746_857_059_827_331),
+        (upper, 22_408_185_448_075_934_986, -22_094_358_504_139_850_346),
+    ):
+        engine.ticks[tick] = TickState(
+            liquidity_gross=gross, liquidity_net=net, initialized=True
+        )
+
+    engine.apply_liquidity_event(
+        {
+            "event_type": "burn",
+            "tick_lower": int(lower),
+            "tick_upper": int(upper),
+            "liquidity_amount": "21024078024294254872",
+        }
+    )
+    assert engine.ticks[lower].liquidity_gross == 4_256_735_724_701
+
+    engine.apply_liquidity_event(
+        {
+            "event_type": "burn",
+            "tick_lower": int(lower),
+            "tick_upper": int(mid),
+            "liquidity_amount": "4256735724701",
+        }
+    )
+    assert lower not in engine.ticks
+
+
+def test_from_snapshot_seeds_int_ticks_and_cancels_the_real_192530_sequence() -> None:
+    """ADR-032: the production ``from_snapshot`` seed must stay exact.
+
+    Pins the seed type: with the pre-ADR-032 ``float(...)`` seed the real
+    13,958,883 -> 13,961,471 sequence stores ``4,256,735,723,520`` after the
+    first burn and aborts on the second.  The snapshot rows are the real
+    block-13,916,168 values for the three boundary ticks.
+    """
+    rows: list[dict[str, object]] = [
+        {
+            "tick": GLOBAL_TICK_SENTINEL,
+            "fee_growth_outside_0_x128": "0",
+            "fee_growth_outside_1_x128": "0",
+            "liquidity_gross": "0",
+            "liquidity_net": "0",
+            "initialized": False,
+            "current_tick": ENTRY_TICK,
+            "current_liquidity": "0",
+            "fee_growth_global_0_x128": "0",
+            "fee_growth_global_1_x128": "0",
+            "fee_protocol": 0,
+        },
+        {
+            "tick": 192530,
+            "fee_growth_outside_0_x128": "0",
+            "fee_growth_outside_1_x128": "0",
+            "liquidity_gross": "21024082281029979573",
+            "liquidity_net": "21024082281029979573",
+            "initialized": True,
+        },
+        {
+            "tick": 193540,
+            "fee_growth_outside_0_x128": "0",
+            "fee_growth_outside_1_x128": "0",
+            "liquidity_gross": "9410179362650141",
+            "liquidity_net": "-3746857059827331",
+            "initialized": True,
+        },
+        {
+            "tick": 193980,
+            "fee_growth_outside_0_x128": "0",
+            "fee_growth_outside_1_x128": "0",
+            "liquidity_gross": "22408185448075934986",
+            "liquidity_net": "-22094358504139850346",
+            "initialized": True,
+        },
+    ]
+    engine = PoolEngine.from_snapshot(_base_state(), rows)
+    assert isinstance(engine.ticks[Tick(192530)].liquidity_gross, int)
+    assert isinstance(engine.ticks[Tick(193540)].liquidity_net, int)
+
+    engine.apply_liquidity_event(
+        {
+            "event_type": "burn",
+            "tick_lower": 192530,
+            "tick_upper": 193980,
+            "liquidity_amount": "21024078024294254872",
+        }
+    )
+    assert engine.ticks[Tick(192530)].liquidity_gross == 4_256_735_724_701
+
+    engine.apply_liquidity_event(
+        {
+            "event_type": "burn",
+            "tick_lower": 192530,
+            "tick_upper": 193540,
+            "liquidity_amount": "4256735724701",
+        }
+    )
+    assert Tick(192530) not in engine.ticks
+
+
+def test_apply_burn_exact_integer_path_keeps_a_sub_ulp_remainder() -> None:
+    """ADR-032: a remainder below one float64 ULP must not be lost.
+
+    Real sequence at tick 204360 (blocks 15,155,419 -> 15,155,803): the running
+    gross reaches 1,362,030,533,161,524,474 while the paired lower tick 204090
+    holds exactly the burn amount 1,362,030,533,161,524,413, so the big burn
+    closes 204090 to zero and leaves exactly 61 at 204360.  Both large values
+    round to the same float64, so the float64 path would land on 0.0 and delete
+    204360 with the 61 lost — the following consistent burn of 61 then raises.
+    """
+    engine = _engine(liquidity=0.0)
+    lower, upper, final_upper = Tick(204090), Tick(204360), Tick(208250)
+    burn = 1_362_030_533_161_524_413
+    running = 1_362_030_533_161_524_474  # burn + 61 at the upper boundary
+    engine.ticks[lower] = TickState(
+        liquidity_gross=burn, liquidity_net=burn, initialized=True
+    )
+    engine.ticks[upper] = TickState(
+        liquidity_gross=running,
+        liquidity_net=-1_362_030_533_161_524_352,
+        initialized=True,
+    )
+    engine.ticks[final_upper] = TickState(
+        liquidity_gross=1_000, liquidity_net=1_000, initialized=True
+    )
+
+    engine.apply_liquidity_event(
+        {
+            "event_type": "burn",
+            "tick_lower": int(lower),
+            "tick_upper": int(upper),
+            "liquidity_amount": str(burn),
+        }
+    )
+    assert lower not in engine.ticks
+    assert engine.ticks[upper].liquidity_gross == 61
+
+    engine.apply_liquidity_event(
+        {
+            "event_type": "burn",
+            "tick_lower": int(upper),
+            "tick_upper": int(final_upper),
+            "liquidity_amount": "61",
+        }
+    )
+    assert upper not in engine.ticks
+    assert engine.ticks[final_upper].liquidity_gross == 939
+
+
 def test_apply_burn_still_rejects_a_genuine_over_burn() -> None:
-    """ADR-020: the tolerance absorbs float64 rounding only, not real gaps."""
+    """ADR-032: the exact int path rejects a genuine over-burn."""
     engine = _engine(liquidity=0.0)
     _mint(engine, ENTRY_TICK - 120, ENTRY_TICK + 120, 1_000.0)
+    assert isinstance(engine.ticks[Tick(ENTRY_TICK - 120)].liquidity_gross, int)
+    with pytest.raises(PositionError, match="would drive liquidity_gross negative"):
+        engine.apply_liquidity_event(
+            {
+                "event_type": "burn",
+                "tick_lower": ENTRY_TICK - 120,
+                "tick_upper": ENTRY_TICK + 120,
+                "liquidity_amount": "2000",
+            }
+        )
+
+
+def test_apply_burn_float_seeded_over_burn_still_raises() -> None:
+    """ADR-020/032: the float-seeded fallback also rejects a genuine over-burn."""
+    engine = _engine(liquidity=0.0)
+    engine.ticks[Tick(ENTRY_TICK - 120)] = TickState(
+        liquidity_gross=1_000.0, liquidity_net=1_000.0, initialized=True
+    )
+    engine.ticks[Tick(ENTRY_TICK + 120)] = TickState(
+        liquidity_gross=1_000.0, liquidity_net=-1_000.0, initialized=True
+    )
     with pytest.raises(PositionError, match="would drive liquidity_gross negative"):
         engine.apply_liquidity_event(
             {

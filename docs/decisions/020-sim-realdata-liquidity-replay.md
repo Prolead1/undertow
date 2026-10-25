@@ -1,6 +1,6 @@
 # ADR 020 — Real-data liquidity replay in the float64 sim: rounding tolerance and checkpointed warmup
 
-**Status:** accepted (implementation)
+**Status:** accepted (implementation; amended by ADR-032 — the delta-relative tolerance now applies only to explicitly float-seeded lattice states, the snapshot/tape path is exact)
 **Affects:** `src/undertow/sim/core/pool.py` · `src/undertow/sim/env/lp_env.py` · `tests/sim/test_pool.py` · `tests/sim/test_env.py` · sim `STATUS.md` · S12, S14
 **Raised by:** RL kick-off on the real 2022–23 train split (post ADR-018/019)
 
