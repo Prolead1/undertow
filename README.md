@@ -21,6 +21,21 @@ undertow/
 uv sync
 ```
 
+## Dataset
+
+The validated datasets are checked in under `data/datasets/` (ZSTD parquet, ~1.1 GB
+for `eth_usdc_500` + `eth_usdc_3000` + `eth_usdc_3000_test`), so the simulator and
+backtester run immediately after `uv sync`:
+
+```bash
+uv run undertow-sim backtest --config configs/sim_eth_usdc_500.toml \
+    --data-config configs/eth_usdc_500.toml
+```
+
+`data/cache/` (the raw API responses used only to rebuild a dataset) is local-only.
+Rebuilding or re-verifying requires `GRAPH_API_KEY` / `ETH_RPC_URL` and
+`uv run undertow-data snapshot --config configs/eth_usdc_500.toml`.
+
 ## Status
 
 - [x] Data pipeline scaffolding (T00)

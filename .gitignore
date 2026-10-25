@@ -1,3 +1,11 @@
+# Data & artifacts: the validated datasets under data/datasets/ are tracked so a
+# fresh clone can run the sim/backtester without re-pulling (ZSTD parquet; ~1.1 GB
+# total). These negations come FIRST so every later junk rule (__pycache__,
+# .mypy_cache, …) still applies underneath the dataset tree.
+/data/*
+!/data/datasets/
+!/data/datasets/**
+
 # Python / uv
 __pycache__/
 *.py[cod]
@@ -9,8 +17,7 @@ build/
 .mypy_cache/
 .ruff_cache/
 
-# Data & artifacts
-/data/
+# Data & artifacts (continued): caches and intermediate artifacts stay local.
 /data/raw/
 /data/processed/
 /data/cache/
@@ -23,6 +30,9 @@ build/
 *.arrow
 *.sqlite
 *.db
+# …but the checked-in dataset parquet is intentional (the negation must come after
+# the global *.parquet rule to win).
+!/data/datasets/**/*.parquet
 
 # Logs & notebooks scratch
 logs/
