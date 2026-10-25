@@ -58,8 +58,19 @@ class TestEpisodeConfig:
         assert ep.step_minutes == 10
         assert ep.agent_capital_usdc == 100_000.0
         assert ep.marginal_agent is True
-        assert ep.fee_tier_bps == 3000
-        assert ep.tick_spacing == 60
+        assert ep.fee_tier_bps == 500  # primary 0.05% study pool
+        assert ep.tick_spacing == 10
+
+    def test_defaults_match_the_primary_pool_fields(self) -> None:
+        """The dataclass defaults are the primary 0.05 % pool, not the 0.30 %
+        contrast, and the action grid matches ``configs/sim_default.toml``."""
+        from undertow.data.config import default_pools
+
+        grid = ActionGridConfig()
+        primary = default_pools()["USDC_WETH_500"]
+        assert EpisodeConfig().fee_tier_bps == primary.fee_tier.value
+        assert EpisodeConfig().tick_spacing == primary.tick_spacing
+        assert tuple(grid.widths) == (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000)
 
 
 # ---------------------------------------------------------------------------
@@ -70,9 +81,10 @@ class TestActionGridConfig:
         grid = ActionGridConfig()
         assert grid.include_hold is True
         assert len(grid.center_offsets) == 9
-        assert len(grid.widths) == 6
+        # Matches the primary 0.05 % pool's spacing-10 ladder.
+        assert len(grid.widths) == 10
         assert grid.center_offsets[0] == -4
-        assert grid.widths[-1] == 50
+        assert grid.widths[-1] == 1000
 
     def test_no_duplicate_center_offsets(self) -> None:
         with pytest.raises(SimConfigError, match="center_offsets"):
@@ -298,7 +310,7 @@ class TestLoadSimConfig:
         assert cfg.episode.duration_days == 7
         assert cfg.episode.step_minutes == 30
         # Unspecified field falls back to default
-        assert cfg.episode.fee_tier_bps == 3000
+        assert cfg.episode.fee_tier_bps == 500
         # Reward overrides
         assert cfg.reward.fees_enabled is False
         assert cfg.reward.risk_penalty_enabled is True
@@ -360,3 +372,31 @@ class TestLoadSimConfig:
         assert cfg.hedge.enabled is False
         assert cfg.hedge.fee_bps == 5.0
         assert cfg.hedge.ratio == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Shipped config/data pairing
+# ---------------------------------------------------------------------------
+
+
+def test_shipped_sim_configs_pair_with_their_data_pools() -> None:
+    """Every shipped sim config matches its data config's pool tier/spacing.
+
+    Guards the easy mistake of running a 0.30 % dataset with the primary
+    0.05 % sim config (or vice versa), which silently prices the replay at the
+    wrong fee tier and snaps its ranges on the wrong grid.
+    """
+    from undertow.data import load_data_config
+
+    repo_root = Path(__file__).resolve().parents[2]
+    for sim_name, data_name in (
+        ("sim_default.toml", "eth_usdc_500.toml"),
+        ("sim_eth_usdc_500.toml", "eth_usdc_500.toml"),
+        ("sim_eth_usdc_3000.toml", "eth_usdc_3000.toml"),
+    ):
+        sim = load_sim_config(repo_root / "configs" / sim_name)
+        data = load_data_config(
+            repo_root / "configs" / data_name, expand_endpoints=False
+        )
+        assert sim.episode.fee_tier_bps == data.pool.fee_tier.value, sim_name
+        assert sim.episode.tick_spacing == data.pool.tick_spacing, sim_name

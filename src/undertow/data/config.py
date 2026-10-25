@@ -675,6 +675,9 @@ def load_config(path: str | Path, *, expand_endpoints: bool = True) -> DataConfi
 def default_pools() -> dict[str, PoolConfig]:
     """The two pinned pools (PLAN.md §7), keyed "USDC_WETH_3000" / "USDC_WETH_500".
 
+    ``USDC_WETH_500`` (0.05 %) is the **primary study pool**; ``USDC_WETH_3000``
+    (0.30 %) is the fee-tier contrast.
+
     Token ordering is contractual: Uniswap orders tokens by address and ``0xA0b8…eB48`` (USDC)
     sorts below ``0xC02a…6Cc2`` (WETH), so **token0 = USDC (6 decimals), token1 = WETH (18
     decimals)** for both pools. Getting this backwards silently inverts every price in the

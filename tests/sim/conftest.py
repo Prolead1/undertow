@@ -12,6 +12,11 @@ import polars as pl
 import pyarrow as pa
 import pytest
 
+from tests.sim.synthetic_pool import (
+    TINY_POOL_FEE_TIER_BPS,
+    TINY_POOL_TICK_SPACING,
+    tiny_episode,
+)
 from undertow.data import (
     EVENT_TAPE_SCHEMA,
     GAS_SCHEMA,
@@ -24,7 +29,6 @@ from undertow.data import (
     default_pools,
     tick_to_sqrt_price_x96,
 )
-from undertow.sim.config import EpisodeConfig
 from undertow.sim.core.pool import PoolEngine
 from undertow.sim.core.position import Position
 from undertow.sim.marketview import MarketView
@@ -214,7 +218,7 @@ def tiny_market_view(rng: np.random.Generator) -> MarketView:
         eval_start_utc=_TINY_EVAL_START,
         eval_end_utc=_TINY_EVAL_END,
         is_train=True,
-        episode_config=EpisodeConfig(),
+        episode_config=tiny_episode(),
     )
 
 
@@ -279,8 +283,6 @@ def entry_position() -> Position:
 #: spacing of the WETH/USDC 0.30% pool.  The current tick need not be a
 #: multiple of the spacing; position bounds are snapped by the engine.
 _TINY_POOL_ENTRY_TICK = 196242
-_TINY_POOL_FEE_TIER_BPS = 3000
-_TINY_POOL_TICK_SPACING = 60
 #: Nearest spacing-grid anchor to the reference tick, used to lay out the
 #: background lattice so that entry bounds land on initialized ticks.
 _TINY_POOL_GRID_ANCHOR = 196200
@@ -309,13 +311,13 @@ def tiny_pool_engine(entry_position: Position) -> PoolEngine:
         liquidity=_TINY_POOL_BASE_LIQUIDITY,
         fee_growth_global_0=0.0,
         fee_growth_global_1=0.0,
-        fee_tier_bps=_TINY_POOL_FEE_TIER_BPS,
-        tick_spacing=_TINY_POOL_TICK_SPACING,
+        fee_tier_bps=TINY_POOL_FEE_TIER_BPS,
+        tick_spacing=TINY_POOL_TICK_SPACING,
     )
 
     ticks: dict[_Tick, TickState] = {}
     for step in range(-10, 11):
-        tick = _Tick(_TINY_POOL_GRID_ANCHOR + step * _TINY_POOL_TICK_SPACING)
+        tick = _Tick(_TINY_POOL_GRID_ANCHOR + step * TINY_POOL_TICK_SPACING)
         ticks[tick] = TickState(initialized=True)
 
     engine = PoolEngine(state=state, ticks=ticks)
@@ -411,14 +413,20 @@ def tiny_ledger(tiny_market_view: MarketView) -> BacktestLedger:
     """S11: a ``BacktestLedger`` from a 100-step replay of ``dummy_policy``.
 
     Deterministically built from the shared ``tiny_market_view`` (sliced to the
-    first 100 tape events) and a default ``SimConfig``; reused by S14-S15.
+    first 100 tape events) and a ``SimConfig`` pinned to the fixture's
+    0.30 %/spacing-60 contrast pool; reused by S14-S15.
     """
     from undertow.sim.backtest import run_backtest
     from undertow.sim.config import SimConfig
     from undertow.sim.policies import HODLPolicy
 
+    # Pinned to the synthetic 0.30 %/spacing-60 pool this fixture models; the
+    # library defaults target the primary 0.05 % study pool.
+    config = SimConfig(
+        episode=tiny_episode()
+    )
     window = tiny_market_view.slice(0, 100)
-    return run_backtest(HODLPolicy(), window, SimConfig())
+    return run_backtest(HODLPolicy(), window, config)
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +457,7 @@ def tiny_env(
     no-op on them (each bar is already its own bucket).  Deterministic:
     ``reset(seed=...)`` fixes the episode window and price stream.
     """
-    from undertow.sim.config import EpisodeConfig, SimConfig
+    from undertow.sim.config import SimConfig
     from undertow.sim.core.pool import PoolEngine, PoolState, TickState
     from undertow.sim.core.position import calc_sqrt_price_a
     from undertow.sim.env.lp_env import LpEnvironment
@@ -463,16 +471,19 @@ def tiny_env(
             liquidity=1.0e18,
             fee_growth_global_0=0.0,
             fee_growth_global_1=0.0,
-            fee_tier_bps=3000,
-            tick_spacing=60,
+            fee_tier_bps=TINY_POOL_FEE_TIER_BPS,
+            tick_spacing=TINY_POOL_TICK_SPACING,
         ),
         ticks={
-            _Tick(196200 + step * 60): TickState(initialized=True)
+            _Tick(_TINY_POOL_GRID_ANCHOR + step * TINY_POOL_TICK_SPACING): TickState(
+                initialized=True
+            )
             for step in range(-10, 11)
         },
     )
+    # Pinned to the synthetic 0.30 %/spacing-60 engine built above.
     config = SimConfig(
-        episode=EpisodeConfig(duration_days=31, step_minutes=10),
+        episode=tiny_episode(duration_days=31, step_minutes=10),
         seed=0,
     )
     price_process = ReplayPriceProcess(tiny_market_view, 0, tiny_market_view.step_count())

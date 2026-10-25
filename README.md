@@ -1,119 +1,127 @@
 # Undertow
 
-*Friction-aware reinforcement learning for concentrated liquidity provision.*
+[![quality](https://github.com/Prolead1/undertow/actions/workflows/quality.yml/badge.svg)](https://github.com/Prolead1/undertow/actions/workflows/quality.yml)
 
-<!--
-Scaffolding placeholder. README will be filled in as the data pipeline
-(`undertow.data`) and AMM simulator (`undertow.sim`) take shape.
--->
+**Friction-aware reinforcement learning for concentrated liquidity provision.**
+
+Undertow studies when concentrated-liquidity (Uniswap V3) market making actually
+pays after real-world frictions. It pairs an **exact, integer-arithmetic replay
+backtester** over on-chain events with a **fast Gymnasium simulator**, so the same
+policies can be trained in simulation and measured against ground truth — and the
+gap between the two can be quantified rather than assumed.
+
+## What's inside
+
+| Package | Role |
+|---|---|
+| `undertow.data` | On-chain ingestion and processing: swaps, mints, burns and collects; reference prices, gas, funding and regime labels; a look-ahead-safe, block-ordered event tape. |
+| `undertow.sim` | Gymnasium environment, exact Q128 fee-growth backtester, six-policy baseline ladder, PPO training harness, and the RQ1–RQ3 evaluation runners. |
+| `undertow.ui` | Read-only cockpit: live learning curves, policy replay against price, and run comparison. |
+
+**Research questions.** RQ1: which frictions (gas, slippage, impermanent loss,
+fees) drive net LP performance? RQ2: how do policies perform across bull, bear,
+sideways and high-volatility regimes? RQ3: how large is the sim-to-reality gap
+between the float simulator and the exact replay engine?
+
+## Quickstart
+
+Requires Python 3.14 and [`uv`](https://docs.astral.sh/uv/).
+
+```bash
+uv sync
+uv run undertow-sim info          # configuration summary; needs no dataset
+```
+
+Fetch the validated datasets (checksum-pinned release assets, not stored in git):
+
+```bash
+uv run undertow-data fetch-data   # download + SHA-256 verify + extract to data/datasets/
+```
+
+Then run the primary 0.05 % USDC/WETH study-pool backtest, train PPO, and
+evaluate the result:
+
+```bash
+uv run undertow-sim backtest --policy passive_narrow
+uv run undertow-sim train --output runs/experiment_1/
+uv run undertow-sim evaluate --checkpoint runs/experiment_1/seed_0/ppo_seed_0.zip
+```
+
+The defaults target the primary pool (`configs/eth_usdc_500.toml`, 0.05 %,
+spacing 10). For the RQ1 fee-tier contrast use the matching pair,
+`configs/sim_eth_usdc_3000.toml` + `configs/eth_usdc_3000.toml` (0.30 %). `uv run undertow-sim --help` lists every subcommand; the full workflow is in
+[`docs/running_experiments.md`](docs/running_experiments.md).
+
+## Dashboard
+
+The read-only dashboard serves the artifacts a run already writes — no training,
+backtesting or mutation:
+
+```bash
+uv run undertow-ui serve --runs runs/ --results results/   # http://127.0.0.1:8050
+```
+
+**Live Cockpit** streams PPO diagnostics and the action heatmap while a policy
+trains; **Policy Replay** steps through a checkpoint's position path against
+price; **Leaderboard / Compare** ranks runs by held-out Sharpe. See
+[`docs/running_the_dashboard.md`](docs/running_the_dashboard.md).
+
+## Outputs
+
+`undertow-sim` writes its artifacts under `--output` (default `results/`; the
+`train` examples above use `runs/experiment_1/`):
+
+- `ablation_table.md` / `.csv` — RQ1 friction ablation
+- `regime_matrix_*.md`, `regime_comparison.md` — RQ2 per-regime results
+- `gap_report.md` / `.csv` — RQ3 simulator-vs-backtester gap
+- `summary.json`, `equity_curve.csv`, `decision_log.csv`, `cost_ledger.csv` — metrics and per-step ledgers
+- `runs/<experiment>/seed_<n>/` — checkpoints, manifests, telemetry and rollouts
+
+## Datasets
+
+The pinned window is **2022-01-01 → 2024-12-31 UTC**, split walk-forward into
+2022–2023 train and 2024 eval. Two USDC/WETH pools are processed:
+
+| Pool | Fee | Spacing | Role |
+|---|---|---|---|
+| `0x88e6a0…f5640` | 0.05 % | 10 | primary study pool |
+| `0x8ad599…e6d8` | 0.30 % | 60 | fee-tier contrast (RQ1) |
+
+`fetch-data` skips datasets already present, accepts `--dataset eth_usdc_500` for
+a single set and `--json` for scripts. To rebuild a snapshot from scratch instead
+(the only step that touches the network, requiring `GRAPH_API_KEY` and
+`ETH_RPC_URL`):
+
+```bash
+uv run undertow-data snapshot --config configs/eth_usdc_500.toml
+```
+
+## Development
+
+```bash
+uv run pytest         # full suite; coverage is gated at 90 %
+uv run ruff check .   # lint
+uv run mypy src/undertow
+```
+
+Every logic change ships with tests, and `main` only receives reviewed PRs.
+Network-marked tests (live endpoints) are skipped by default; opt in with
+`uv run pytest --run-network`. The suite parallelises across CPUs via
+`pytest-xdist` and pins BLAS/OpenMP to one thread per worker.
+
+**Design principles.** Fee accrual stays in exact Q128 integers — no float on the
+ground-truth path; `MarketView` is the only door to history and makes look-ahead
+unrepresentable; policies are frozen at evaluation time; and every ledger records
+the config hash and git commit that produced it.
 
 ## Layout
 
 ```
-undertow/
-├── data/   # on-chain Uniswap V3 ingestion & processing pipeline
-└── sim/    # AMM / concentrated-liquidity simulator, RL environment
-```
-
-## Setup
-
-```bash
-uv sync
-```
-
-## Dataset
-
-The validated datasets are **not stored in git** (they would add ~1.1 GB to every
-clone, plus another ~1 GB per future revision). They are published as
-checksum-pinned release assets under the
-[`data-v1`](https://github.com/Prolead1/undertow/releases/tag/data-v1) tag; fetch
-them once after cloning:
-
-```bash
-uv sync
-uv run undertow-data fetch-data   # download + SHA-256 verify + extract to data/datasets/
-```
-
-Then run the 0.05 % pool backtest:
-
-```bash
-uv run undertow-sim backtest --config configs/sim_eth_usdc_500.toml \
-    --data-config configs/eth_usdc_500.toml
-```
-
-`fetch-data` skips datasets that are already present (`--force` re-downloads),
-accepts `--dataset eth_usdc_500` for a single set and `--json` for scripts.
-`data/cache/` — the raw API responses used only to rebuild a dataset — stays
-local; rebuilding needs `GRAPH_API_KEY` / `ETH_RPC_URL` and
-`uv run undertow-data snapshot --config configs/eth_usdc_500.toml`.
-
-## Status
-
-- [x] Data pipeline scaffolding (T00)
-- [x] AMM simulator scaffolding
-- [x] Live policy cockpit dashboard (ui-v1)
-
-## `undertow.sim` — Simulator, Backtester & RL Environment
-
-| Artifact | Status |
-|---|---|
-| Simulator (Gymnasium env) | ✅ |
-| Backtester (on-chain replay) | ✅ |
-| PPO training harness | ✅ |
-| Baseline ladder (6 policies) | ✅ |
-| Parity validation | ✅ |
-| RQ1 ablation runner | ✅ |
-| RQ2 regime evaluation | ✅ |
-| RQ3 gap analysis | ✅ |
-
-**Quickstart:** `uv sync && uv run undertow-sim info`
-**Full guide:** [`docs/running_experiments.md`](docs/running_experiments.md)
-
-## Dashboard — live policy cockpit
-
-The read-only `undertow.ui` dashboard serves the artifacts a training run already
-writes (no training, backtesting or mutation):
-
-```bash
-uv sync && uv run undertow-ui serve --runs runs/ --results results/   # http://127.0.0.1:8050
-```
-
-Three views: **Live Cockpit** (`/live`) streams the learning curve, PPO
-diagnostics and action heatmap while a policy trains; **Policy Replay**
-(`/replay`) replays a checkpoint's position path against price, step by step;
-**Leaderboard / Compare** (`/leaderboard`, `/compare`) ranks runs by held-out
-eval Sharpe and overlays policies.
-
-**Full guide:** [`docs/running_the_dashboard.md`](docs/running_the_dashboard.md)
-
-## Running network-flavoured tests
-
-Most tests run entirely against fixtures and never touch the network. The handful
-marked `@pytest.mark.network` hit live endpoints and are **skipped by default**.
-To run them, pass the `--run-network` flag:
-
-```bash
-uv run pytest            # fixtures only; network-marked tests skipped
-uv run pytest --run-network   # also runs the @pytest.mark.network tests
-```
-
-This flag is wired up in `tests/conftest.py` (`pytest_addoption` +
-`pytest_collection_modifyitems`); it is not part of pytest's `addopts`, so it
-never collides with a later `-m` selector. Later pipeline tasks use it to run
-their live fetcher checks.
-
-## Test speed and parallelism
-
-The suite runs under `pytest-xdist` by default (`addopts = "-q --strict-markers
--n auto"`). `tests/conftest.py` pins BLAS/OpenMP/NumExpr to **one thread per
-worker**: the training and backtest tests are small enough that thread-pool
-synchronisation costs more than the work, and without the pin each worker would
-spawn one thread per core and oversubscribe the machine (making `-n auto`
-slower than serial). Set an explicit value (e.g. `OMP_NUM_THREADS=8`) to
-override the pin for a run.
-
-Run serially when you need deterministic ordering or `--pdb`:
-
-```bash
-uv run pytest -n0        # single process, no xdist
+src/undertow/
+├── data/   # ingestion, transforms, validation, parquet storage
+├── sim/    # core AMM math, env, backtester, policies, training, evaluation
+└── ui/     # FastAPI backend for the dashboard (React frontend under web/)
+configs/    # data-pipeline and simulator TOML configs
+docs/       # experiment guides, plans and ADRs
+tests/      # pytest suite mirroring the package layout
 ```

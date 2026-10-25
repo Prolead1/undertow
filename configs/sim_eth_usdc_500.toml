@@ -1,8 +1,8 @@
-# Sim config for the ETH/USDC 0.05% pool (configs/eth_usdc_500.toml).
-# Mirrors configs/sim_default.toml except the pool's fee tier (500 pips) and
-# tick spacing (10) — the pool's on-chain values — and a wider action-grid width
-# ladder (widths are in tick-spacing units, so spacing 10 needs larger values to
-# cover the same price band as the default 60-spacing pool).
+# Sim config for the ETH/USDC 0.05% pool (configs/eth_usdc_500.toml) — the
+# primary study pool.  Same episode/action-grid values as configs/sim_default.toml;
+# named explicitly for runs that pin the dataset.  Widths are half-ranges in
+# tick-spacing units, so spacing 10 needs the wider ladder to cover the same
+# price band the 0.30% contrast pool does at spacing 60.
 
 [episode]
 duration_days = 30

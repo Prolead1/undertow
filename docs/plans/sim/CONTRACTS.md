@@ -71,7 +71,7 @@ class PriceMode(str, Enum):
 # -- Action space --
 # The factored discrete action: {hold} ∪ {rebalance(center_offset, width)}.
 # center_offset: signed tick-spacings around current tick, ∈ {−4,…,+4}
-# width: tick-spacings per side, ∈ {1, 2, 5, 10, 25, 50}
+# width: tick-spacings per side, ∈ {1, 2, 5, 10, 25, 50, 100, 250, 500, 1000}
 # S10 defines the policy protocol; S01 owns the action types.
 
 @dataclass(frozen=True, slots=True)
@@ -124,13 +124,13 @@ class EpisodeConfig:
     step_minutes: int = 10         # decision cadence
     agent_capital_usdc: float = 100_000.0
     marginal_agent: bool = True    # agent liquidity never moves the price path
-    fee_tier_bps: int = 3000       # Uniswap pips (3000 = 0.30%; ADR-012); the `_bps` name is a legacy misnomer
-    tick_spacing: int = 60
+    fee_tier_bps: int = 500        # Uniswap pips (500 = 0.05% primary; ADR-012); the `_bps` name is a legacy misnomer
+    tick_spacing: int = 10
 
 @dataclass(frozen=True, slots=True)
 class ActionGridConfig:
     center_offsets: Sequence[int] = (-4, -3, -2, -1, 0, 1, 2, 3, 4)
-    widths: Sequence[int] = (1, 2, 5, 10, 25, 50)
+    widths: Sequence[int] = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000)
     include_hold: bool = True
 
 @dataclass(frozen=True, slots=True)
@@ -515,7 +515,7 @@ class PoolState:
     liquidity: float                # active *external* L at current tick (ADR-019)
     fee_growth_global_0: float
     fee_growth_global_1: float
-    fee_tier_bps: int               # e.g. 3000 for 0.30%
+    fee_tier_bps: int               # e.g. 500 for the primary 0.05% pool
     tick_spacing: int
     # ADR-019 additive fields; defaulted so frozen constructors still build.
     sqrt_price_x96: int | None = None  # provenance only; crossings use `tick` (ADR-021)

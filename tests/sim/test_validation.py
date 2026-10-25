@@ -29,6 +29,7 @@ import polars as pl
 import pyarrow as pa
 import pytest
 
+from tests.sim.synthetic_pool import tiny_episode
 from undertow.data import (
     EVENT_TAPE_SCHEMA,
     GAS_SCHEMA,
@@ -38,7 +39,7 @@ from undertow.data import (
     price_to_tick,
 )
 from undertow.sim.backtest import BacktestLedger, run_backtest
-from undertow.sim.config import EpisodeConfig, HedgeConfig, RewardConfig, SimConfig
+from undertow.sim.config import HedgeConfig, RewardConfig, SimConfig
 from undertow.sim.core.pool import PoolEngine, PoolState, TickState
 from undertow.sim.core.position import DEFAULT_DEC0, DEFAULT_DEC1, calc_sqrt_price_a
 from undertow.sim.env.lp_env import LpEnvironment
@@ -246,13 +247,15 @@ def _parity_view(prices: Sequence[float] | None = None) -> MarketView:
         eval_start_utc=active_end + timedelta(minutes=1),
         eval_end_utc=active_end + timedelta(days=1),
         is_train=True,
-        episode_config=EpisodeConfig(duration_days=1, step_minutes=10),
+        episode_config=tiny_episode(duration_days=1, step_minutes=10),
         pool=None,
     )
 
 
 def _parity_config() -> SimConfig:
-    return SimConfig(episode=EpisodeConfig(duration_days=1, step_minutes=10), seed=0)
+    # Pinned to the synthetic 0.30 %/spacing-60 fixture pool; the library defaults
+    # target the primary 0.05 % study pool.
+    return SimConfig(episode=tiny_episode(duration_days=1, step_minutes=10), seed=0)
 
 
 def _parity_env(
@@ -374,7 +377,9 @@ def rebalance_market_view() -> MarketView:
 
 @pytest.fixture
 def rebalance_policy() -> TauResetPolicy:
-    return TauResetPolicy(120)
+    # Pinned to the synthetic fixture's spacing-60 grid so its band is in the
+    # environment's action grid.
+    return TauResetPolicy(120, tick_spacing=60)
 
 
 @pytest.fixture
@@ -406,7 +411,7 @@ def rebalance_env(
 def tiny_backtest_fn(
     tiny_market_view: MarketView,
 ) -> Callable[[MarketView], BacktestLedger]:
-    config = SimConfig()
+    config = _parity_config()
     return lambda view: run_backtest(HODLPolicy(), view, config)
 
 
@@ -481,10 +486,32 @@ class TestRunParityCheck:
         parity_env.reset(seed=0)
         position = parity_env.pool_engine.positions[parity_env.position_id]
         # The backtester's deployment is +/-120 ticks snapped to the grid
-        # (``DEFAULT_INITIAL_HALF_WIDTH_TICKS``); ``initial_width=2`` is the
-        # matching 10-tick-spacing value at 60 spacing.
+        # (``DEFAULT_INITIAL_HALF_WIDTH_TICKS``); the env derives its width from
+        # the config spacing (2 spacings at spacing 60).
         assert position.tick_lower == 196080
         assert position.tick_upper == 196380
+
+    def test_initial_band_matches_the_backtester_at_the_primary_spacing(
+        self, parity_market_view: MarketView
+    ) -> None:
+        """The primary 0.05 % pool's spacing 10 must still start from ±120 ticks.
+
+        The env's width is in tick-spacings, so a fixed constant would deploy
+        ±20 ticks here while ``run_backtest`` deploys ±120.
+        """
+        from undertow.sim.backtest.engine import _default_initial_bounds
+        from undertow.sim.evaluate.protocol import build_replay_env
+
+        config = SimConfig(episode=tiny_episode(fee_tier_bps=500, tick_spacing=10), seed=0)
+        env = build_replay_env(parity_market_view, config)
+        env.reset(seed=0)
+        assert env._initial_width == 12  # 120 ticks / spacing 10
+        position = env.pool_engine.positions[env.position_id]
+        entry_tick = int(env.pool_engine.state.tick)
+        assert (position.tick_lower, position.tick_upper) == _default_initial_bounds(
+            entry_tick, 10
+        )
+        assert position.tick_upper - position.tick_lower >= 2 * 120
 
     def test_parity_passes_on_consistent_replay(
         self, parity_env: LpEnvironment, parity_ledger: BacktestLedger
@@ -929,7 +956,7 @@ class TestHedgeParity:
         config = replace(
             _parity_config(), hedge=HedgeConfig(enabled=True, ratio=1.0)
         )
-        policy = TauResetPolicy(120)
+        policy = TauResetPolicy(120, tick_spacing=60)
         env = _parity_env(
             view, config, ReplayGasModel(view, config.gas), ProportionalSlippageModel()
         )
@@ -987,7 +1014,7 @@ class TestHedgeParity:
             hedge=HedgeConfig(enabled=True, ratio=1.0),
             reward=RewardConfig(hedge_enabled=False),
         )
-        policy = TauResetPolicy(120)
+        policy = TauResetPolicy(120, tick_spacing=60)
         env = _parity_env(
             view, config, ReplayGasModel(view, config.gas), ProportionalSlippageModel()
         )
@@ -1034,7 +1061,7 @@ class TestHedgeParity:
             _parity_config(),
             reward=RewardConfig(gas_enabled=False, slippage_enabled=False),
         )
-        policy = TauResetPolicy(120)
+        policy = TauResetPolicy(120, tick_spacing=60)
         env = _parity_env(
             view, config, ReplayGasModel(view, config.gas), ProportionalSlippageModel()
         )
@@ -1213,7 +1240,7 @@ class TestLookAheadProbes:
     def test_probe_detects_injected_backtest_leak(
         self, tiny_market_view: MarketView, tiny_env: LpEnvironment,
     ) -> None:
-        config = SimConfig()
+        config = _parity_config()
 
         def leaky_backtest(view: MarketView) -> BacktestLedger:
             ledger = run_backtest(HODLPolicy(), view, config)

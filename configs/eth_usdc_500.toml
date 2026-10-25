@@ -1,6 +1,6 @@
-# Undertow — USDC/WETH 0.05% pool: the fee-tier-contrast pool for RQ1 (PLAN.md §7).
+# Undertow — USDC/WETH 0.05% pool: the primary study pool (PLAN.md §7).
 #
-# Same pinned window as the 0.30% config: 2022-01-01 → 2024-12-31 UTC.
+# Same pinned window as the 0.30% contrast config: 2022-01-01 → 2024-12-31 UTC.
 #
 # Secrets never live in this file. When a value may come from the environment, use a ${ENV_VAR}
 # placeholder that undertow.data.config.load_config expands at load time (raising ConfigError

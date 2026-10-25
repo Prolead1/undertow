@@ -17,7 +17,8 @@ written by this module, to stdout (results) or stderr (errors).  Exit codes:
 
 The data-dependent commands read a *pre-built* dataset: build it once with
 ``undertow-data snapshot --config <data-config>``.  ``--data-config`` defaults to
-``configs/eth_usdc_3000.toml``; the snapshot is never fetched here.
+``configs/eth_usdc_500.toml`` (the primary 0.05% study pool); the snapshot is
+never fetched here.
 """
 
 from __future__ import annotations
@@ -66,7 +67,7 @@ PROG: str = "undertow-sim"
 
 #: Default paths, resolved relative to the current working directory.
 DEFAULT_SIM_CONFIG: Path = Path("configs/sim_default.toml")
-DEFAULT_DATA_CONFIG: Path = Path("configs/eth_usdc_3000.toml")
+DEFAULT_DATA_CONFIG: Path = Path("configs/eth_usdc_500.toml")
 DEFAULT_OUTPUT_DIR: Path = Path("results")
 
 #: The six baseline policies selectable with ``--policy`` (also the order they are
@@ -343,6 +344,7 @@ class _CheckpointPolicy:
         self._name = name
         self._actions = _action_grid(config)
         self._validate_observation_space(model)
+        self._validate_action_space(model)
 
     @staticmethod
     def _validate_observation_space(model: object) -> None:
@@ -364,6 +366,24 @@ class _CheckpointPolicy:
                 f"this build expects {(OBSERVATION_VECTOR_LENGTH,)}; retrain the "
                 "agent so it sees the band-geometry (ADR-029) and hedge-overlay "
                 "(S20) features."
+            )
+
+    def _validate_action_space(self, model: object) -> None:
+        """Reject checkpoints trained on a different discrete action grid.
+
+        The grid is config-driven (ADR-011): the primary 0.05 % config has 91
+        entries while the 0.30 % contrast has 55, and an index trained on one
+        grid would silently map to a different band on the other.
+        """
+        space = getattr(model, "action_space", None)
+        n = getattr(space, "n", None)
+        if n is None:
+            return
+        if int(n) != len(self._actions):
+            raise CliError(
+                f"checkpoint action space has {int(n)} entries, but this build's "
+                f"action grid has {len(self._actions)}; retrain or evaluate with "
+                "the matching [action_grid] config."
             )
 
     @property

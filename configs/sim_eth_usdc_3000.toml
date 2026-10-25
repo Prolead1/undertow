@@ -1,0 +1,77 @@
+# Sim config for the ETH/USDC 0.30% pool (configs/eth_usdc_3000.toml) — the
+# fee-tier contrast used by RQ1.  Same episode/rewards as configs/sim_default.toml
+# except the pool's fee tier (3000 pips) and tick spacing (60), and the narrower
+# action-grid width ladder that spacing 60 needs to cover the same price band as
+# the primary 0.05 % pool's spacing-10 ladder.
+#
+# Pair it with the matching dataset; a mismatched pair silently prices and snaps
+# on the wrong grid (see tests/sim/test_config.py::test_shipped_sim_configs_pair_with_their_data_pools).
+
+[episode]
+duration_days = 30
+step_minutes = 10
+agent_capital_usdc = 100000.0
+marginal_agent = true
+fee_tier_bps = 3000
+tick_spacing = 60
+
+[action_grid]
+center_offsets = [-4, -3, -2, -1, 0, 1, 2, 3, 4]
+widths = [1, 2, 5, 10, 25, 50]
+include_hold = true
+
+[gas]
+mint_units = 460000
+burn_units = 215000
+collect_units = 130000
+rebalance_swap_units = 150000
+
+[slippage]
+fixed_impact_bps = 5.0
+
+[reward]
+risk_penalty_lambda = 0.0
+risk_rolling_window_steps = 144
+normalize_by_capital = true
+fees_enabled = true
+gas_enabled = true
+slippage_enabled = true
+il_enabled = true
+risk_penalty_enabled = false
+hedge_enabled = true  # gated by [hedge] enabled; kept true so the overlay counts when on
+
+[hedge]
+enabled = false
+fee_bps = 5.0
+funding_enabled = true
+ratio = 1.0
+ratios = [0.0, 0.25, 0.5, 0.75, 1.0]
+
+[split]
+train_start_utc = 2022-01-01T00:00:00Z
+train_end_utc = 2023-12-31T00:00:00Z
+eval_start_utc = 2024-01-01T00:00:00Z
+eval_end_utc = 2024-12-31T00:00:00Z
+
+[training]
+algorithm = "ppo"
+seeds = [0, 1, 2, 3, 4]
+discount_gamma = 0.99
+gae_lambda = 0.95
+clip_epsilon = 0.15
+hidden_size = 256
+n_hidden = 2
+parallel_envs = 4
+total_timesteps = 1000000
+checkpoint_freq_steps = 100000
+log_freq_steps = 10000
+# Each parallel_envs slot runs in its own process (true multicore tape replay).
+# "dummy" is only for tiny/synthetic runs; each worker holds a full MarketView.
+vec_env = "subproc"
+
+[backtest]
+compute_decomposition = true
+log_decision_every_step = false
+
+[price]
+mode = "replay"

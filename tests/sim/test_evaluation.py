@@ -23,7 +23,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-from undertow.sim.config import EpisodeConfig, SimConfig, TrainingConfig
+from tests.sim.synthetic_pool import tiny_episode
+from undertow.sim.config import SimConfig, TrainingConfig
 from undertow.sim.evaluate import (
     ABLATION_VARIANTS,
     METRIC_NAMES,
@@ -66,9 +67,13 @@ _EXPECTED_FLAGS: dict[str, tuple[bool, bool, bool, bool]] = {
 
 
 def _config(*, duration_days: int = 4, seeds: tuple[int, ...] = (0,)) -> SimConfig:
-    """A deterministic evaluation config on the tiny train split."""
+    """A deterministic evaluation config on the tiny train split.
+
+    Pinned to the synthetic fixture's 0.30 %/spacing-60 pool; the library
+    defaults target the primary 0.05 % study pool.
+    """
     return SimConfig(
-        episode=EpisodeConfig(duration_days=duration_days, step_minutes=10),
+        episode=tiny_episode(duration_days=duration_days, step_minutes=10),
         training=TrainingConfig(seeds=seeds),
         seed=0,
     )
@@ -284,7 +289,7 @@ class TestEvaluatePolicy:
         # TauReset's half-width is 2 spacings, which is in the agent action grid,
         # so the simulator path can execute it and pay real gas.
         records = evaluate_episodes(
-            TauResetPolicy(120),
+            TauResetPolicy(120, tick_spacing=60),
             tiny_market_view,
             _config(duration_days=8),
             backend="replay_sim",
@@ -313,7 +318,7 @@ class TestEvaluatePolicy:
                 return Action(action_type="rebalance", center_offset=0, width=2)
 
         config = SimConfig(
-            episode=EpisodeConfig(
+            episode=tiny_episode(
                 duration_days=1, step_minutes=10, agent_capital_usdc=1.0
             ),
             training=TrainingConfig(seeds=(0,)),
@@ -536,7 +541,11 @@ class TestGapAnalysis:
         # PassiveNarrow's ±5 % band is wider than the agent action grid, so the
         # simulator path cannot execute it; that is an explicit, diagnosable error.
         with pytest.raises(EvaluationError, match="not in the environment"):
-            run_gap_analysis(_config(duration_days=8), PassiveNarrowPolicy(), tiny_market_view)
+            run_gap_analysis(
+                _config(duration_days=8),
+                PassiveNarrowPolicy(tick_spacing=60),
+                tiny_market_view,
+            )
 
 
 class TestWriteResults:
@@ -682,3 +691,26 @@ def _make_record(metrics: dict[str, float]) -> object:
         decomposition={},
         equity_curve=pl.DataFrame({"equity": [100.0, 101.0]}),
     )
+
+
+def test_initial_width_derivation_tracks_the_backtester_band() -> None:
+    """The env's initial width is ``±120 ticks / spacing``, floored at 1.
+
+    Pins the derivation used by ``build_replay_env`` at the contrast and primary
+    spacings, plus the two edge branches (spacing wider than the half-width, and
+    a non-positive spacing).
+    """
+    from undertow.sim.evaluate.protocol import _initial_width_spacings
+
+    assert _initial_width_spacings(SimConfig(episode=tiny_episode())) == 2  # spacing 60
+    assert (
+        _initial_width_spacings(SimConfig(episode=tiny_episode(tick_spacing=10)))
+        == 12
+    )
+    # A spacing wider than the ±120-tick half-width floors to one whole spacing.
+    assert (
+        _initial_width_spacings(SimConfig(episode=tiny_episode(tick_spacing=200)))
+        == 1
+    )
+    with pytest.raises(EvaluationError, match="tick_spacing"):
+        _initial_width_spacings(SimConfig(episode=tiny_episode(tick_spacing=0)))

@@ -51,7 +51,7 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 import polars as pl
 
-from undertow.sim.backtest import run_backtest
+from undertow.sim.backtest import DEFAULT_INITIAL_HALF_WIDTH_TICKS, run_backtest
 from undertow.sim.config import SimConfig
 from undertow.sim.core.pool import PoolEngine, PoolState
 from undertow.sim.env import OBSERVATION_VECTOR_LENGTH, LpEnvironment, Observation
@@ -114,11 +114,22 @@ METRIC_NAMES: tuple[str, ...] = (
     "n_rebalances",
 )
 
-#: Initial half-width, in tick-spacings, the replay environment deploys.  Two
-#: spacings is ±120 ticks, matching the backtester's
-#: ``DEFAULT_INITIAL_HALF_WIDTH_TICKS`` so a sim-vs-backtest comparison starts
-#: from the same token mix.
-DEFAULT_INITIAL_WIDTH: int = 2
+
+def _initial_width_spacings(config: SimConfig) -> int:
+    """Initial half-width in tick-spacings matching the backtester's band.
+
+    The backtester always deploys ``DEFAULT_INITIAL_HALF_WIDTH_TICKS`` ticks
+    (±120) on either side of the entry, while the replay environment's initial
+    width is expressed in tick-spacings.  Deriving it from the config keeps the
+    two instruments in the same token mix when the spacing divides the half-width
+    (spacing 60 → 2 spacings, the primary spacing 10 → 12).  A spacing larger
+    than the half-width floors to one spacing, the narrowest representable band
+    (wider than the backtester's at that spacing).
+    """
+    spacing = int(config.episode.tick_spacing)
+    if spacing <= 0:
+        raise EvaluationError(f"episode.tick_spacing must be > 0, got {spacing}")
+    return max(1, DEFAULT_INITIAL_HALF_WIDTH_TICKS // spacing)
 
 #: Fallback external liquidity when the tape carries no ``liquidity`` column
 #: value (a hand-built tape).  Large so the agent stays marginal.
@@ -370,7 +381,7 @@ def build_replay_env(
         gas,
         slippage,
         config,
-        initial_width=DEFAULT_INITIAL_WIDTH,
+        initial_width=_initial_width_spacings(config),
     )
 
 

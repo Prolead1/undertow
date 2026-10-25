@@ -289,7 +289,7 @@ A task is done when **all** of these hold:
 
 ## 6. Definition of done (whole plan / Week-1 deliverable)
 
-- `uv run undertow-data snapshot --config configs/eth_usdc_3000.toml` produces, from a cold cache:
+- `uv run undertow-data snapshot --config configs/eth_usdc_500.toml` produces, from a cold cache:
   a partitioned parquet dataset for all 7 streams + regime labels, a `manifest.json` with full
   provenance, and a `validation_report.md`.
 - The validation report shows, for at least one sampled 30-day window:
@@ -311,8 +311,8 @@ A task is done when **all** of these hold:
 
 | Decision | Value | Rationale |
 |---|---|---|
-| Primary pool | `0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8` (USDC/WETH, 0.30%, spacing 60) | the roadmap's worked example |
-| Secondary pool | `0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640` (USDC/WETH, 0.05%, spacing 10) | fee-tier contrast for RQ1 |
+| Primary pool | `0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640` (USDC/WETH, 0.05%, spacing 10) | the primary study pool: deepest USDC/WETH liquidity |
+| Secondary pool | `0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8` (USDC/WETH, 0.30%, spacing 60) | fee-tier contrast for RQ1 |
 | Study window | `2022-01-01` → `2024-12-31` UTC | fully post-EIP-1559 (no legacy `gasPrice` path); spans bull/bear/sideways/crash |
 | Reference feed | Binance `ETHUSDT` 1m klines primary, `ETHUSDC` 1m as cross-check | ETHUSDT is the deepest, longest 1m history; USDC pair is thinner |
 | Regime window | 30 days rolling, backward-looking, minute closes | §10.3 |

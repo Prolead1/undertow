@@ -71,9 +71,10 @@ from undertow.sim.types import (
 __all__ = ["PoolEngine", "PoolState", "TickState"]
 
 # Uniswap ``fee_tier`` values are pips (units of 1e-6), despite the
-# ``fee_tier_bps`` field name: the 0.30% WETH/USDC tier is 3000 pips =
-# 30 basis points.  This matches ``undertow.data.types.FeeTier.BPS_30`` and the
-# exact reference path ``undertow.data.transforms.feegrowth`` which computes
+# ``fee_tier_bps`` field name: the primary 0.05% WETH/USDC tier is 500 pips =
+# 5 basis points (the 0.30% contrast tier is 3000 pips).  This matches
+# ``undertow.data.types.FeeTier.BPS_5`` and the exact reference path
+# ``undertow.data.transforms.feegrowth`` which computes
 # ``fee = amount_in * fee_pips // 1_000_000``.  (The S07 brief's ``/ 10000``
 # would be 30%, a 100x overcharge.)
 _FEE_DENOMINATOR: float = 1_000_000.0
@@ -170,7 +171,7 @@ class PoolState:
     liquidity: float  # active L at the current tick
     fee_growth_global_0: float
     fee_growth_global_1: float
-    fee_tier_bps: int  # e.g. 3000 for 0.30%
+    fee_tier_bps: int  # e.g. 500 for the primary 0.05% pool
     tick_spacing: int
     #: Exact Q64.96 sqrt price of the last tape swap, retained as informational
     #: provenance for diagnostics.  No logic reads it: crossings are selected

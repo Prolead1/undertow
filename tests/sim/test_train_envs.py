@@ -61,8 +61,9 @@ def test_env_factory_builds_a_replay_env(
     env = envs.EnvFactory(Path("data.toml"), "train", SimConfig())()
 
     assert env.is_replay
-    # build_replay_env's parity width (ADR-022), not lp_env's standalone default
-    assert env._initial_width == 2
+    # build_replay_env derives the width from the config spacing so it matches
+    # the backtester's ±120-tick band; the default config is spacing 10 → 12.
+    assert env._initial_width == 12
 
 
 def test_env_factory_builds_a_calibrated_env(
@@ -82,9 +83,9 @@ def test_env_factory_builds_a_calibrated_env(
 
     assert not env.is_replay
     assert isinstance(env.price_process, CalibratedPriceProcess)
-    # Calibrated now shares build_replay_env, so it deploys the parity width 2
-    # (it previously used lp_env's standalone default of 10) - ADR-022.
-    assert env._initial_width == 2
+    # Calibrated shares build_replay_env, so it deploys the same derived width
+    # (spacing 10 → 12; it previously used lp_env's standalone default of 10).
+    assert env._initial_width == 12
 
 
 def test_env_factory_calibrated_requires_fitted_params(

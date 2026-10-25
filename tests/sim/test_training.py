@@ -22,7 +22,8 @@ import pytest
 from gymnasium import spaces
 from stable_baselines3 import PPO
 
-from undertow.sim.config import EpisodeConfig, SimConfig, TrainingConfig
+from tests.sim.synthetic_pool import tiny_episode
+from undertow.sim.config import SimConfig, TrainingConfig
 from undertow.sim.core.pool import PoolEngine, PoolState, TickState
 from undertow.sim.core.position import calc_sqrt_price_a
 from undertow.sim.env.lp_env import LpEnvironment
@@ -102,7 +103,7 @@ def _training_config(
 ) -> SimConfig:
     """A tiny, fast CPU training config (hundreds of steps, one env by default)."""
     return SimConfig(
-        episode=EpisodeConfig(duration_days=1, step_minutes=10),
+        episode=tiny_episode(duration_days=1, step_minutes=10),
         training=TrainingConfig(
             seeds=seeds,
             total_timesteps=total_timesteps,
@@ -141,7 +142,7 @@ def _real_env_factory(
 ) -> Callable[[], LpEnvironment]:
     """Build a fresh ``LpEnvironment`` on every call (one env per request)."""
     config = SimConfig(
-        episode=EpisodeConfig(duration_days=1, step_minutes=10),
+        episode=tiny_episode(duration_days=1, step_minutes=10),
         seed=0,
     )
 

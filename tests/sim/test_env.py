@@ -18,6 +18,7 @@ import polars as pl
 import pyarrow as pa
 import pytest
 
+from tests.sim.synthetic_pool import tiny_episode
 from undertow.data import (
     EVENT_TAPE_SCHEMA,
     FEE_GROWTH_SCHEMA,
@@ -27,7 +28,7 @@ from undertow.data import (
     tick_to_price,
     tick_to_sqrt_price_x96,
 )
-from undertow.sim.config import EpisodeConfig, HedgeConfig, RewardConfig, SimConfig
+from undertow.sim.config import HedgeConfig, RewardConfig, SimConfig
 from undertow.sim.core.pool import PoolEngine, PoolState, TickState
 from undertow.sim.core.position import calc_sqrt_price_a, initial_deposit
 from undertow.sim.env.lp_env import LpEnvironment
@@ -100,7 +101,7 @@ def _calibrated_env(
 ) -> LpEnvironment:
     """A calibrated-mode env with a bounded, config-driven episode budget."""
     config = SimConfig(
-        episode=EpisodeConfig(
+        episode=tiny_episode(
             duration_days=duration_days, step_minutes=step_minutes
         ),
         price_mode=PriceMode.CALIBRATED,
@@ -125,7 +126,7 @@ def _window_start(
     step_minutes: int = 10,
 ) -> int:
     """Expected ``start_seq`` for a window seed, mirroring ``reset``'s call."""
-    episode = EpisodeConfig(duration_days=duration_days, step_minutes=step_minutes)
+    episode = tiny_episode(duration_days=duration_days, step_minutes=step_minutes)
     config_steps = (duration_days * 24 * 60) // step_minutes
     start_seq, _end_seq = view.build_episode(
         seed, max_steps=config_steps + 1, episode_config=episode
@@ -573,7 +574,7 @@ class TestSpacesAndReset:
     def test_action_space_size(self, tiny_env: LpEnvironment) -> None:
         grid = tiny_env.config.action_grid
         assert tiny_env.action_space.n == 1 + len(grid.center_offsets) * len(grid.widths)
-        assert tiny_env.action_space.n == 55
+        assert tiny_env.action_space.n == 91  # 1 hold + 9 offsets * 10 primary widths
 
     def test_action_index_mapping(self, tiny_env: LpEnvironment) -> None:
         grid = tiny_env.config.action_grid
@@ -871,7 +872,7 @@ class TestEpisodesAndModes:
         ``step_minutes`` and the window is sampled at the env's cadence) — the
         default fixture's hour-spaced bars cannot catch a regression here.
         """
-        config = SimConfig(episode=EpisodeConfig(duration_days=1, step_minutes=10))
+        config = SimConfig(episode=tiny_episode(duration_days=1, step_minutes=10))
         env = LpEnvironment(
             minute_market_view,
             _fresh_pool_engine(),
@@ -1167,7 +1168,7 @@ class TestEquityContinuity:
         entry = 3004.0
         process = _ConstantPriceProcess(entry)
         config = SimConfig(
-            episode=EpisodeConfig(duration_days=1, step_minutes=10),
+            episode=tiny_episode(duration_days=1, step_minutes=10),
             price_mode=PriceMode.CALIBRATED,
         )
         env = LpEnvironment(
@@ -1222,7 +1223,7 @@ class TestEquityContinuity:
             mock_gas_model,
             mock_slippage_model,
             SimConfig(
-                episode=EpisodeConfig(duration_days=1, step_minutes=10),
+                episode=tiny_episode(duration_days=1, step_minutes=10),
                 price_mode=PriceMode.CALIBRATED,
             ),
         )
@@ -1279,7 +1280,7 @@ class TestEquityContinuity:
             mock_gas_model,
             mock_slippage_model,
             SimConfig(
-                episode=EpisodeConfig(duration_days=1, step_minutes=10),
+                episode=tiny_episode(duration_days=1, step_minutes=10),
                 price_mode=PriceMode.CALIBRATED,
             ),
         )
@@ -1315,7 +1316,7 @@ class TestEquityContinuity:
         rebalance; every book term must agree.
         """
         config = SimConfig(
-            episode=EpisodeConfig(
+            episode=tiny_episode(
                 duration_days=1, step_minutes=10, agent_capital_usdc=1.0
             ),
             price_mode=PriceMode.CALIBRATED,
@@ -1385,7 +1386,7 @@ class TestDecisionTimeExecution:
             gas_model,
             slippage_model,
             SimConfig(
-                episode=EpisodeConfig(duration_days=1, step_minutes=10),
+                episode=tiny_episode(duration_days=1, step_minutes=10),
                 price_mode=PriceMode.CALIBRATED,
             ),
         )
@@ -1608,7 +1609,7 @@ class TestValidationAndExhaustion:
         self, tiny_market_view: MarketView, mock_gas_model: object,
         mock_slippage_model: object,
     ) -> None:
-        config = SimConfig(episode=EpisodeConfig(duration_days=0, step_minutes=10))
+        config = SimConfig(episode=tiny_episode(duration_days=0, step_minutes=10))
         env = LpEnvironment(
             tiny_market_view,
             _fresh_pool_engine(),
@@ -1639,7 +1640,7 @@ class TestValidationAndExhaustion:
         self, tiny_market_view: MarketView, mock_gas_model: object,
         mock_slippage_model: object,
     ) -> None:
-        config = SimConfig(episode=EpisodeConfig(duration_days=1, step_minutes=10))
+        config = SimConfig(episode=tiny_episode(duration_days=1, step_minutes=10))
         env = LpEnvironment(
             tiny_market_view,
             _fresh_pool_engine(),
@@ -1668,7 +1669,7 @@ class TestValidationAndExhaustion:
         at the decision state first and the episode then terminates, so the
         turnover is real and gas is charged -- matching the backtester.
         """
-        config = SimConfig(episode=EpisodeConfig(duration_days=1, step_minutes=10))
+        config = SimConfig(episode=tiny_episode(duration_days=1, step_minutes=10))
         env = LpEnvironment(
             tiny_market_view,
             _fresh_pool_engine(),
@@ -1709,7 +1710,7 @@ class TestValidationAndExhaustion:
             mock_gas_model,
             mock_slippage_model,
             SimConfig(
-                episode=EpisodeConfig(duration_days=1, step_minutes=10),
+                episode=tiny_episode(duration_days=1, step_minutes=10),
                 price_mode=PriceMode.CALIBRATED,
             ),
         )
@@ -1960,7 +1961,7 @@ def _seeded_market_view() -> MarketView:
         eval_start_utc=window_times[-1] + timedelta(minutes=1),
         eval_end_utc=window_times[-1] + timedelta(days=1),
         is_train=True,
-        episode_config=EpisodeConfig(duration_days=1, step_minutes=10),
+        episode_config=tiny_episode(duration_days=1, step_minutes=10),
         pool=None,
         pool_state=pool_state,
         warmup=warmup,
@@ -1971,7 +1972,7 @@ def _seeded_env(view: MarketView) -> LpEnvironment:
     from undertow.sim.evaluate.protocol import build_replay_env
 
     config = SimConfig(
-        episode=EpisodeConfig(duration_days=1, step_minutes=10), seed=0
+        episode=tiny_episode(duration_days=1, step_minutes=10), seed=0
     )
     return build_replay_env(view, config)
 
@@ -2178,7 +2179,7 @@ def _hedge_env(
         gas_model,
         slippage_model,
         SimConfig(
-            episode=EpisodeConfig(duration_days=31, step_minutes=10),
+            episode=tiny_episode(duration_days=31, step_minutes=10),
             price_mode=PriceMode.CALIBRATED,
             hedge=HedgeConfig(
                 enabled=enabled,

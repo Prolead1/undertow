@@ -213,8 +213,20 @@ class TestInfo:
     def test_info_action_space_size_is_one_plus_grid(self, tmp_path: Path) -> None:
         result = _run_cli("info", "--output", str(tmp_path))
         assert result.returncode == 0, result.stderr
-        # 1 hold + 9 offsets * 6 widths = 55.
-        assert "action-space size: 55" in result.stdout
+        # 1 hold + 9 offsets * 10 widths = 91 (the primary 0.05 % pool's wider
+        # ladder; spacing 10 needs larger width values than the 0.30 % pool).
+        assert "action-space size: 91" in result.stdout
+
+    def test_defaults_target_the_primary_study_pool(self) -> None:
+        from undertow.sim.cli import DEFAULT_DATA_CONFIG, DEFAULT_SIM_CONFIG
+
+        assert Path("configs/eth_usdc_500.toml") == DEFAULT_DATA_CONFIG
+        assert (REPO_ROOT / DEFAULT_DATA_CONFIG).is_file()
+        # The default sim config carries the primary pool's tier/spacing.
+        from undertow.sim.config import load_sim_config
+
+        config = load_sim_config(REPO_ROOT / DEFAULT_SIM_CONFIG)
+        assert (config.episode.fee_tier_bps, config.episode.tick_spacing) == (500, 10)
 
     def test_info_reports_parity_when_report_present(self, tmp_path: Path) -> None:
         report = {
@@ -471,22 +483,24 @@ class TestDocs:
         # The snapshot prerequisite is stated.
         assert "undertow-data snapshot" in text
 
-    def test_readme_has_sim_status_section(self) -> None:
+    def test_readme_introduces_the_project_and_links_the_guides(self) -> None:
         readme = REPO_ROOT / "README.md"
         text = readme.read_text(encoding="utf-8")
-        assert "`undertow.sim` — Simulator, Backtester & RL Environment" in text
-        for artifact in (
-            "Simulator (Gymnasium env)",
-            "Backtester (on-chain replay)",
-            "PPO training harness",
-            "Baseline ladder",
-            "Parity validation",
-            "RQ1 ablation runner",
-            "RQ2 regime evaluation",
-            "RQ3 gap analysis",
+        assert "Friction-aware reinforcement learning" in text
+        for package in ("undertow.data", "undertow.sim", "undertow.ui"):
+            assert package in text
+        for command in (
+            "undertow-data fetch-data",
+            "undertow-sim backtest",
+            "undertow-sim train",
+            "undertow-sim evaluate",
+            "undertow-ui serve",
         ):
-            assert artifact in text
+            assert command in text
+        for rq in ("RQ1", "RQ2", "RQ3"):
+            assert rq in text
         assert "docs/running_experiments.md" in text
+        assert "docs/running_the_dashboard.md" in text
 
 
 # ---------------------------------------------------------------------------
@@ -570,6 +584,18 @@ class TestCliInternals:
         )
         policy = _CheckpointPolicy(model, tiny_env.config)
         assert policy.name == "ppo"
+
+    def test_checkpoint_policy_rejects_a_mismatched_action_grid(
+        self, tiny_env: object
+    ) -> None:
+        """ADR-011's grid is config-driven; a stale checkpoint must not be
+        silently remapped to different bands."""
+        import types
+
+        model = _StubModel()
+        model.action_space = types.SimpleNamespace(n=tiny_env.n_actions + 1)
+        with pytest.raises(CliError, match="action grid"):
+            _CheckpointPolicy(model, tiny_env.config)
 
     def test_calibrated_env_factory_builds_calibrated_env(
         self, tiny_market_view: object

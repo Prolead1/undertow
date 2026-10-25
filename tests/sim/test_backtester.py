@@ -16,6 +16,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from tests.sim.synthetic_pool import tiny_episode
 from undertow.data import price_to_tick, tick_to_price, tick_to_sqrt_price_x96
 from undertow.sim.backtest import (
     DECISION_LOG_COLUMNS,
@@ -27,7 +28,6 @@ from undertow.sim.backtest import (
     summarize_backtest,
 )
 from undertow.sim.config import (
-    EpisodeConfig,
     GasConfig,
     HedgeConfig,
     SimConfig,
@@ -57,6 +57,28 @@ _DEFAULT_LOWER = (ENTRY_TICK - 120) // TICK_SPACING * TICK_SPACING
 _DEFAULT_UPPER = -((-(ENTRY_TICK + 120)) // TICK_SPACING) * TICK_SPACING
 #: Uniswap fee pips for the 0.30% USDC/WETH pool (ADR-012).
 _FEE_PIPS = 3000
+
+#: ``SimConfig`` pinned to the synthetic 0.30 %/spacing-60 golden tapes in this
+#: module.  The library defaults now target the primary 0.05 % study pool, so
+#: these tests state the contrast pool explicitly.
+_PINNED_SIM_CONFIG = SimConfig(
+    episode=tiny_episode(fee_tier_bps=_FEE_PIPS, tick_spacing=TICK_SPACING)
+)
+
+
+def test_resolve_pool_prefers_the_registry_then_the_primary_pool() -> None:
+    """A hand-built view (no ``PoolConfig``) resolves its tier against the
+    registry; an unmatched tier falls back to the primary 0.05 % identity."""
+    from undertow.data.config import default_pools
+    from undertow.sim.backtest.engine import _resolve_pool
+
+    pools = default_pools()
+    view = _flat_view()
+    assert _resolve_pool(view, _PINNED_SIM_CONFIG) == pools["USDC_WETH_3000"]
+    primary = SimConfig(episode=tiny_episode(fee_tier_bps=500, tick_spacing=10))
+    assert _resolve_pool(view, primary) == pools["USDC_WETH_500"]
+    unmatched = SimConfig(episode=tiny_episode(fee_tier_bps=1234, tick_spacing=7))
+    assert _resolve_pool(view, unmatched) == pools["USDC_WETH_500"]
 
 
 def _initial_position() -> object:
@@ -205,7 +227,7 @@ def _flat_view(**kwargs: object) -> MarketView:
 
 
 def test_hodl_backtest_completes(tiny_market_view: MarketView) -> None:
-    ledger = run_backtest(HODLPolicy(), tiny_market_view, SimConfig())
+    ledger = run_backtest(HODLPolicy(), tiny_market_view, _PINNED_SIM_CONFIG)
     assert isinstance(ledger, BacktestLedger)
     assert ledger.policy_name == "hodl"
     assert ledger.split == "train"
@@ -213,7 +235,9 @@ def test_hodl_backtest_completes(tiny_market_view: MarketView) -> None:
 
 
 def test_ledger_frames_non_empty_with_rebalancing_policy() -> None:
-    ledger = run_backtest(PassiveNarrowPolicy(), _flat_view(), SimConfig())
+    ledger = run_backtest(
+        PassiveNarrowPolicy(tick_spacing=TICK_SPACING), _flat_view(), _PINNED_SIM_CONFIG
+    )
     assert ledger.equity_curve.height > 0
     assert ledger.decision_log.height > 0
     assert ledger.cost_ledger.height > 0  # PassiveNarrow rebalances at t=0
@@ -230,7 +254,7 @@ def test_equity_curve_columns_exact(tiny_ledger: BacktestLedger) -> None:
 
 def test_disabled_hedge_keeps_the_ledger_schema(tiny_market_view: MarketView) -> None:
     """The default (disabled) run is byte-identical to the LP-only path."""
-    ledger = run_backtest(HODLPolicy(), tiny_market_view, SimConfig())
+    ledger = run_backtest(HODLPolicy(), tiny_market_view, _PINNED_SIM_CONFIG)
     assert ledger.hedge_curve is None
     assert tuple(ledger.decision_log.columns) == DECISION_LOG_COLUMNS
     assert tuple(ledger.equity_curve.columns) == EQUITY_CURVE_COLUMNS
@@ -326,7 +350,7 @@ def test_hedge_observation_features_are_gated_by_enabled() -> None:
 
     disabled_spy = _CapturePolicy()
     enabled_spy = _CapturePolicy()
-    run_backtest(disabled_spy, view, SimConfig())  # type: ignore[arg-type]
+    run_backtest(disabled_spy, view, _PINNED_SIM_CONFIG)  # type: ignore[arg-type]
     run_backtest(  # type: ignore[arg-type]
         enabled_spy,
         view,
@@ -358,7 +382,9 @@ def test_hodl_decision_log_is_all_holds(tiny_ledger: BacktestLedger) -> None:
 
 
 def test_passive_narrow_rebalances_first_decision_then_holds() -> None:
-    ledger = run_backtest(PassiveNarrowPolicy(), _flat_view(), SimConfig())
+    ledger = run_backtest(
+        PassiveNarrowPolicy(tick_spacing=TICK_SPACING), _flat_view(), _PINNED_SIM_CONFIG
+    )
     actions = ledger.decision_log["action_type"].to_list()
     assert actions[0] == "rebalance"
     assert set(actions[1:]) == {"hold"}
@@ -394,7 +420,7 @@ def test_hodl_return_matches_manual_benchmark() -> None:
     # A rising reference price exercises the HODL mark-to-market.
     prices = [_ENTRY_PRICE * (1.0 + 0.001 * i) for i in range(12)]
     view = _market_view(minutes=minutes, prices=prices)
-    ledger = run_backtest(HODLPolicy(), view, SimConfig())
+    ledger = run_backtest(HODLPolicy(), view, _PINNED_SIM_CONFIG)
 
     lower = (ENTRY_TICK - 120) // TICK_SPACING * TICK_SPACING
     upper = -((-(ENTRY_TICK + 120)) // TICK_SPACING) * TICK_SPACING
@@ -497,7 +523,7 @@ def test_decomposition_net_equals_excess_for_rebalancing_policy() -> None:
     prices = [_ENTRY_PRICE * (1.0 + 0.005 * i) for i in range(8)]
     ticks = [int(price_to_tick(Decimal(str(p)), DEC0, DEC1)) for p in prices]
     view = _market_view(minutes=[i * 60 for i in range(8)], prices=prices, ticks=ticks)
-    ledger = run_backtest(_RebalanceEveryStep(width=5), view, SimConfig())
+    ledger = run_backtest(_RebalanceEveryStep(width=5), view, _PINNED_SIM_CONFIG)
     result = summarize_backtest(ledger)
     assert ledger.pnl_decomposition["net"] == pytest.approx(
         result.excess_vs_hodl, rel=1e-6, abs=1e-3
@@ -565,7 +591,7 @@ def test_fee_accrual_is_exact_integer_q128() -> None:
         fg0=[0, 0, inc, inc],
         fg1=[0, 0, 0, 0],
     )
-    ledger = run_backtest(HODLPolicy(), view, SimConfig())
+    ledger = run_backtest(HODLPolicy(), view, _PINNED_SIM_CONFIG)
     position_liquidity = int(round(_initial_position().liquidity))
     expected_raw = (position_liquidity * inc) >> 128
     expected_fee = expected_raw / 10**DEC0
@@ -649,7 +675,7 @@ def test_hodl_credits_the_first_tape_event_fee() -> None:
     )
     view = replace(view, pool=pool, pool_state=state)
 
-    ledger = run_backtest(HODLPolicy(), view, SimConfig())
+    ledger = run_backtest(HODLPolicy(), view, _PINNED_SIM_CONFIG)
     position_liquidity = int(round(deployed.liquidity))
     expected_raw = (position_liquidity * inc) >> 128
     expected_fee = expected_raw / 10**DEC0
@@ -697,7 +723,7 @@ def test_fees_only_accrue_while_in_range() -> None:
         ticks=[ENTRY_TICK, far_tick, far_tick],
         fg0=[0, delta, delta],
     )
-    ledger = run_backtest(HODLPolicy(), view, SimConfig())
+    ledger = run_backtest(HODLPolicy(), view, _PINNED_SIM_CONFIG)
     assert ledger.equity_curve["fees"].sum() == pytest.approx(0.0)
 
 
@@ -724,7 +750,7 @@ def test_exact_path_handles_a_crossed_boundary() -> None:
         liquidity_amounts=[None, lp, None],
         fg1=[0, 0, inc],
     )
-    ledger = run_backtest(HODLPolicy(), view, SimConfig())
+    ledger = run_backtest(HODLPolicy(), view, _PINNED_SIM_CONFIG)
     position_liquidity = int(round(_initial_position().liquidity))
     expected_raw = (position_liquidity * inc) >> 128
     expected_fee = expected_raw / 10**DEC1 * _ENTRY_PRICE  # token1 (WETH) fees
@@ -769,7 +795,7 @@ def test_exact_path_ignores_null_derived_global_columns() -> None:
         fg0=[None, None, None],
         fg1=[None, None, None],
     )
-    ledger = run_backtest(HODLPolicy(), view, SimConfig())
+    ledger = run_backtest(HODLPolicy(), view, _PINNED_SIM_CONFIG)
     position_liquidity = int(round(_initial_position().liquidity))
     expected = ((position_liquidity * inc) >> 128) / 10**DEC0
     assert ledger.equity_curve["fees"][2] == pytest.approx(expected, rel=1e-12)
@@ -792,7 +818,7 @@ def test_mint_initializing_a_synthetic_boundary_does_not_windfall() -> None:
         tick_uppers=[None, ENTRY_TICK + 60, None, _DEFAULT_UPPER],
         liquidity_amounts=[None, lp, None, lp],
     )
-    ledger = run_backtest(HODLPolicy(), view, SimConfig())
+    ledger = run_backtest(HODLPolicy(), view, _PINNED_SIM_CONFIG)
     fees = ledger.equity_curve["fees"].to_list()
     # The boundary-initialising mint adds no growth, so it credits nothing and
     # never produces the wrapped-negative windfall.
@@ -810,7 +836,7 @@ def test_all_null_fee_growth_accrues_nothing() -> None:
         fg0=[None, None, None],
         fg1=[None, None, None],
     )
-    ledger = run_backtest(HODLPolicy(), view, SimConfig())
+    ledger = run_backtest(HODLPolicy(), view, _PINNED_SIM_CONFIG)
     assert ledger.equity_curve["fees"].sum() == pytest.approx(0.0)
 
 
@@ -834,7 +860,7 @@ def test_equity_change_reconciles_with_decomposition_each_step() -> None:
         fg0=[0, 0, 0, 0],
         fg1=[0, delta, delta, delta],
     )
-    ledger = run_backtest(_RebalanceEveryStep(width=5), view, SimConfig())
+    ledger = run_backtest(_RebalanceEveryStep(width=5), view, _PINNED_SIM_CONFIG)
 
     # Reconstruct the fixed initial buy-and-hold basket exactly as run_backtest did.
     entry_tick = ticks[0]
@@ -887,7 +913,7 @@ def test_fee_revaluation_keeps_net_equals_excess() -> None:
         tick_uppers=[None, _DEFAULT_UPPER, None, None],
         liquidity_amounts=[None, lp, None, None],
     )
-    ledger = run_backtest(HODLPolicy(), view, SimConfig())
+    ledger = run_backtest(HODLPolicy(), view, _PINNED_SIM_CONFIG)
     result = summarize_backtest(ledger)
     fees = ledger.equity_curve["fees"].to_list()
     assert fees[2] > 0.0  # real WETH fee accrual at row 2
@@ -908,7 +934,7 @@ def test_decision_cadence_respected() -> None:
         minutes=[0, 40, 80, 120],
         prices=[_ENTRY_PRICE] * 4,
     )
-    config = SimConfig(episode=EpisodeConfig(step_minutes=60))
+    config = SimConfig(episode=tiny_episode(step_minutes=60))
     ledger = run_backtest(HODLPolicy(), view, config)
     assert ledger.decision_log.height == 2
     assert ledger.equity_curve.height == 4  # equity still recorded per event
@@ -916,14 +942,14 @@ def test_decision_cadence_respected() -> None:
 
 def test_gas_only_charged_on_rebalance_steps() -> None:
     view = _flat_view()
-    ledger = run_backtest(PassiveNarrowPolicy(), view, SimConfig())
+    ledger = run_backtest(PassiveNarrowPolicy(tick_spacing=TICK_SPACING), view, _PINNED_SIM_CONFIG)
     frame = ledger.equity_curve
     gas = frame["gas"].to_list()
     # PassiveNarrow rebalances exactly once (step 0), so exactly one non-zero gas.
     assert sum(1 for g in gas if g != 0.0) == 1
     assert gas[0] < 0.0
 
-    calc = GasCostCalculator(SimConfig().gas)
+    calc = GasCostCalculator(_PINNED_SIM_CONFIG.gas)
     expected_gas = calc.gas_cost_usdc(
         "rebalance", 0, 20 * 10**9, 10**9, _ENTRY_PRICE
     )
@@ -934,7 +960,7 @@ def test_gas_only_charged_on_rebalance_steps() -> None:
 
 def test_slippage_only_charged_on_rebalance_steps() -> None:
     view = _flat_view()
-    ledger = run_backtest(PassiveNarrowPolicy(), view, SimConfig())
+    ledger = run_backtest(PassiveNarrowPolicy(tick_spacing=TICK_SPACING), view, _PINNED_SIM_CONFIG)
     slippage = ledger.equity_curve["slippage"].to_list()
     assert sum(1 for s in slippage if s != 0.0) == 1
     assert slippage[0] < 0.0
@@ -964,7 +990,9 @@ def test_slippage_only_charged_on_rebalance_steps() -> None:
 
 
 def test_cost_ledger_records_matching_cost_types() -> None:
-    ledger = run_backtest(PassiveNarrowPolicy(), _flat_view(), SimConfig())
+    ledger = run_backtest(
+        PassiveNarrowPolicy(tick_spacing=TICK_SPACING), _flat_view(), _PINNED_SIM_CONFIG
+    )
     types = ledger.cost_ledger["cost_type"].to_list()
     assert "gas" in types and "slippage" in types
     amounts = ledger.cost_ledger["amount_usdc"].to_list()
@@ -998,7 +1026,7 @@ def test_balanced_recentre_charges_no_slippage() -> None:
     # (center_offset=0, width=2) action at ENTRY_TICK, so rebalancing onto that
     # band swaps zero inventory.  The old full-position-value charge made this
     # balanced recentre the worst case; it must now cost ~0.
-    ledger = run_backtest(_RebalanceEveryStep(width=2), _flat_view(), SimConfig())
+    ledger = run_backtest(_RebalanceEveryStep(width=2), _flat_view(), _PINNED_SIM_CONFIG)
     slippage = ledger.equity_curve["slippage"].to_list()
     assert sum(1 for s in slippage if s != 0.0) > 0  # rebalances did execute
     assert all(s == pytest.approx(0.0, abs=1e-9) for s in slippage)
@@ -1008,7 +1036,7 @@ def test_env_and_backtester_agree_on_rebalance_slippage() -> None:
     # S18: both call sites must request the same swapped imbalance from the
     # same model for the same pre-rebalance position, target band and mark.
     view = _flat_view()
-    config = SimConfig()
+    config = _PINNED_SIM_CONFIG
     action = Action(action_type="rebalance", center_offset=0, width=10)
 
     # Backtester: the default ±120-tick position is recentred at row 0.
@@ -1071,7 +1099,7 @@ def test_rebalance_carries_equity_forward() -> None:
     ticks = [int(price_to_tick(Decimal(str(p)), DEC0, DEC1)) for p in prices]
     view = _market_view(minutes=[i * 60 for i in range(6)], prices=prices, ticks=ticks)
     free = SimConfig(
-        episode=EpisodeConfig(fee_tier_bps=0, step_minutes=60),
+        episode=tiny_episode(fee_tier_bps=0, step_minutes=60),
         gas=GasConfig(
             mint_units=0, burn_units=0, collect_units=0, rebalance_swap_units=0
         ),
@@ -1099,7 +1127,7 @@ def test_rebalance_collects_accrued_fees() -> None:
         tick_uppers=[_DEFAULT_UPPER, None, None],
         liquidity_amounts=[lp, None, None],
     )
-    config = SimConfig(episode=EpisodeConfig(step_minutes=60))
+    config = SimConfig(episode=tiny_episode(step_minutes=60))
     ledger = run_backtest(_RebalanceEveryStep(), view, config)
     collected = ledger.decision_log["fees_collected"].to_list()
     assert collected[0] == 0.0  # no growth at the first decision
@@ -1135,7 +1163,7 @@ def test_policy_update_is_never_called() -> None:
         def __init__(self) -> None:
             self.act_calls = 0
             self.update_calls = 0
-            self._inner = PassiveNarrowPolicy()
+            self._inner = PassiveNarrowPolicy(tick_spacing=TICK_SPACING)
 
         @property
         def name(self) -> str:
@@ -1154,7 +1182,7 @@ def test_policy_update_is_never_called() -> None:
             raise AssertionError("the backtester must never call update()")
 
     spy = _SpyPolicy()
-    ledger = run_backtest(spy, _flat_view(), SimConfig())  # type: ignore[arg-type]
+    ledger = run_backtest(spy, _flat_view(), _PINNED_SIM_CONFIG)  # type: ignore[arg-type]
     assert spy.act_calls == ledger.decision_log.height
     assert spy.update_calls == 0
 
@@ -1167,7 +1195,7 @@ def test_policy_update_is_never_called() -> None:
 def test_tau_reset_policy_runs_on_volatile_tape() -> None:
     prices = [_ENTRY_PRICE * (1.0 + 0.002 * ((-1) ** i) * (i + 1)) for i in range(20)]
     view = _market_view(minutes=[i * 10 for i in range(20)], prices=prices)
-    ledger = run_backtest(TauResetPolicy(120), view, SimConfig())
+    ledger = run_backtest(TauResetPolicy(120, tick_spacing=TICK_SPACING), view, _PINNED_SIM_CONFIG)
     assert ledger.equity_curve.height == 20
     assert set(ledger.decision_log["action_type"].to_list()) <= {"hold", "rebalance"}
 
@@ -1179,8 +1207,8 @@ def test_gas_price_uses_tape_columns() -> None:
         base_fee=42 * 10**9,
         priority_fee=0,
     )
-    ledger = run_backtest(PassiveNarrowPolicy(), view, SimConfig())
-    calc = GasCostCalculator(SimConfig().gas)
+    ledger = run_backtest(PassiveNarrowPolicy(tick_spacing=TICK_SPACING), view, _PINNED_SIM_CONFIG)
+    calc = GasCostCalculator(_PINNED_SIM_CONFIG.gas)
     expected = calc.gas_cost_usdc("rebalance", 0, 42 * 10**9, 0, _ENTRY_PRICE)
     assert ledger.equity_curve["gas"][0] == pytest.approx(-expected, rel=1e-12)
 
@@ -1206,15 +1234,15 @@ def test_missing_tape_column_raises_backtest_error() -> None:
         is_train=True,
     )
     with pytest.raises(BacktestError, match="missing"):
-        run_backtest(HODLPolicy(), broken, SimConfig())
+        run_backtest(HODLPolicy(), broken, _PINNED_SIM_CONFIG)
 
 
 def test_unaffordable_rebalance_is_rejected_and_recorded() -> None:
     # A $1 position cannot pay the rebalance gas; on-chain the trade reverts.
     # The backtester records the rejection and keeps the position, instead of
     # aborting the whole evaluation (the old ``raise BacktestError`` behaviour).
-    config = SimConfig(episode=EpisodeConfig(agent_capital_usdc=1.0))
-    ledger = run_backtest(PassiveNarrowPolicy(), _flat_view(), config)
+    config = SimConfig(episode=tiny_episode(agent_capital_usdc=1.0))
+    ledger = run_backtest(PassiveNarrowPolicy(tick_spacing=TICK_SPACING), _flat_view(), config)
     actions = ledger.decision_log["action_type"].to_list()
     assert actions[0] == "rebalance_rejected"
     assert set(actions[1:]) == {"hold"}
@@ -1233,7 +1261,7 @@ def test_empty_tape_raises_backtest_error(monkeypatch: pytest.MonkeyPatch) -> No
     empty = view.train.clear()
     monkeypatch.setattr(MarketView, "active_split_data", lambda self: empty)
     with pytest.raises(BacktestError, match="no tape rows"):
-        run_backtest(HODLPolicy(), view, SimConfig())
+        run_backtest(HODLPolicy(), view, _PINNED_SIM_CONFIG)
 
 
 def test_no_usable_reference_price_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1257,7 +1285,7 @@ def test_no_usable_reference_price_raises(monkeypatch: pytest.MonkeyPatch) -> No
     )
     monkeypatch.setattr(MarketView, "reference_close", lambda self, at_time: None)
     with pytest.raises(BacktestError, match="no usable reference price"):
-        run_backtest(HODLPolicy(), broken, SimConfig())
+        run_backtest(HODLPolicy(), broken, _PINNED_SIM_CONFIG)
 
 
 def test_backtest_observation_to_vector_is_stable() -> None:
@@ -1343,7 +1371,7 @@ def test_observation_rolling_features_use_reference_bars_not_events() -> None:
             return Action(action_type="hold")
 
     spy = _CapturePolicy()
-    run_backtest(spy, view, SimConfig())  # type: ignore[arg-type]
+    run_backtest(spy, view, _PINNED_SIM_CONFIG)  # type: ignore[arg-type]
 
     # At the decision at minute 10k the visible closes are reference bars
     # 0..k-1 (the bar opening at minute 10k closes one minute later).
@@ -1371,9 +1399,9 @@ def test_no_lookahead_from_future_tape_rows() -> None:
     future_prices = [_ENTRY_PRICE] * 4 + [_ENTRY_PRICE * 2.0] * 4
     future_view = _market_view(minutes=minutes, prices=future_prices)
 
-    for policy in (HODLPolicy(), PassiveNarrowPolicy()):
-        base = run_backtest(policy, base_view, SimConfig())
-        changed = run_backtest(policy, future_view, SimConfig())
+    for policy in (HODLPolicy(), PassiveNarrowPolicy(tick_spacing=TICK_SPACING)):
+        base = run_backtest(policy, base_view, _PINNED_SIM_CONFIG)
+        changed = run_backtest(policy, future_view, _PINNED_SIM_CONFIG)
         assert base.equity_curve.head(4).equals(changed.equity_curve.head(4))
         assert base.decision_log.head(4).equals(changed.decision_log.head(4))
 
@@ -1393,7 +1421,7 @@ def test_backtest_rejects_a_pool_state_snapshot_off_the_window_edge(
     bogus = pl.DataFrame({"block_number": [first_block]})
     view = replace(tiny_market_view, pool_state=bogus)
     with pytest.raises(BacktestError, match="pool-state snapshot"):
-        run_backtest(HODLPolicy(), view, SimConfig())
+        run_backtest(HODLPolicy(), view, _PINNED_SIM_CONFIG)
 
 
 def test_backtest_seeds_from_a_matching_pool_state_snapshot(
@@ -1429,7 +1457,7 @@ def test_backtest_seeds_from_a_matching_pool_state_snapshot(
         }
     )
     view = replace(tiny_market_view, pool=pool, pool_state=state)
-    ledger = run_backtest(HODLPolicy(), view, SimConfig())
+    ledger = run_backtest(HODLPolicy(), view, _PINNED_SIM_CONFIG)
     assert ledger.n_steps > 0
     # The seeded replay is exact (no approximation flagged).
     assert ledger.fee_growth_exact is True
@@ -1483,7 +1511,7 @@ def test_observation_liquidity_is_the_replayed_pool_state(
             return Action(action_type="hold")
 
     spy = _CapturePolicy()
-    run_backtest(spy, view, SimConfig())  # type: ignore[arg-type]
+    run_backtest(spy, view, _PINNED_SIM_CONFIG)  # type: ignore[arg-type]
     # The tiny tape's own ``liquidity`` column is str(2**80); the observation
     # must use the snapshot-seeded replay state instead.
     assert spy.observations[0].pool_active_liquidity == pytest.approx(12345.0)
@@ -1533,5 +1561,5 @@ def test_backtest_warms_up_a_sliced_window_from_the_lane_snapshot(
     view = replace(tiny_market_view, pool=pool, pool_state=state)
     sub = view.slice(100, 300)
     assert sub.warmup is not None and sub.warmup.height == 100
-    ledger = run_backtest(HODLPolicy(), sub, SimConfig())
+    ledger = run_backtest(HODLPolicy(), sub, _PINNED_SIM_CONFIG)
     assert ledger.n_steps > 0
