@@ -366,11 +366,10 @@ def _build_base_tape(streams: Mapping[str, pa.Table]) -> pa.Table:
         validate_table(table, stream_schema, strict=True)
         parts.append(_cast_stream_to_base(table, event_type.value))
 
-    base = (
-        pa.concat_tables(parts)
-        .sort_by([("block_number", "ascending"), ("log_index", "ascending")])
-        .select(list(_BASE_TAPE_COLUMNS))  # key columns + payload, in §4.8 order
-    )
+    base = pa.concat_tables(parts)
+    base = base.sort_by(
+        [("block_number", "ascending"), ("log_index", "ascending")]
+    ).select(list(_BASE_TAPE_COLUMNS))  # key columns + payload, in §4.8 order
 
     # T18: the subgraph can serve both branches of an orphaned fork, letting two
     # different streams claim one key. Resolve those deterministically (and loudly)
@@ -671,6 +670,9 @@ def build_event_tape(
     frame = frame.with_columns(pl.int_range(0, pl.len()).alias("seq"))
 
     tape = frame.to_arrow()
+    # Arrow shares the column buffers with the polars frame, so the DataFrame is
+    # no longer needed and its own structures can go before the final checks.
+    del frame
     # Re-assert merge-key uniqueness on the FULLY assembled tape, not just the base
     # four-stream union: a schema-valid ``gas`` table could carry a duplicate
     # ``block_number`` (Arrow schemas express no uniqueness), which the ``left``

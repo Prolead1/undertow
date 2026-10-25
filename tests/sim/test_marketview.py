@@ -18,7 +18,12 @@ import pytest
 
 from undertow.data import FUNDING_SCHEMA, DataConfig, ValidationError
 from undertow.sim.config import EpisodeConfig, SplitConfig
-from undertow.sim.marketview import MarketView, _sort, build_market_view
+from undertow.sim.marketview import (
+    _SIM_TAPE_COLUMNS,
+    MarketView,
+    _sort,
+    build_market_view,
+)
 from undertow.sim.types import LookAheadError, MarketViewError
 
 _TINY_TRAIN_START = datetime(2022, 1, 1, tzinfo=UTC)
@@ -606,6 +611,81 @@ class TestBuildMarketView:
         assert isinstance(view.gas, pl.DataFrame)
         assert view.step_count() == tiny_market_view.step_count()
         assert view.train_start_utc == _TINY_TRAIN_START
+
+    def test_projects_fetch_provenance_strings(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tiny_data_config: DataConfig,
+        tiny_market_view: MarketView,
+    ) -> None:
+        """The provenance strings no sim reader touches are dropped at the door,
+        at the Arrow level, before any polars frame exists."""
+        _patch_loaders(monkeypatch, tiny_market_view)
+        view = build_market_view(tiny_data_config, _TINY_SPLIT)
+
+        source_columns = set(tiny_market_view.active_split_data().columns)
+        provenance = {"tx_hash", "pool_address", "sender", "recipient"}
+        assert provenance <= source_columns  # the fixture carries them
+
+        projected = view.active_split_data().columns
+        assert set(projected) == set(_SIM_TAPE_COLUMNS) & source_columns
+        assert provenance.isdisjoint(projected)
+        # ``tape_at`` therefore cannot hand a consumer a dropped column either.
+        row = view.tape_at(int(view.active_split_data()["seq"][0]))
+        assert provenance.isdisjoint(row)
+        assert {"event_type", "tick_lower", "liquidity_amount"} <= set(row)
+
+    def test_purges_the_arrow_arena_after_the_build(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tiny_data_config: DataConfig,
+        tiny_market_view: MarketView,
+    ) -> None:
+        """Arrow's jemalloc arena must be told to decay immediately, or the freed
+        build buffers stay resident for the life of the process."""
+        import undertow.sim.marketview as mv
+
+        calls: list[int] = []
+        monkeypatch.setattr(
+            mv.pa, "jemalloc_set_decay_ms", lambda ms: calls.append(ms), raising=False
+        )
+        _patch_loaders(monkeypatch, tiny_market_view)
+
+        build_market_view(tiny_data_config, _TINY_SPLIT)
+
+        assert calls == [0]
+
+    def test_tolerates_arrow_without_jemalloc_support(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tiny_data_config: DataConfig,
+        tiny_market_view: MarketView,
+    ) -> None:
+        """pyarrow exposes the symbol unconditionally but raises when jemalloc is
+        disabled; an older pyarrow may lack it entirely.  Neither may fail a load."""
+        import undertow.sim.marketview as mv
+
+        def _no_jemalloc(_decay_ms: int) -> None:
+            raise NotImplementedError("jemalloc support is not enabled")
+
+        monkeypatch.setattr(mv.pa, "jemalloc_set_decay_ms", _no_jemalloc)
+        _patch_loaders(monkeypatch, tiny_market_view)
+        assert build_market_view(tiny_data_config, _TINY_SPLIT).step_count() > 0
+
+        monkeypatch.delattr(mv.pa, "jemalloc_set_decay_ms", raising=False)
+        assert build_market_view(tiny_data_config, _TINY_SPLIT).step_count() > 0
+
+    def test_sim_tape_columns_drop_exactly_the_provenance_strings(self) -> None:
+        """The whitelist is deliberately the full tape schema minus four provenance
+        columns; a schema change must force a conscious keep/drop decision."""
+        from undertow.data import EVENT_TAPE_SCHEMA
+
+        assert set(EVENT_TAPE_SCHEMA.names) - set(_SIM_TAPE_COLUMNS) == {
+            "tx_hash",
+            "pool_address",
+            "sender",
+            "recipient",
+        }
 
     def test_empty_train_split_raises(
         self,

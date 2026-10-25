@@ -961,6 +961,23 @@ class TestEpisodesAndModes:
         result = tiny_env.step(0)
         assert len(result) == 5
 
+    def test_replay_decision_row_matches_the_window_frame(
+        self, tiny_env: LpEnvironment
+    ) -> None:
+        """The env keeps the window frame and extracts single rows on demand; the
+        decision row after an interval must equal the row ``to_dicts()`` held."""
+        tiny_env.reset(seed=0)
+        for _ in range(5):
+            tiny_env.step(0)
+            if tiny_env._event_idx:
+                break
+
+        assert tiny_env._ev_window is not None
+        assert tiny_env._event_idx > 0
+        # The row ``to_dicts()`` would have held at the interval's last index.
+        old_style_row = tiny_env._ev_window.to_dicts()[tiny_env._event_idx - 1]
+        assert tiny_env._last_tape_row == old_style_row
+
 
 # ---------------------------------------------------------------------------
 # Position factory sanity (the env funds its initial position correctly)
