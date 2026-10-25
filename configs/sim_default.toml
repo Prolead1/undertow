@@ -1,4 +1,4 @@
-# Default config for undertow.sim.
+# Default config for undertow.sim — the primary USDC/WETH 0.05 % study pool.
 # All sections are optional — missing keys fall back to dataclass defaults.
 # See CONTRACTS.md §2 for the full SimConfig tree.
 
@@ -7,12 +7,14 @@ duration_days = 30
 step_minutes = 10
 agent_capital_usdc = 100000.0
 marginal_agent = true
-fee_tier_bps = 3000
-tick_spacing = 60
+fee_tier_bps = 500
+tick_spacing = 10
 
 [action_grid]
 center_offsets = [-4, -3, -2, -1, 0, 1, 2, 3, 4]
-widths = [1, 2, 5, 10, 25, 50]
+# Widths are half-ranges in tick-spacing units; spacing 10 needs the wider ladder
+# to cover the same price band the 0.30 % contrast pool does at spacing 60.
+widths = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000]
 include_hold = true
 
 [gas]

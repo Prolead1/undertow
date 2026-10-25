@@ -85,7 +85,11 @@ oversubscribe further. The right fix was algorithmic.
 - `build_replay_env` gains an optional `price_process` so calibrated training
   reuses the exact same engine/frictions construction as replay.  That also
   unifies the **initial deployment width**: calibrated training now deploys the
-  parity width 2 (±2 tick spacings at the 0.30% tier), matching replay training,
-  the backtester and the evaluate runner, where it previously used `lp_env`'s
-  standalone default of 10.  The width is pinned by
-  `tests/sim/test_train_envs.py`.
+  parity band, matching replay training, the backtester and the evaluate runner,
+  where it previously used `lp_env`'s standalone default of 10.  The width is
+  derived from the config spacing as
+  ``DEFAULT_INITIAL_HALF_WIDTH_TICKS // tick_spacing`` (2 at the 0.30% tier's
+  spacing 60; 12 at the primary 0.05% pool's spacing 10), so the two instruments
+  start from the same token mix on every pool.  The derivation is pinned by
+  `tests/sim/test_train_envs.py` and
+  `tests/sim/test_validation.py::TestRunParityCheck`.

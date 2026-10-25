@@ -310,7 +310,7 @@ def _resolve_pool(market_view: MarketView, config: SimConfig) -> PoolConfig:
     populated by :func:`~undertow.sim.marketview.build_market_view` from its
     ``DataConfig``).  Hand-built views leave it ``None``; the fallback matches
     the sim's configured fee tier / tick spacing against the pinned pool
-    registry, and otherwise uses the 0.30% USDC/WETH pool as the canonical
+    registry, and otherwise uses the 0.05% USDC/WETH pool as the primary
     identity (the engine always passes the sim's own ``fee_tier_bps`` to
     ``FeeGrowthReplay`` as ``fee_pips``, so an ablation fee tier of 0 is still
     honoured exactly).
@@ -324,7 +324,7 @@ def _resolve_pool(market_view: MarketView, config: SimConfig) -> PoolConfig:
             and pool.tick_spacing == config.episode.tick_spacing
         ):
             return pool
-    return pools["USDC_WETH_3000"]
+    return pools["USDC_WETH_500"]
 
 
 def _periods_per_year(times: list[datetime]) -> int:

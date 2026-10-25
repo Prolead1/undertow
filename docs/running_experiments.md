@@ -15,7 +15,8 @@ that `undertow-data snapshot` already built.
 
 - Python 3.14
 - [`uv`](https://docs.astral.sh/uv/) installed
-- A data snapshot on disk (see below)
+- A data snapshot on disk (see below); the pinned defaults target the primary
+  USDC/WETH **0.05 %** study pool (`configs/eth_usdc_500.toml`)
 
 ## Setup
 
@@ -45,14 +46,14 @@ network; it requires the endpoints' environment variables):
 > are only needed for the snapshot itself.
 
 ```bash
-export GRAPH_API_KEY=...      # required by configs/eth_usdc_3000.toml
+export GRAPH_API_KEY=...      # required by configs/eth_usdc_500.toml
 export ETH_RPC_URL=...        # archive node URL
-uv run undertow-data snapshot --config configs/eth_usdc_3000.toml
+uv run undertow-data snapshot --config configs/eth_usdc_500.toml
 ```
 
 The snapshot lands in the `[paths].output_dir` recorded in that config
-(`data/datasets/eth_usdc_3000` by default). The sim CLI reads it via
-`--data-config` (default: `configs/eth_usdc_3000.toml`).
+(`data/datasets/eth_usdc_500` by default — the primary study pool). The sim CLI
+reads it via `--data-config` (default: `configs/eth_usdc_500.toml`).
 
 ---
 

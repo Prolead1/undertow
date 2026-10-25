@@ -33,11 +33,11 @@ if TYPE_CHECKING:
     from undertow.sim.env.observations import Observation
     from undertow.sim.frictions.gas import GasModel
 
-# Default tick spacing for the pinned USDC/WETH 0.30 % pool.  Mirrors
+# Default tick spacing for the primary USDC/WETH 0.05 % study pool.  Mirrors
 # ``undertow.sim.config.EpisodeConfig.tick_spacing``; policies that must convert a
 # tick width into the action grid's tick-spacing units take this as a keyword-only
 # override (PLAN.md §0.2 allows additive keyword-only arguments).
-DEFAULT_TICK_SPACING: int = 60
+DEFAULT_TICK_SPACING: int = 10
 
 # Half-width, in tick-spacings, that spans the widest *snapped* range that stays
 # inside ``MIN_TICK..MAX_TICK`` at the default spacing.  The factored ``Action``

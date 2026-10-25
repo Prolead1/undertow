@@ -42,14 +42,18 @@ class EpisodeConfig:
     step_minutes: int = 10  # decision cadence
     agent_capital_usdc: float = 100_000.0
     marginal_agent: bool = True  # agent liquidity never moves the price path
-    fee_tier_bps: int = 3000  # 0.30% default for WETH/USDC
-    tick_spacing: int = 60
+    fee_tier_bps: int = 500  # 0.05% default: the primary USDC/WETH study pool
+    tick_spacing: int = 10
 
 
 @dataclass(frozen=True, slots=True)
 class ActionGridConfig:
     center_offsets: Sequence[int] = (-4, -3, -2, -1, 0, 1, 2, 3, 4)
-    widths: Sequence[int] = (1, 2, 5, 10, 25, 50)
+    #: Widths are half-ranges in tick-spacing units.  The ladder matches the
+    #: primary 0.05 % pool's spacing-10 grid (``configs/sim_default.toml``):
+    #: larger values are needed than at the 0.30 % contrast pool's spacing 60 to
+    #: cover the same price band.
+    widths: Sequence[int] = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000)
     include_hold: bool = True
 
     def __post_init__(self) -> None:

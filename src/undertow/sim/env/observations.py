@@ -94,7 +94,7 @@ class Observation:
 
     # -- Pool --
     pool_active_liquidity: float
-    pool_fee_tier_bps: int  # Uniswap pips (3000 = 0.30%; ADR-012)
+    pool_fee_tier_bps: int  # Uniswap pips (500 = 0.05% primary; ADR-012)
 
     # -- Costs --
     gas_price_recent_wei: float  # recent base_fee + priority_fee

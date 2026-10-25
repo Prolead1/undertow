@@ -19,7 +19,8 @@ import polars as pl
 import pytest
 from gymnasium import spaces
 
-from undertow.sim.config import EpisodeConfig, SimConfig, TrainingConfig
+from tests.sim.synthetic_pool import tiny_episode
+from undertow.sim.config import SimConfig, TrainingConfig
 from undertow.sim.train import RolloutRecorder, ppo_runner, train_single_seed
 from undertow.sim.train.rollouts import ROLLOUT_SCHEMA, rows_from_env
 from undertow.sim.types import Action
@@ -255,7 +256,7 @@ def _training_config(
     total_timesteps: int = 64,
 ) -> SimConfig:
     return SimConfig(
-        episode=EpisodeConfig(duration_days=1, step_minutes=10),
+        episode=tiny_episode(duration_days=1, step_minutes=10),
         training=TrainingConfig(
             seeds=(0,),
             total_timesteps=total_timesteps,
@@ -381,7 +382,7 @@ def _real_env_factory(
     from undertow.sim.types import Tick
 
     config = SimConfig(
-        episode=EpisodeConfig(duration_days=31, step_minutes=10), seed=0
+        episode=tiny_episode(duration_days=31, step_minutes=10), seed=0
     )
 
     def factory() -> gym.Env:

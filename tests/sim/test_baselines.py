@@ -16,6 +16,7 @@ import pytest
 from undertow.data import MAX_TICK, MIN_TICK, tick_to_price
 from undertow.sim.core.position import DEFAULT_DEC0, DEFAULT_DEC1
 from undertow.sim.policies import (
+    DEFAULT_TICK_SPACING,
     FULL_RANGE_WIDTH,
     CostAwareRebalancePolicy,
     FullRangeV2Policy,
@@ -30,6 +31,9 @@ from undertow.sim.policies.base import HOLDAction
 ENTRY_TICK = 196242
 ENTRY_PRICE = float(tick_to_price(ENTRY_TICK, DEFAULT_DEC0, DEFAULT_DEC1))
 TICK_SPACING = 60
+#: Full-range half-width in spacing units for the synthetic 60-spacing pool
+#: (``FULL_RANGE_WIDTH`` is pinned to the library's primary-pool default).
+FULL_RANGE_WIDTH_60: int = int(MAX_TICK) // TICK_SPACING - 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,17 +79,25 @@ def _obs(**kwargs: float | int) -> _StubObservation:
 def _all_policies() -> list[object]:
     return [
         HODLPolicy(),
-        PassiveNarrowPolicy(),
-        PassiveWidePolicy(),
-        FullRangeV2Policy(),
-        TauResetPolicy(120),
-        CostAwareRebalancePolicy(120, 144, _FakeGasModel(5.0)),
+        PassiveNarrowPolicy(tick_spacing=TICK_SPACING),
+        PassiveWidePolicy(tick_spacing=TICK_SPACING),
+        FullRangeV2Policy(tick_spacing=TICK_SPACING),
+        TauResetPolicy(120, tick_spacing=TICK_SPACING),
+        CostAwareRebalancePolicy(120, 144, _FakeGasModel(5.0), tick_spacing=TICK_SPACING),
     ]
 
 
 # ---------------------------------------------------------------------------
 # HODL
 # ---------------------------------------------------------------------------
+
+
+def test_default_tick_spacing_matches_the_primary_study_pool() -> None:
+    from undertow.data.config import default_pools
+
+    assert default_pools()["USDC_WETH_500"].tick_spacing == DEFAULT_TICK_SPACING
+    # The public full-range half-width follows the default spacing.
+    assert int(MAX_TICK) // DEFAULT_TICK_SPACING - 1 == FULL_RANGE_WIDTH
 
 
 def test_hodl_always_holds() -> None:
@@ -107,7 +119,7 @@ def test_hodl_accepts_no_rng() -> None:
 
 
 def test_passive_narrow_deploys_then_holds() -> None:
-    policy = PassiveNarrowPolicy()
+    policy = PassiveNarrowPolicy(tick_spacing=TICK_SPACING)
     first = policy.act(_obs())
     assert not first.is_hold()
     assert first.center_offset == 0
@@ -119,17 +131,17 @@ def test_passive_narrow_deploys_then_holds() -> None:
 
 
 def test_passive_wide_is_wider_than_narrow() -> None:
-    narrow = PassiveNarrowPolicy().act(_obs())
-    wide = PassiveWidePolicy().act(_obs())
+    narrow = PassiveNarrowPolicy(tick_spacing=TICK_SPACING).act(_obs())
+    wide = PassiveWidePolicy(tick_spacing=TICK_SPACING).act(_obs())
     assert wide.width > narrow.width
     assert wide.width == 33  # ±20 %
     assert wide.lower_tick(ENTRY_TICK, TICK_SPACING) == 194_220
     assert wide.upper_tick(ENTRY_TICK, TICK_SPACING) == 198_240
-    assert PassiveWidePolicy().name == "passive_wide"
+    assert PassiveWidePolicy(tick_spacing=TICK_SPACING).name == "passive_wide"
 
 
 def test_passive_range_is_tick_snapped() -> None:
-    action = PassiveNarrowPolicy().act(_obs(tick=ENTRY_TICK + 13))
+    action = PassiveNarrowPolicy(tick_spacing=TICK_SPACING).act(_obs(tick=ENTRY_TICK + 13))
     lower = action.lower_tick(ENTRY_TICK + 13, TICK_SPACING)
     upper = action.upper_tick(ENTRY_TICK + 13, TICK_SPACING)
     assert lower % TICK_SPACING == 0
@@ -138,7 +150,7 @@ def test_passive_range_is_tick_snapped() -> None:
 
 
 def test_passive_reset_redeploys() -> None:
-    policy = PassiveNarrowPolicy()
+    policy = PassiveNarrowPolicy(tick_spacing=TICK_SPACING)
     assert not policy.act(_obs()).is_hold()
     assert policy.act(_obs()).is_hold()
     policy.reset()
@@ -151,11 +163,11 @@ def test_passive_reset_redeploys() -> None:
 
 
 def test_full_range_deploys_at_protocol_bounds() -> None:
-    policy = FullRangeV2Policy()
+    policy = FullRangeV2Policy(tick_spacing=TICK_SPACING)
     observation = _obs(tick=ENTRY_TICK)
     action = policy.act(observation)
     assert not action.is_hold()
-    assert action.width == FULL_RANGE_WIDTH
+    assert action.width == FULL_RANGE_WIDTH_60
     assert policy.name == "full_range_v2"
 
     # Exercise the consumer path: the returned Action must resolve to a valid,
@@ -170,7 +182,7 @@ def test_full_range_deploys_at_protocol_bounds() -> None:
 
 @pytest.mark.parametrize("current_tick", [MIN_TICK + 1, 0, ENTRY_TICK, MAX_TICK - 1])
 def test_full_range_resolved_bounds_stay_valid(current_tick: int) -> None:
-    action = FullRangeV2Policy().act(_obs(tick=current_tick))
+    action = FullRangeV2Policy(tick_spacing=TICK_SPACING).act(_obs(tick=current_tick))
     lower = action.lower_tick(current_tick, TICK_SPACING)
     upper = action.upper_tick(current_tick, TICK_SPACING)
     assert MIN_TICK <= lower < upper <= MAX_TICK
@@ -193,7 +205,7 @@ def test_full_range_rejects_spacing_too_large_for_a_range() -> None:
 
 
 def test_full_range_reset_redeploys() -> None:
-    policy = FullRangeV2Policy()
+    policy = FullRangeV2Policy(tick_spacing=TICK_SPACING)
     policy.act(_obs())
     policy.reset()
     assert not policy.act(_obs()).is_hold()
@@ -205,7 +217,7 @@ def test_full_range_reset_redeploys() -> None:
 
 
 def test_tau_reset_deploys_on_first_call() -> None:
-    policy = TauResetPolicy(120)
+    policy = TauResetPolicy(120, tick_spacing=TICK_SPACING)
     action = policy.act(_obs())
     assert not action.is_hold()
     assert action.center_offset == 0
@@ -214,7 +226,7 @@ def test_tau_reset_deploys_on_first_call() -> None:
 
 
 def test_tau_reset_holds_while_in_range() -> None:
-    policy = TauResetPolicy(120)
+    policy = TauResetPolicy(120, tick_spacing=TICK_SPACING)
     policy.act(_obs(tick=ENTRY_TICK))
     # The snapped band is [196080, 196380]; interior ticks must hold.
     for tick in (196_080, 196_200, 196_380):
@@ -222,7 +234,7 @@ def test_tau_reset_holds_while_in_range() -> None:
 
 
 def test_tau_reset_recenters_on_exit() -> None:
-    policy = TauResetPolicy(120)
+    policy = TauResetPolicy(120, tick_spacing=TICK_SPACING)
     policy.act(_obs(tick=ENTRY_TICK))
     exit_tick = 196_500  # above the snapped upper bound 196380
     action = policy.act(_obs(tick=exit_tick, step_in_episode=1))
@@ -237,7 +249,7 @@ def test_tau_reset_recenters_on_exit() -> None:
 
 
 def test_tau_reset_reset_redeploys() -> None:
-    policy = TauResetPolicy(120)
+    policy = TauResetPolicy(120, tick_spacing=TICK_SPACING)
     policy.act(_obs(tick=ENTRY_TICK))
     policy.reset()
     assert not policy.act(_obs(tick=ENTRY_TICK)).is_hold()
@@ -250,7 +262,7 @@ def test_tau_reset_reset_redeploys() -> None:
 
 def test_cost_aware_deploys_unconditionally_on_first_call() -> None:
     gas = _FakeGasModel(1_000_000.0)  # prohibitive gas; first deploy still happens
-    policy = CostAwareRebalancePolicy(120, 144, gas)
+    policy = CostAwareRebalancePolicy(120, 144, gas, tick_spacing=TICK_SPACING)
     action = policy.act(_obs(uncollected_fees_token0=0.0))
     assert not action.is_hold()
     assert policy.name == "cost_aware"
@@ -258,7 +270,7 @@ def test_cost_aware_deploys_unconditionally_on_first_call() -> None:
 
 def test_cost_aware_respects_min_interval() -> None:
     gas = _FakeGasModel(1.0)
-    policy = CostAwareRebalancePolicy(120, 144, gas)
+    policy = CostAwareRebalancePolicy(120, 144, gas, tick_spacing=TICK_SPACING)
     policy.act(_obs(step_in_episode=0))
     action = policy.act(
         _obs(tick=196_500, step_in_episode=10, uncollected_fees_token0=10_000.0)
@@ -269,7 +281,7 @@ def test_cost_aware_respects_min_interval() -> None:
 
 def test_cost_aware_holds_when_fees_below_gas() -> None:
     gas = _FakeGasModel(5.0)
-    policy = CostAwareRebalancePolicy(120, 0, gas)
+    policy = CostAwareRebalancePolicy(120, 0, gas, tick_spacing=TICK_SPACING)
     policy.act(_obs(step_in_episode=0))
     action = policy.act(
         _obs(tick=196_500, step_in_episode=100, uncollected_fees_token0=4.99)
@@ -280,7 +292,7 @@ def test_cost_aware_holds_when_fees_below_gas() -> None:
 
 def test_cost_aware_rebalances_when_both_conditions_met() -> None:
     gas = _FakeGasModel(5.0)
-    policy = CostAwareRebalancePolicy(120, 0, gas)
+    policy = CostAwareRebalancePolicy(120, 0, gas, tick_spacing=TICK_SPACING)
     policy.act(_obs(step_in_episode=0))
     exit_tick = 196_500
     action = policy.act(
@@ -295,7 +307,7 @@ def test_cost_aware_rebalances_when_both_conditions_met() -> None:
 
 def test_cost_aware_rejects_in_range_before_gas_check() -> None:
     gas = _FakeGasModel(0.0)
-    policy = CostAwareRebalancePolicy(120, 0, gas)
+    policy = CostAwareRebalancePolicy(120, 0, gas, tick_spacing=TICK_SPACING)
     policy.act(_obs(step_in_episode=0))
     action = policy.act(
         _obs(tick=ENTRY_TICK + 10, step_in_episode=1, uncollected_fees_token0=1e9)
@@ -306,7 +318,7 @@ def test_cost_aware_rejects_in_range_before_gas_check() -> None:
 
 def test_cost_aware_reset_resets_state() -> None:
     gas = _FakeGasModel(1.0)
-    policy = CostAwareRebalancePolicy(120, 144, gas)
+    policy = CostAwareRebalancePolicy(120, 144, gas, tick_spacing=TICK_SPACING)
     policy.act(_obs(step_in_episode=0))
     # Not enough interval elapsed -> hold.
     assert policy.act(_obs(tick=196_500, step_in_episode=5)).is_hold()
@@ -353,8 +365,8 @@ def test_baselines_are_deterministic() -> None:
         _obs(tick=ENTRY_TICK + 700, step_in_episode=2),
     ]
     for factory in (
-        lambda: TauResetPolicy(120),
-        lambda: CostAwareRebalancePolicy(120, 0, _FakeGasModel(0.0)),
+        lambda: TauResetPolicy(120, tick_spacing=TICK_SPACING),
+        lambda: CostAwareRebalancePolicy(120, 0, _FakeGasModel(0.0), tick_spacing=TICK_SPACING),
     ):
         first = [factory().act(ob) for ob in observations]
         second = [factory().act(ob) for ob in observations]

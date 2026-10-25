@@ -36,7 +36,7 @@ class PriceMode(StrEnum):
 # -- Action space -------------------------------------------------------------
 # The factored discrete action: {hold} ∪ {rebalance(center_offset, width)}.
 # center_offset: signed tick-spacings around current tick, ∈ {−4,…,+4}
-# width: tick-spacings per side, ∈ {1, 2, 5, 10, 25, 50}
+# width: tick-spacings per side, ∈ {1, 2, 5, 10, 25, 50, 100, 250, 500, 1000}
 # S10 defines the policy protocol; S01 owns the action types.
 
 
