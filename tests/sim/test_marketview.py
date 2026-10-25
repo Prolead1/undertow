@@ -18,13 +18,30 @@ import pytest
 
 from undertow.data import FUNDING_SCHEMA, DataConfig, ValidationError
 from undertow.sim.config import EpisodeConfig, SplitConfig
-from undertow.sim.marketview import MarketView, build_market_view
+from undertow.sim.marketview import MarketView, _sort, build_market_view
 from undertow.sim.types import LookAheadError, MarketViewError
 
 _TINY_TRAIN_START = datetime(2022, 1, 1, tzinfo=UTC)
 _TINY_TRAIN_END = datetime(2022, 2, 1, tzinfo=UTC)
 _TINY_EVAL_START = datetime(2024, 1, 1, tzinfo=UTC)
 _TINY_EVAL_END = datetime(2024, 12, 31, tzinfo=UTC)
+
+
+def test_sort_helper_skips_ordered_frames_and_sorts_unordered() -> None:
+    ordered = pl.DataFrame({"open_time": [1, 2, 3], "close": [4.0, 5.0, 6.0]})
+    assert _sort(ordered, ["open_time"]) is ordered
+
+    unordered = pl.DataFrame({"open_time": [2, 1], "close": [5.0, 4.0]})
+    sorted_frame = _sort(unordered, ["open_time"])
+    assert sorted_frame is not unordered
+    assert sorted_frame["open_time"].to_list() == [1, 2]
+
+    empty = pl.DataFrame(
+        {"open_time": pl.Series([], dtype=pl.Int64), "close": pl.Series([], dtype=pl.Float64)}
+    )
+    assert _sort(empty, ["open_time"]) is empty
+    assert _sort(unordered, ["missing"]) is unordered  # no requested key present
+
 
 _TINY_SPLIT = SplitConfig(
     train_start_utc=_TINY_TRAIN_START,
@@ -991,6 +1008,22 @@ def test_build_market_view_warns_when_only_the_wrong_seed_block_is_present(
         view = build_market_view(tiny_data_config, _TINY_SPLIT)
     assert view.pool_state is None
     assert any("no snapshot" in record.message for record in caplog.records)
+
+
+def test_slice_of_the_whole_lane_reuses_the_active_frame(
+    tiny_market_view: MarketView,
+) -> None:
+    """A whole-lane slice must not copy the frame: ``build_replay_env`` slices the
+    full lane on every environment construction, which was a multi-GB duplicate."""
+    active = tiny_market_view.active_split_data()
+    min_seq = int(active["seq"][0])
+    last_seq = int(active["seq"][-1])
+
+    sliced = tiny_market_view.slice(min_seq, last_seq + 1)
+
+    assert sliced.active_split_data() is active
+    assert sliced.warmup is None
+    assert sliced.active_start_utc == tiny_market_view.active_start_utc
 
 
 def test_slice_composes_warmup_across_nested_slices(tiny_market_view: MarketView) -> None:

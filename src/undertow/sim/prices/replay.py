@@ -87,11 +87,12 @@ class ReplayPriceProcess:
                 f"end_seq ({self._end_seq})"
             )
 
-        # ``slice`` validates the window against the active split and raises
-        # ``LookAheadError`` if it extends past the wall, so the replayed bars
-        # can never come from an out-of-window or future row.
-        window_view = market_view.slice(self._start_seq, self._end_seq)
-        tape = window_view.active_split_data()
+        # ``window`` validates the window against the active split with the same
+        # bounds as ``slice`` but returns the window's own rows without
+        # materialising the lane's pre-window rows into ``warmup`` — the price
+        # process never reads that history, and copying it on every reset cost
+        # a transient copy of up to the whole lane.
+        tape = market_view.window(self._start_seq, self._end_seq)
         if tape.height == 0:
             raise MarketViewError(
                 f"ReplayPriceProcess: no tape rows in [{self._start_seq}, {self._end_seq})"
@@ -101,7 +102,10 @@ class ReplayPriceProcess:
         if start_time_raw is None or end_time_raw is None:
             raise MarketViewError("ReplayPriceProcess: episode window has no timestamps")
 
-        bars = window_view.reference_bars(
+        # ``reference_bars`` clamps to the parent's active split, which is a
+        # superset of the window: the bars are identical to clamping against the
+        # temporary sliced view (the window's own bounds).
+        bars = market_view.reference_bars(
             cast(datetime, start_time_raw), cast(datetime, end_time_raw)
         )
         if bars.height == 0:

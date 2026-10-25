@@ -185,7 +185,8 @@ def walk_forward_windows(
         raise EvaluationError(
             f"episode.duration_days must be > 0, got {duration_days}"
         )
-    tape = market_view.active_split_data().sort("seq")
+    # ``active_split_data`` guarantees seq order; sorting again copied the tape.
+    tape = market_view.active_split_data()
     if tape.height == 0:
         raise EvaluationError("walk_forward_windows: the active split is empty")
 
@@ -336,7 +337,9 @@ def build_replay_env(
     tape.  Calibrated training passes a :class:`CalibratedPriceProcess` instead;
     the pool engine and frictions are built identically in both modes.
     """
-    tape = market_view.active_split_data().sort("seq")
+    # ``active_split_data`` guarantees seq order; sorting again copied the tape
+    # once per environment construction, per worker.
+    tape = market_view.active_split_data()
     if tape.height == 0:
         raise EvaluationError("build_replay_env: the episode view is empty")
 
