@@ -78,10 +78,13 @@ __all__ = ["PoolEngine", "PoolState", "TickState"]
 _FEE_DENOMINATOR: float = 1_000_000.0
 
 # Liquidity on real pools routinely exceeds ``2**53``, where float64 can no
-# longer represent the integers exactly.  An exact cancellation (`gross + delta
-# == 0`) can therefore leave a few-ULP negative residue; treat a residue within
-# this fraction of the applied delta as zero, and anything larger as a genuine
-# stream inconsistency (ADR-020).
+# longer represent the integers exactly.  The simulator's snapshot/tape path
+# keeps ``liquidity_gross``/``liquidity_net`` as Python ints (ADR-032), so it
+# does not need this allowance; it applies only to explicitly float-seeded
+# states (hand-built engines and fixtures), where an exact cancellation
+# (`gross + delta == 0`) can leave a few-ULP negative residue.  Treat a residue
+# within this fraction of the applied delta as zero, and anything larger as a
+# genuine stream inconsistency (ADR-020).
 _LIQUIDITY_ROUNDING_TOLERANCE: float = 1e-12
 
 
@@ -144,8 +147,11 @@ class TickState:
 
     fee_growth_outside_0: float = 0.0  # Q128 as float64
     fee_growth_outside_1: float = 0.0
-    liquidity_gross: float = 0.0  # total L locked at this tick
-    liquidity_net: float = 0.0  # signed: + for lower ticks, - for upper ticks
+    #: Exact ``int`` on the snapshot/tape path, where mint/burn accounting must
+    #: cancel exactly above ``2**53`` (ADR-032); ``float`` only for explicitly
+    #: float-seeded states (hand-built engines and fixtures).
+    liquidity_gross: float | int = 0  # total L locked at this tick
+    liquidity_net: float | int = 0  # signed: + for lower ticks, - for upper ticks
     initialized: bool = False
 
 
@@ -368,8 +374,8 @@ class PoolEngine:
             ticks[Tick(tick)] = TickState(
                 fee_growth_outside_0=_as_int(r.get("fee_growth_outside_0_x128")) / Q128,
                 fee_growth_outside_1=_as_int(r.get("fee_growth_outside_1_x128")) / Q128,
-                liquidity_gross=float(_as_int(r.get("liquidity_gross"))),
-                liquidity_net=float(_as_int(r.get("liquidity_net"))),
+                liquidity_gross=_as_int(r.get("liquidity_gross")),
+                liquidity_net=_as_int(r.get("liquidity_net")),
                 initialized=bool(r.get("initialized", True)),
             )
         current_tick = _as_int(g.get("current_tick"))
@@ -435,10 +441,30 @@ class PoolEngine:
         # in sign, exactly as in ``Tick.update``.  This mirrors the tracker.
         for tick, net_delta in ((tick_lower, delta), (tick_upper, -delta)):
             before = self.ticks.get(Tick(tick))
-            gross_before = before.liquidity_gross if before is not None else 0.0
-            gross_after = gross_before + float(delta)
-            if gross_after < 0.0:
-                if gross_after > -_LIQUIDITY_ROUNDING_TOLERANCE * abs(float(delta)):
+            # ADR-032: snapshot rows are seeded as Python ints and ticks first
+            # touched by a tape event start from int ``0``, so the production
+            # path does exact integer accounting — a float64 rounding can never
+            # hide a sub-ULP remainder (or reject an exact cancellation).  Only
+            # explicitly float-seeded states take the ADR-020 float64 path with
+            # its delta-relative residue tolerance.
+            if before is None:
+                gross_before: float | int = 0
+                net_before: float | int = 0
+            else:
+                gross_before = before.liquidity_gross
+                net_before = before.liquidity_net
+            if isinstance(gross_before, int):
+                gross_after: float | int = gross_before + delta
+            else:
+                gross_after = gross_before + float(delta)
+            if isinstance(gross_after, int) and gross_after < 0:
+                raise PositionError(
+                    f"{event_type} of liquidity {liquidity_amount} at tick {tick} "
+                    "would drive liquidity_gross negative — the event stream is "
+                    "inconsistent"
+                )
+            if isinstance(gross_after, float) and gross_after < 0.0:
+                if gross_after >= -_LIQUIDITY_ROUNDING_TOLERANCE * abs(float(delta)):
                     # Exact cancellation above 2**53 leaves a float64 residue;
                     # clamp it so the tick is removed rather than rejecting a
                     # consistent stream (ADR-020).
@@ -463,9 +489,10 @@ class PoolEngine:
             if gross_after == 0.0:
                 del self.ticks[Tick(tick)]
             else:
-                net_after = (
-                    before.liquidity_net if before is not None else 0.0
-                ) + float(net_delta)
+                if isinstance(net_before, int):
+                    net_after: float | int = net_before + net_delta
+                else:
+                    net_after = net_before + float(net_delta)
                 self.ticks[Tick(tick)] = TickState(
                     outside_0, outside_1, gross_after, net_after, True
                 )
@@ -510,7 +537,7 @@ class PoolEngine:
             else:
                 outside_0 = 0.0
                 outside_1 = 0.0
-            self.ticks[tick] = TickState(outside_0, outside_1, 1.0, 0.0, True)
+            self.ticks[tick] = TickState(outside_0, outside_1, 1, 0, True)
 
         position = Position(lower, upper, amount, TickSpacing(spacing))
         position_id = self._next_position_id
