@@ -10,6 +10,7 @@ identity for a hold step.
 from __future__ import annotations
 
 import dataclasses
+import math
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -34,8 +35,10 @@ from undertow.sim.core.position import calc_sqrt_price_a, initial_deposit
 from undertow.sim.env.lp_env import LpEnvironment
 from undertow.sim.env.observations import (
     OBSERVATION_VECTOR_LENGTH,
+    SCALED_VECTOR_INDICES,
     Observation,
     ObservationBuilder,
+    scale_vector,
 )
 from undertow.sim.env.reward import RewardBreakdown
 from undertow.sim.marketview import MarketView
@@ -203,6 +206,9 @@ class TestObservationDataclass:
         expected = [float(v) for v in values]
         expected[6] = float(bool(values[6] % 2))
         expected[15] = 2.0  # sideways
+        # ADR-034: the heavy-tailed positions are log-compressed in the vector.
+        for index in SCALED_VECTOR_INDICES:
+            expected[index] = math.log1p(expected[index])
         assert vector.tolist() == expected
         # regime ordinal sits at index 15: sideways -> 2.
         assert vector[15] == 2.0
@@ -2782,8 +2788,9 @@ class TestDisabledGoldenGuard:
 
     Golden constants captured from HEAD (commit 745135f) with the scenario
     below; see the comments above the constants.  The first 21 observation dims
-    and the eight original reward fields must match bit for bit, and the three
-    appended hedge dims must be exactly zero.
+    must match the recorded values pushed through the deterministic ADR-034 log
+    compression bit for bit, the eight original reward fields must match raw
+    bit for bit, and the three appended hedge dims must be exactly zero.
     """
 
     def test_disabled_path_reproduces_head_observations_and_reward(
@@ -2828,7 +2835,15 @@ class TestDisabledGoldenGuard:
         )
         for label, obs, raw, economics in rows:
             assert obs.shape == (OBSERVATION_VECTOR_LENGTH,)
-            assert obs[:21].tolist() == _GOLDEN_DISABLED_OBS[label]
+            # ADR-034 log-compresses the heavy-tailed dims, so compare in the
+            # compressed space: the current vector must be bit-for-bit the
+            # recorded HEAD values pushed through the same deterministic
+            # transform.  The reward breakdown below stays bit-for-bit exact
+            # in raw units.
+            assert np.array_equal(
+                obs[:21],
+                scale_vector(np.asarray(_GOLDEN_DISABLED_OBS[label])),
+            )
             assert obs[21:].tolist() == [0.0, 0.0, 0.0]
             golden_raw = _GOLDEN_DISABLED_RAW[label]
             assert set(golden_raw) <= set(raw)

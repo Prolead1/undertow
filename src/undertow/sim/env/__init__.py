@@ -10,8 +10,11 @@ from __future__ import annotations
 from undertow.sim.env.lp_env import LpEnvironment
 from undertow.sim.env.observations import (
     OBSERVATION_VECTOR_LENGTH,
+    SCALED_VECTOR_INDICES,
     Observation,
     ObservationBuilder,
+    scale_vector,
+    unscale_vector,
 )
 from undertow.sim.env.reward import (
     RewardBreakdown,
@@ -22,6 +25,7 @@ from undertow.sim.env.reward import (
 
 __all__ = [
     "OBSERVATION_VECTOR_LENGTH",
+    "SCALED_VECTOR_INDICES",
     "LpEnvironment",
     "Observation",
     "ObservationBuilder",
@@ -29,4 +33,6 @@ __all__ = [
     "compute_reward",
     "compute_reward_economics",
     "normalize_reward",
+    "scale_vector",
+    "unscale_vector",
 ]

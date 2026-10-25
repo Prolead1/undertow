@@ -54,7 +54,12 @@ import polars as pl
 from undertow.sim.backtest import DEFAULT_INITIAL_HALF_WIDTH_TICKS, run_backtest
 from undertow.sim.config import SimConfig
 from undertow.sim.core.pool import PoolEngine, PoolState
-from undertow.sim.env import OBSERVATION_VECTOR_LENGTH, LpEnvironment, Observation
+from undertow.sim.env import (
+    OBSERVATION_VECTOR_LENGTH,
+    LpEnvironment,
+    Observation,
+    unscale_vector,
+)
 from undertow.sim.frictions import (
     GasModel,
     ProportionalSlippageModel,
@@ -252,11 +257,15 @@ def observation_from_vector(vector: Sequence[float]) -> Observation:
     from undertow.sim.env.observations import REGIME_ORDINAL
 
     inverse = {value: name for name, value in REGIME_ORDINAL.items()}
-    values = [float(v) for v in vector]
+    # ``to_vector`` log-compresses the heavy-tailed fields (ADR-034); undo it
+    # so the structured Observation handed to a policy keeps its raw units.
+    values = [float(v) for v in unscale_vector(vector)]
     return Observation(
         price=values[0],
         sqrt_price=values[1],
-        tick=Tick(int(values[2])),
+        # ``tick`` is integer-valued; the ADR-034 log round-trip can land a
+        # hair below the integer, so round rather than truncate.
+        tick=Tick(round(values[2])),
         price_returns_1h=values[3],
         price_returns_24h=values[4],
         realized_vol_24h=values[5],
