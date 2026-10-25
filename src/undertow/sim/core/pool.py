@@ -591,15 +591,19 @@ class PoolEngine:
         position = self.positions.get(position_id)
         if position is None:
             raise PositionError(f"unknown position_id {position_id}")
-        lower_ts = self.ticks[position.tick_lower]
-        upper_ts = self.ticks[position.tick_upper]
+        # A boundary tick can be absent: the external stream may have fully
+        # unwound it after the position was opened, and ``Tick.update`` clears
+        # the struct.  Mirror ``FeeGrowthTracker.accrue`` — an uninitialized
+        # boundary reads ``fee_growth_outside = 0`` rather than failing.
+        lower_ts = self.ticks.get(position.tick_lower)
+        upper_ts = self.ticks.get(position.tick_upper)
         inside_0, inside_1 = self.state.fee_growth_inside(
             position.tick_lower,
             position.tick_upper,
-            lower_ts.fee_growth_outside_0,
-            lower_ts.fee_growth_outside_1,
-            upper_ts.fee_growth_outside_0,
-            upper_ts.fee_growth_outside_1,
+            lower_ts.fee_growth_outside_0 if lower_ts is not None else 0.0,
+            lower_ts.fee_growth_outside_1 if lower_ts is not None else 0.0,
+            upper_ts.fee_growth_outside_0 if upper_ts is not None else 0.0,
+            upper_ts.fee_growth_outside_1 if upper_ts is not None else 0.0,
         )
         snapshot_0, snapshot_1 = self.position_fee_snapshots[position_id]
         return (

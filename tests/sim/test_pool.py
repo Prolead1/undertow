@@ -361,6 +361,46 @@ def test_position_fees_zero_immediately_after_open() -> None:
     assert engine.position_fees(pid) == (0.0, 0.0)
 
 
+def test_position_fees_treats_an_unwound_boundary_tick_as_uninitialized() -> None:
+    """Parity with ``FeeGrowthTracker.accrue``: an absent boundary reads 0.
+
+    A real mint/burn stream can fully unwind an external tick after the agent
+    opened a position on it; the exact tracker reads
+    ``fee_growth_outside = 0`` for the now-uninitialized tick instead of
+    raising, and the engine steps must do the same.
+    """
+    engine = _engine(liquidity=0.0)
+    lower, upper = Tick(ENTRY_TICK - 120), Tick(ENTRY_TICK + 120)
+    for tick, net in ((lower, 1_000), (upper, -1_000)):
+        engine.ticks[tick] = TickState(
+            liquidity_gross=1_000, liquidity_net=net, initialized=True
+        )
+    engine.state.liquidity = 1_000.0
+    pid = engine.open_position(lower, upper, 100.0)
+
+    engine.apply_liquidity_event(
+        {
+            "event_type": "burn",
+            "tick_lower": int(lower),
+            "tick_upper": int(upper),
+            "liquidity_amount": "1000",
+        }
+    )
+    assert lower not in engine.ticks
+    assert upper not in engine.ticks
+
+    engine.state.fee_growth_global_0 = 0.25
+    engine.state.fee_growth_global_1 = 0.5
+    inside_0, inside_1 = engine.state.fee_growth_inside(
+        lower, upper, 0.0, 0.0, 0.0, 0.0
+    )
+    snapshot_0, snapshot_1 = engine.position_fee_snapshots[pid]
+    assert engine.position_fees(pid) == pytest.approx(
+        (100.0 * (inside_0 - snapshot_0), 100.0 * (inside_1 - snapshot_1))
+    )
+    assert engine.position_fees(pid)[0] > 0.0
+
+
 # ---------------------------------------------------------------------------
 # 17-18. shared ticks (marginal sentinels)
 # ---------------------------------------------------------------------------
