@@ -14,9 +14,8 @@ only through the top-level ``undertow.data`` public API
 
 from __future__ import annotations
 
-import bisect
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal, cast
@@ -126,6 +125,12 @@ class MarketView:
     #: used (2005/3288 rows are null in 2022-23); it is returned by
     #: :meth:`funding_at` for callers that want it.
     funding: pl.DataFrame | None = None
+    #: Lazily built ``(block_timestamp, seq)`` arrays for episode sampling.  A
+    #: per-reset rebuild converted every active row to Python lists; the cache
+    #: makes that a one-time conversion per view (ADR-033).
+    _episode_index: tuple[np.ndarray, np.ndarray] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     # ------------------------------------------------------------------
     # Invariants (CONTRACTS §4.1)
@@ -301,6 +306,38 @@ class MarketView:
             funding=self.funding,
         )
 
+    def window(self, start_seq: int, end_seq: int) -> pl.DataFrame:
+        """Active-split rows with ``start_seq <= seq < end_seq`` (ADR-033).
+
+        The replay environment only needs the window's own rows; unlike
+        :meth:`slice` this returns them without materialising the lane's
+        pre-window history into ``warmup`` (which a late-window reset would
+        otherwise copy in full).  ``seq`` is dense and sorted, so the bounds are
+        two binary searches plus one contiguous slice.  Range validation matches
+        :meth:`slice` — this is still a look-ahead door.
+        """
+        _, seq_arr = self._episode_arrays()
+        min_seq = int(seq_arr[0])
+        last_seq = int(seq_arr[-1])
+        if start_seq < min_seq or end_seq > last_seq + 1:
+            raise LookAheadError(
+                f"window [{start_seq}, {end_seq}) is outside the active split "
+                f"seq range [{min_seq}, {last_seq}]"
+            )
+        if start_seq >= end_seq:
+            raise MarketViewError(
+                f"window start_seq ({start_seq}) must be < end_seq ({end_seq})"
+            )
+        active = self.active_split_data()
+        seqs = active["seq"]
+        lo = int(seqs.search_sorted(int(start_seq), side="left"))
+        hi = int(seqs.search_sorted(int(end_seq) - 1, side="right"))
+        if hi <= lo:
+            raise MarketViewError(
+                f"window [{start_seq}, {end_seq}) produced an empty view"
+            )
+        return active.slice(lo, hi - lo)
+
     def tape_at(self, seq: int) -> dict[str, object]:
         """All columns for the event at ``seq`` as a dict.
 
@@ -388,12 +425,34 @@ class MarketView:
         if active is None:  # pragma: no cover - __post_init__ guarantees this
             raise MarketViewError("MarketView: no active split data")
         if "seq" in active.columns:
+            # Every frame built by build_market_view/slice is already seq-sorted;
+            # checking avoids re-allocating a full sort on each call (ADR-033).
+            if active["seq"].is_sorted():
+                return active
             return active.sort("seq")
         return active
 
     def step_count(self) -> int:
         """Number of tape events in the active split."""
         return self.active_split_data().height
+
+    def _episode_arrays(self) -> tuple[np.ndarray, np.ndarray]:
+        """Cached ascending ``(block_timestamp, seq)`` arrays of the active split.
+
+        ``block_timestamp`` is non-decreasing in ``seq`` (the data pipeline's
+        monotonic-timestamp check), so both arrays are searchable with
+        ``np.searchsorted``.  Built once per view; the frozen dataclass is
+        updated through ``object.__setattr__`` (ADR-033).
+        """
+        cached = self._episode_index
+        if cached is None:
+            active = self.active_split_data()
+            cached = (
+                active["block_timestamp"].to_numpy(),
+                active["seq"].to_numpy(),
+            )
+            object.__setattr__(self, "_episode_index", cached)
+        return cached
 
     def build_episode(
         self,
@@ -424,29 +483,32 @@ class MarketView:
             raise MarketViewError(f"build_episode: desired window must be > 0, got {desired}")
         window = timedelta(minutes=desired * step_minutes)
 
-        active = self.active_split_data().sort("seq")
-        times: list[datetime] = active["block_timestamp"].to_list()
-        seqs: list[int] = [int(s) for s in active["seq"].to_list()]
-        if not times:
+        times, seqs = self._episode_arrays()
+        if times.size == 0:
             raise MarketViewError("build_episode: the active split is empty")
-        split_start = times[0]
-        split_end = self.active_end_utc
+        # All stamps are UTC; compare the naive numpy grid against the wall made
+        # naive, preserving the previous aware-datetime ordering exactly.
+        split_end = self.active_end_utc.replace(tzinfo=None)
+        split_start = times[0].item()
         if window >= split_end - split_start:
             # The window cannot fit anywhere but at the start: return the split.
-            return seqs[0], seqs[-1] + 1
+            return int(seqs[0]), int(seqs[-1]) + 1
 
         # Candidate starts = rows with room for the whole window before the wall.
         limit = split_end - window
-        n_candidates = bisect.bisect_right(times, limit)
+        n_candidates = int(
+            np.searchsorted(times, np.datetime64(limit, "us"), side="right")
+        )
         if n_candidates <= 0:  # pragma: no cover - guarded by the fit check above
-            return seqs[0], seqs[-1] + 1
+            return int(seqs[0]), int(seqs[-1]) + 1
         rng = np.random.default_rng(seed)
         start_idx = int(rng.integers(0, n_candidates))
-        start_time = times[start_idx]
-        end_idx = bisect.bisect_left(times, start_time + window)
+        window_us = int(window.total_seconds() * 1_000_000)
+        end_limit = times[start_idx] + np.timedelta64(window_us, "us")
+        end_idx = int(np.searchsorted(times, end_limit, side="left"))
         if end_idx <= start_idx:  # pragma: no cover - window > 0 implies a row
             end_idx = start_idx + 1
-        return seqs[start_idx], seqs[end_idx - 1] + 1
+        return int(seqs[start_idx]), int(seqs[end_idx - 1]) + 1
 
 
 def _select_primary_symbol(frame: pl.DataFrame, configured: str, stream: str) -> pl.DataFrame:

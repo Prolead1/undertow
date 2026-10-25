@@ -6,11 +6,13 @@ fixture values, and the ``build_episode`` invariants from ``CONTRACTS.md`` §4.1
 
 from __future__ import annotations
 
+import bisect
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -412,6 +414,47 @@ class TestQueries:
         with pytest.raises(MarketViewError, match="start_seq"):
             tiny_market_view.slice(10, 5)
 
+    def test_window_matches_slice_active_rows(self, tiny_market_view: MarketView) -> None:
+        """ADR-033: ``window`` is ``slice(...).active_split_data()`` without warmup."""
+        total = tiny_market_view.step_count()
+        for start, end in ((0, 1), (0, 10), (5, 20), (total - 5, total), (0, total)):
+            window = tiny_market_view.window(start, end)
+            expected = tiny_market_view.slice(start, end).active_split_data()
+            assert window.equals(expected)
+            assert int(window["seq"].min()) >= start
+            assert int(window["seq"].max()) < end
+
+    def test_window_invalid_range_raises(self, tiny_market_view: MarketView) -> None:
+        with pytest.raises(MarketViewError, match="start_seq"):
+            tiny_market_view.window(5, 5)
+        # Out-of-range bounds are a look-ahead error, exactly like ``slice``.
+        with pytest.raises(LookAheadError, match="outside"):
+            tiny_market_view.window(10_000, 10_001)
+        with pytest.raises(LookAheadError, match="outside"):
+            tiny_market_view.window(-5, 10)
+
+    def test_active_split_data_sorts_an_unsorted_seq_frame(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        """The defensive sort still runs when a hand-built frame is unordered."""
+        reversed_train = tiny_market_view.train.reverse()
+        view = replace(tiny_market_view, train=reversed_train)
+        out = view.active_split_data()
+        assert out["seq"].is_sorted()
+        assert out["seq"].to_list() == sorted(reversed_train["seq"].to_list())
+
+    def test_episode_cache_is_not_copied_by_dataclasses_replace(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        """ADR-033: ``replace`` must not serve the parent's cached tape index."""
+        tiny_market_view.build_episode(0, max_steps=5)  # warm the cache
+        shifted = tiny_market_view.train.with_columns(
+            (pl.col("seq") + 10_000).alias("seq")
+        )
+        swapped = replace(tiny_market_view, train=shifted)
+        start, end = swapped.build_episode(0, max_steps=5)
+        assert start >= 10_000
+
 
 # ---------------------------------------------------------------------------
 # build_episode
@@ -472,6 +515,21 @@ class TestBuildEpisode:
         seqs = tiny_market_view.active_split_data()["seq"].to_list()
         window = [s for s in seqs if start <= s < end]
         assert window == list(range(start, end))
+
+    def test_matches_reference_bisect_sampling(self, tiny_market_view: MarketView) -> None:
+        """ADR-033: the cached numpy index reproduces the original bisect sampling."""
+        active = tiny_market_view.active_split_data()
+        times = active["block_timestamp"].to_list()
+        seqs = [int(s) for s in active["seq"].to_list()]
+        window = timedelta(minutes=91 * 10)
+        limit = tiny_market_view.active_end_utc - window
+        n_candidates = bisect.bisect_right(times, limit)
+        assert n_candidates > 0
+        for seed in range(30):
+            idx = int(np.random.default_rng(seed).integers(0, n_candidates))
+            end_idx = bisect.bisect_left(times, times[idx] + window)
+            expected = (seqs[idx], seqs[end_idx - 1] + 1)
+            assert tiny_market_view.build_episode(seed, max_steps=91) == expected
 
 
 # ---------------------------------------------------------------------------
