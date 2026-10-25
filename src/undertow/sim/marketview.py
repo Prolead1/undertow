@@ -24,15 +24,12 @@ import numpy as np
 import polars as pl
 
 from undertow.data import (
+    FEE_GROWTH_SCHEMA,
     DataConfig,
     PoolConfig,
     load_data_config,
-    load_fee_growth,
+    load_dataset,
     load_funding,
-    load_gas_feed,
-    load_reference_feed,
-    load_regime_labels,
-    load_tape,
 )
 from undertow.sim.config import EpisodeConfig, SplitConfig
 from undertow.sim.types import LookAheadError, MarketViewError, Regime
@@ -59,6 +56,32 @@ def _sort(df: pl.DataFrame, columns: list[str]) -> pl.DataFrame:
     if not present:
         return df
     return df.sort(present)
+
+
+def _load_dataset_tables(
+    data_config: DataConfig,
+) -> tuple[object, object, object, object, object | None]:
+    """Read the tape and its four side streams from **one** dataset build.
+
+    ``build_market_view`` needs five tables.  Going through the per-stream loader
+    facades would run ``pipeline.build`` — rebuild the whole event tape, including
+    the as-of joins and the look-ahead check — once per stream; on the 0.05 % lane
+    that is ~5x the load time and most of the peak memory.  ``load_dataset`` is
+    the documented single door to the cached streams, so build it once and read
+    every field from that result.  ``fee_growth`` stays optional (``None`` when
+    the boundary-snapshot stream is absent), matching ``load_fee_growth``.
+
+    Returns pyarrow tables (the public ``Dataset.require`` shape) for the tape,
+    reference, gas, regime and fee-growth streams, in that order.
+    """
+    dataset = load_dataset(data_config)
+    return (
+        dataset.require("event_tape"),
+        dataset.require("reference"),
+        dataset.require("gas"),
+        dataset.require("regime"),
+        dataset.fee_growth,
+    )
 
 
 def _between(df: pl.DataFrame, column: str, start: datetime, end: datetime) -> pl.DataFrame:
@@ -579,11 +602,25 @@ def build_market_view(
     if split not in ("train", "eval"):
         raise MarketViewError(f"build_market_view: unknown split {split!r}")
 
-    tape = _sort(_to_polars(load_tape(data_config)), ["block_number", "log_index"])
-    reference = _sort(_to_polars(load_reference_feed(data_config)), ["open_time"])
-    gas = _sort(_to_polars(load_gas_feed(data_config)), ["block_number"])
-    regimes = _sort(_to_polars(load_regime_labels(data_config)), ["timestamp"])
-    fee_growth = _sort(_to_polars(load_fee_growth(data_config)), ["block_number", "tick"])
+    (
+        tape_table,
+        reference_table,
+        gas_table,
+        regimes_table,
+        fee_growth_table,
+    ) = _load_dataset_tables(data_config)
+    tape = _sort(_to_polars(tape_table), ["block_number", "log_index"])
+    reference = _sort(_to_polars(reference_table), ["open_time"])
+    gas = _sort(_to_polars(gas_table), ["block_number"])
+    regimes = _sort(_to_polars(regimes_table), ["timestamp"])
+    fee_growth = _sort(
+        _to_polars(
+            fee_growth_table
+            if fee_growth_table is not None
+            else FEE_GROWTH_SCHEMA.empty_table()
+        ),
+        ["block_number", "tick"],
+    )
     funding = _sort(
         _to_polars(load_funding(data_config)), ["symbol", "funding_time"]
     )
