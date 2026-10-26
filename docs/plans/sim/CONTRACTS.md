@@ -546,9 +546,10 @@ class PoolEngine:
     ``state.liquidity`` is the **external** pool liquidity, seeded from the
     on-chain snapshot. Agent positions are **marginal**: ``open_position`` never
     adds their ``L`` to ``state.liquidity``; it only seeds sentinel boundary ticks
-    (``liquidity_gross=1, liquidity_net=0``) and records the inside snapshot, so
-    ``position_fees`` is ``L_agent * Δfee_growth_inside`` over the external
-    denominator — exactly like ``FeeGrowthReplay``.
+    (``liquidity_gross=1, liquidity_net=0``). ``position_fees`` returns the
+    per-segment ledger: each swap segment credits
+    ``fee_seg * L_agent / (L_agent + L_external_segment)`` (ADR-035), bounded by
+    the fee actually taken — exactly like ``FeeGrowthReplay``.
     """
     state: PoolState
     ticks: dict[Tick, TickState]    # sparse — only initialized ticks

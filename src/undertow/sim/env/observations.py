@@ -431,6 +431,7 @@ class ObservationBuilder:
         hedge_short_ratio: float = 0.0,
         hedge_equity_frac: float = 0.0,
         hedge_enabled: bool = True,
+        position_id: int | None = None,
     ) -> Observation:
         """Assemble the observation at tape seq ``step`` (CONTRACTS §11).
 
@@ -463,6 +464,7 @@ class ObservationBuilder:
             hedge_short_ratio=hedge_short_ratio,
             hedge_equity_frac=hedge_equity_frac,
             hedge_enabled=hedge_enabled,
+            position_id=position_id,
         )
 
     def build_at(
@@ -482,6 +484,7 @@ class ObservationBuilder:
         hedge_short_ratio: float = 0.0,
         hedge_equity_frac: float = 0.0,
         hedge_enabled: bool = True,
+        position_id: int | None = None,
     ) -> Observation:
         """Assemble an observation at an explicit timestamp.
 
@@ -515,24 +518,32 @@ class ObservationBuilder:
         sqrt_price = pool_engine.state.sqrt_price
         tick = pool_engine.state.tick
 
-        # Uncollected fees for the position, in human token units. The engine's
-        # lattices hold the fee_growth_outside snapshots; Position.uncollected_fees
-        # subtracts its own (open-time) snapshot and humanises by 10**dec (ADR-009).
-        lower_state = pool_engine.ticks.get(position.tick_lower)
-        upper_state = pool_engine.ticks.get(position.tick_upper)
-        outside_lower_0 = lower_state.fee_growth_outside_0 if lower_state else 0.0
-        outside_lower_1 = lower_state.fee_growth_outside_1 if lower_state else 0.0
-        outside_upper_0 = upper_state.fee_growth_outside_0 if upper_state else 0.0
-        outside_upper_1 = upper_state.fee_growth_outside_1 if upper_state else 0.0
-        inside_0, inside_1 = pool_engine.state.fee_growth_inside(
-            position.tick_lower,
-            position.tick_upper,
-            outside_lower_0,
-            outside_lower_1,
-            outside_upper_0,
-            outside_upper_1,
-        )
-        fees_token0, fees_token1 = position.uncollected_fees(inside_0, inside_1)
+        # Uncollected fees for the position, in human token units.  The reward
+        # and the observation must agree, so prefer the engine's ADR-035
+        # per-segment ledger when the position id is supplied.  The growth-path
+        # fallback keeps hand-built engines/tests without a registered ledger
+        # working (Position.uncollected_fees subtracts its open-time snapshot
+        # and humanises by 10**dec, ADR-009).
+        if position_id is not None and position_id in pool_engine.positions:
+            raw_0, raw_1 = pool_engine.position_fees(position_id)
+            fees_token0 = raw_0 / 10.0**position.dec0
+            fees_token1 = raw_1 / 10.0**position.dec1
+        else:
+            lower_state = pool_engine.ticks.get(position.tick_lower)
+            upper_state = pool_engine.ticks.get(position.tick_upper)
+            outside_lower_0 = lower_state.fee_growth_outside_0 if lower_state else 0.0
+            outside_lower_1 = lower_state.fee_growth_outside_1 if lower_state else 0.0
+            outside_upper_0 = upper_state.fee_growth_outside_0 if upper_state else 0.0
+            outside_upper_1 = upper_state.fee_growth_outside_1 if upper_state else 0.0
+            inside_0, inside_1 = pool_engine.state.fee_growth_inside(
+                position.tick_lower,
+                position.tick_upper,
+                outside_lower_0,
+                outside_lower_1,
+                outside_upper_0,
+                outside_upper_1,
+            )
+            fees_token0, fees_token1 = position.uncollected_fees(inside_0, inside_1)
 
         # IL is measured against the fixed initial HODL basket when supplied,
         # so it accumulates across rebalances instead of resetting to zero.

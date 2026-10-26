@@ -1238,3 +1238,92 @@ def _observed_table(rows: list[dict[str, object]]) -> pa.Table:
         "fee_protocol": pa.array([int(r.get("fee_protocol", 0)) for r in rows], pa.int32()),
     }
     return pa.table(cols)
+
+
+def test_marginal_position_earns_the_augmented_share() -> None:
+    """ADR-035: the marginal credit is the augmented-denominator share.
+
+    When the agent's ``L`` dominates a thin segment, the credit is
+    ``fee * L_pos / (L_pos + L_external)``, bounded by the pool's take — not
+    the unbounded ``L_pos / L_external`` the global-growth path implied.
+    """
+    l_external = 100
+    l_agent = 10_000
+    gross = 10**9
+    price = tick_to_sqrt_price_x96(0)
+    tracker = _tracker(current_tick=0, price=price)
+    tracker.apply_liquidity_event(
+        _mint_row(block=1001, tick_lower=-200, tick_upper=200, liquidity=l_external)
+    )
+    assert tracker.current_liquidity == l_external
+    tracker.register_marginal_position(-400, 400, l_agent)
+
+    # A tiny within-tick move yields one segment with L_external = 100.
+    tracker.apply_swap(
+        _swap_row(
+            block=1002,
+            input_token=1,
+            gross=gross,
+            out=1,
+            post_tick=0,
+            post_price=price + 1,
+        )
+    )
+    fee_seg = gross * POOL.fee_tier.value // 1_000_000
+    accrual = tracker.accrue(
+        PositionKey(owner="test", tick_lower=-400, tick_upper=400),
+        l_agent,
+        0,
+        0,
+    )
+    assert accrual.fees1 == fee_seg * l_agent // (l_agent + l_external)
+    # Bounded by the pool's take; the growth path would have credited ~100x it.
+    assert accrual.fees1 <= fee_seg
+    assert accrual.fees1 == pytest.approx(fee_seg * 0.99, rel=1e-3)
+
+
+def test_downward_crossing_credits_only_the_in_range_segment() -> None:
+    """ADR-035: on a downward sweep the post-crossing segment sits below the
+    crossed tick, so a position whose lower bound is that tick must earn only
+    the in-range segment's share, not the out-of-range segment's too."""
+    l_external = 10**15
+    l_agent = 10**12
+    gross = 10**15
+    pre_tick, post_tick = 150, 50
+    pre_price = tick_to_sqrt_price_x96(pre_tick)
+    post_price = tick_to_sqrt_price_x96(post_tick)
+    tracker = _tracker(current_tick=pre_tick, price=pre_price)
+    tracker.apply_liquidity_event(
+        _mint_row(block=1001, tick_lower=0, tick_upper=1000, liquidity=l_external)
+    )
+    tracker.register_marginal_position(100, 200, l_agent)
+    # Seed the position's boundary ticks as the facade's register_position does,
+    # so the downward sweep actually crosses tick 100.
+    tracker.ticks[100] = TickState(0, 0, 1, 0, True)
+    tracker.ticks[200] = TickState(0, 0, 1, 0, True)
+    tracker.apply_swap(
+        _swap_row(
+            block=1002,
+            input_token=0,
+            gross=gross,
+            out=1,
+            post_tick=post_tick,
+            post_price=post_price,
+        )
+    )
+
+    # The tracker apportions gross by per-segment net input; recompute the two
+    # segments' shares independently of the implementation under test.
+    boundary = tick_to_sqrt_price_x96(100)
+    net_in = get_amount0_delta(pre_price, boundary, l_external, True)
+    net_below = get_amount0_delta(boundary, post_price, l_external, True)
+    fee_pips = POOL.fee_tier.value
+    fee_in = (gross * net_in // (net_in + net_below)) * fee_pips // 1_000_000
+    expected = fee_in * l_agent // (l_agent + l_external)
+    accrual = tracker.accrue(
+        PositionKey(owner="test", tick_lower=100, tick_upper=200),
+        l_agent,
+        0,
+        0,
+    )
+    assert accrual.fees0 == expected

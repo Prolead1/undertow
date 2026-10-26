@@ -102,7 +102,7 @@ def test_engine_and_tracker_agree_on_synthetic_tape() -> None:
     # Same marginal agent position.
     lower, upper = 196140, 196380
     pid = engine.open_position(Tick(lower), Tick(upper), _L_AGENT)
-    replay.register_position(tick_lower=lower, tick_upper=upper)
+    replay.register_position(tick_lower=lower, tick_upper=upper, liquidity=int(_L_AGENT))
 
     # Swaps that drive the tick up and down across the agent's bounds.  The
     # tracker requires token0-in to move the tick DOWN and token1-in UP.
@@ -132,9 +132,10 @@ def test_engine_and_tracker_agree_on_synthetic_tape() -> None:
         sim0 = cumulative0 - prev0
         sim1 = cumulative1 - prev1
         prev0, prev1 = cumulative0, cumulative1
-        # Raw-unit truncation floor: strictly less than one raw token unit.
-        assert abs(sim0 - fees0) < 1.0, (block, sim0, fees0)
-        assert abs(sim1 - fees1) < 1.0, (block, sim1, fees1)
+        # ADR-035 floors each swap segment in the tracker, so a step crossing n
+        # segments may differ from the float64 engine by < n raw token units.
+        assert abs(sim0 - fees0) < 2.0, (block, sim0, fees0)
+        assert abs(sim1 - fees1) < 2.0, (block, sim1, fees1)
 
     # The float64 global accumulator tracks the exact Q128 one to float precision.
     snapshot = replay.snapshot()
@@ -235,7 +236,7 @@ def test_from_snapshot_matches_replay_from_same_snapshot() -> None:
 
     lower, upper = 196140, 196380
     pid = engine.open_position(Tick(lower), Tick(upper), _L_AGENT)
-    replay.register_position(tick_lower=lower, tick_upper=upper)
+    replay.register_position(tick_lower=lower, tick_upper=upper, liquidity=int(_L_AGENT))
 
     g0_last = g1_last = 0
     prev0 = prev1 = 0.0
@@ -259,8 +260,8 @@ def test_from_snapshot_matches_replay_from_same_snapshot() -> None:
         sim0 = cumulative0 - prev0
         sim1 = cumulative1 - prev1
         prev0, prev1 = cumulative0, cumulative1
-        assert abs(sim0 - fees0) < 1.0, (block, sim0, fees0)
-        assert abs(sim1 - fees1) < 1.0, (block, sim1, fees1)
+        assert abs(sim0 - fees0) < 2.0, (block, sim0, fees0)
+        assert abs(sim1 - fees1) < 2.0, (block, sim1, fees1)
 
 
 def test_engine_applies_protocol_fee_split_like_tracker() -> None:
@@ -287,7 +288,7 @@ def test_engine_applies_protocol_fee_split_like_tracker() -> None:
 
     lower, upper = 196140, 196380
     pid = engine.open_position(Tick(lower), Tick(upper), _L_AGENT)
-    replay.register_position(tick_lower=lower, tick_upper=upper)
+    replay.register_position(tick_lower=lower, tick_upper=upper, liquidity=int(_L_AGENT))
 
     g0_last = g1_last = 0
     prev0 = prev1 = 0.0
@@ -312,8 +313,8 @@ def test_engine_applies_protocol_fee_split_like_tracker() -> None:
         sim0 = cumulative0 - prev0
         sim1 = cumulative1 - prev1
         prev0, prev1 = cumulative0, cumulative1
-        assert abs(sim0 - fees0) < 1.0, (block, sim0, fees0)
-        assert abs(sim1 - fees1) < 1.0, (block, sim1, fees1)
+        assert abs(sim0 - fees0) < 2.0, (block, sim0, fees0)
+        assert abs(sim1 - fees1) < 2.0, (block, sim1, fees1)
 
     snapshot = replay.snapshot()
     assert abs(

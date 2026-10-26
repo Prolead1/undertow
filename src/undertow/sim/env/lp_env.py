@@ -1281,6 +1281,7 @@ class LpEnvironment(gym.Env):
             hedge_short_ratio=hedge_short_ratio,
             hedge_equity_frac=hedge_equity_frac,
             hedge_enabled=self.config.hedge.enabled,
+            position_id=self._position_id,
         )
         return observation
 

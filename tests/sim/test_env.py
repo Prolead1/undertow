@@ -39,6 +39,7 @@ from undertow.sim.env.observations import (
     Observation,
     ObservationBuilder,
     scale_vector,
+    unscale_vector,
 )
 from undertow.sim.env.reward import RewardBreakdown
 from undertow.sim.marketview import MarketView
@@ -2601,33 +2602,33 @@ class TestHedgeOverlay:
 
 
 # ---------------------------------------------------------------------------
-# S20 golden guard: the disabled build reproduces HEAD's LP-only output exactly
+# S20 golden guard: the disabled build reproduces the LP-only output exactly
 # ---------------------------------------------------------------------------
-# Captured from commit 745135f (pre-S20) with the scenario in
-# ``TestDisabledGoldenGuard`` below: shared tiny fixture, flat reference feed,
-# ``_SequencePriceProcess([3004, 3010, 2995, 3005, 3015])``, calibrated mode,
-# reset(seed=0) then holds at steps 1--2, a (center_offset=0, width=2) rebalance
-# at step 3, a hold at step 4.  The constants are the observation vector and the
-# (gated/ungated identical) USDC reward breakdown of that exact run, so any
-# accidental change to the disabled path fails on the raw float values rather
-# than on a loose tolerance.
+# Captured with the scenario in ``TestDisabledGoldenGuard`` below: shared tiny
+# fixture, flat reference feed, ``_SequencePriceProcess([3004, 3010, 2995,
+# 3005, 3015])``, calibrated mode, reset(seed=0) then holds at steps 1--2, a
+# (center_offset=0, width=2) rebalance at step 3, a hold at step 4.  Both the
+# observation vector and the (gated/ungated identical) USDC reward breakdown
+# were re-captured after ADR-035 changed the fee share, so any accidental
+# change to the disabled path fails on the raw float values rather than on a
+# loose tolerance.
 _GOLDEN_DISABLED_OBS: dict[str, list[float]] = {
     "reset": [
-        3004.30716760014,
-        18244.326385761702,
-        196242.0,
+        3004.307167600141,
+        18244.32638576171,
+        196242.0000000001,
         0.0,
         0.0,
         0.0,
         1.0,
-        99999.99999988991,
+        99999.9999998899,
         0.0,
         0.0,
         0.0,
-        1e18,
+        9.999999999999986e+17,
         3000.0,
-        21000000000.0,
-        3004.30716760014,
+        21000000000.000008,
+        3004.307167600141,
         0.0,
         0.0,
         4463.0,
@@ -2636,21 +2637,21 @@ _GOLDEN_DISABLED_OBS: dict[str, list[float]] = {
         21.0,
     ],
     "step1": [
-        3004.0,
-        18245.259129220667,
-        196243.0,
+        3003.9999999999977,
+        18245.259129220653,
+        196242.99999999994,
         0.0,
         0.0,
         0.0,
         1.0,
-        99994.78781637349,
-        8.825809261938209e-05,
+        99994.78781637354,
+        8.573579989668916e-05,
         0.0,
         -4.2143421451328325e-08,
-        1e18,
+        9.999999999999986e+17,
         3000.0,
-        21000000000.0,
-        3004.0,
+        21000000000.000008,
+        3003.9999999999977,
         0.0,
         1.0,
         4462.0,
@@ -2659,21 +2660,21 @@ _GOLDEN_DISABLED_OBS: dict[str, list[float]] = {
         21.0,
     ],
     "step2": [
-        3004.0,
-        18227.06541441223,
+        3003.9999999999977,
+        18227.065414412238,
         196223.0,
         0.0,
         0.0,
         0.0,
         1.0,
-        99996.39275793756,
-        0.00017651618523876418,
+        99996.39275793757,
+        0.00017147159979337832,
         0.0,
         1.600727221928537e-05,
-        1e18,
+        9.999999999999986e+17,
         3000.0,
-        21000000000.0,
-        3004.0,
+        21000000000.000008,
+        3003.9999999999977,
         0.0,
         2.0,
         4461.0,
@@ -2682,21 +2683,21 @@ _GOLDEN_DISABLED_OBS: dict[str, list[float]] = {
         21.0,
     ],
     "step3": [
-        3004.0,
-        18272.652143588817,
-        196273.0,
+        3003.9999999999977,
+        18272.652143588803,
+        196273.00000000012,
         0.0,
         0.0,
         0.0,
         1.0,
-        99925.73302112112,
-        0.00036597667825354914,
+        99925.73301608098,
+        0.0003261846826820426,
         0.0,
-        -0.000690590095945081,
-        1e18,
+        -0.0006905901463470945,
+        9.999999999999986e+17,
         3000.0,
-        21000000000.0,
-        3004.0,
+        21000000000.000008,
+        3003.9999999999977,
         0.0,
         3.0,
         4460.0,
@@ -2705,21 +2706,21 @@ _GOLDEN_DISABLED_OBS: dict[str, list[float]] = {
         5.0,
     ],
     "step4": [
-        3004.0,
-        18242.22305978801,
-        196239.0,
+        3003.9999999999977,
+        18242.223059788008,
+        196238.99999999994,
         0.0,
         0.0,
         0.0,
         1.0,
-        99910.8691072961,
-        0.0007319533565070983,
+        99910.86910225668,
+        0.0006523693653640852,
         0.0,
-        -0.0008392292341953726,
-        1e18,
+        -0.0008392292845899647,
+        9.999999999999986e+17,
         3000.0,
-        21000000000.0,
-        3004.0,
+        21000000000.000008,
+        3003.9999999999977,
         0.0,
         4.0,
         4459.0,
@@ -2741,56 +2742,57 @@ _GOLDEN_DISABLED_RAW: dict[str, dict[str, float]] = {
         "equity": 100000.0,
     },
     "step1": {
-        "fees": 8.825809261938209e-05,
+        "fees": 8.573579989668916e-05,
         "gas": -0.0,
         "slippage": -0.0,
         "il_change": -0.004214342145132832,
         "risk_penalty": 0.0,
-        "reward": -0.0041260840525134505,
-        "pnl_net": -0.0041260840525134505,
-        "equity": 99994.78790463158,
+        "reward": -0.0041286063452361434,
+        "pnl_net": -0.0041286063452361434,
+        "equity": 99994.78790210928,
     },
     "step2": {
-        "fees": 8.825809261938209e-05,
+        "fees": 8.573579989668916e-05,
         "gas": -0.0,
         "slippage": -0.0,
         "il_change": -1.4418992520513711,
         "risk_penalty": 0.0,
-        "reward": -1.4418109939587518,
-        "pnl_net": -1.4418109939587518,
-        "equity": 100095.07497074404,
+        "reward": -1.4418135162514745,
+        "pnl_net": -1.4418135162514745,
+        "equity": 100095.07496569946,
     },
     "step3": {
-        "fees": 0.00036597667825354914,
+        "fees": 0.0003261846826820426,
         "gas": -76.4775,
         "slippage": -6.16750327591709,
-        "il_change": -25.062111793493386,
+        "il_change": -25.06211177939258,
         "risk_penalty": 0.0,
-        "reward": -107.70674909273222,
-        "pnl_net": -107.70674909273222,
-        "equity": 99733.04602888528,
+        "reward": -107.706788870627,
+        "pnl_net": -107.706788870627,
+        "equity": 99733.04598406279,
     },
     "step4": {
-        "fees": 0.00036597667825354914,
+        "fees": 0.0003261846826820426,
         "gas": -0.0,
         "slippage": -0.0,
-        "il_change": 25.972910674274317,
+        "il_change": 25.97291066442267,
         "risk_penalty": 0.0,
-        "reward": 25.97327665095257,
-        "pnl_net": 25.97327665095257,
-        "equity": 99928.56743404694,
+        "reward": 25.97323684910535,
+        "pnl_net": 25.97323684910535,
+        "equity": 99928.56734942259,
     },
 }
 
 
 class TestDisabledGoldenGuard:
-    """The disabled overlay reproduces the pre-S20 LP-only numbers exactly.
+    """The disabled overlay reproduces the LP-only numbers exactly.
 
-    Golden constants captured from HEAD (commit 745135f) with the scenario
-    below; see the comments above the constants.  The first 21 observation dims
-    must match the recorded values pushed through the deterministic ADR-034 log
-    compression bit for bit, the eight original reward fields must match raw
-    bit for bit, and the three appended hedge dims must be exactly zero.
+    Golden constants captured with the scenario below and re-captured after
+    ADR-035 changed the fee share; see the comments above the constants.  The
+    first 21 observation dims must match the recorded values pushed through the
+    deterministic ADR-034 log compression bit for bit, the eight original
+    reward fields must match raw bit for bit, and the three appended hedge dims
+    must be exactly zero.
     """
 
     def test_disabled_path_reproduces_head_observations_and_reward(
@@ -2807,12 +2809,26 @@ class TestDisabledGoldenGuard:
             enabled=False,
         )
         observation, info = env.reset(seed=0)
-        rows: list[tuple[str, np.ndarray, dict[str, float], dict[str, float]]] = [
+
+        def _ledger() -> tuple[float, float]:
+            assert env.position_id is not None
+            return env.pool_engine.position_fees(env.position_id)
+
+        rows: list[
+            tuple[
+                str,
+                np.ndarray,
+                dict[str, float],
+                dict[str, float],
+                tuple[float, float],
+            ]
+        ] = [
             (
                 "reset",
                 observation,
                 dict(info["reward_breakdown_raw"]),
                 dict(info["reward_breakdown_economics"]),
+                _ledger(),
             )
         ]
         rebalance = Action(action_type="rebalance", center_offset=0, width=2)
@@ -2825,15 +2841,14 @@ class TestDisabledGoldenGuard:
                     observation,
                     dict(info["reward_breakdown_raw"]),
                     dict(info["reward_breakdown_economics"]),
+                    _ledger(),
                 )
             )
             if terminated or truncated:  # pragma: no cover - long episode budget
                 break
 
-        assert [label for label, _obs, _raw, _econ in rows] == list(
-            _GOLDEN_DISABLED_OBS
-        )
-        for label, obs, raw, economics in rows:
+        assert [label for label, *_rest in rows] == list(_GOLDEN_DISABLED_OBS)
+        for label, obs, raw, economics, ledger in rows:
             assert obs.shape == (OBSERVATION_VECTOR_LENGTH,)
             # ADR-034 log-compresses the heavy-tailed dims, so compare in the
             # compressed space: the current vector must be bit-for-bit the
@@ -2845,6 +2860,17 @@ class TestDisabledGoldenGuard:
                 scale_vector(np.asarray(_GOLDEN_DISABLED_OBS[label])),
             )
             assert obs[21:].tolist() == [0.0, 0.0, 0.0]
+            # ADR-035 invariant: the observation's fee dims must be the same
+            # ledger the reward reads.  This stops a future re-capture from
+            # silently freezing a growth-path fallback mismatch.  Indices 8/9
+            # are ADR-034 log-compressed, so compare the raw values.
+            raw_obs = unscale_vector(obs)
+            assert raw_obs[8] == pytest.approx(
+                ledger[0] / 10.0**env._position.dec0, rel=1e-9, abs=1e-12
+            )
+            assert raw_obs[9] == pytest.approx(
+                ledger[1] / 10.0**env._position.dec1, rel=1e-9, abs=1e-12
+            )
             golden_raw = _GOLDEN_DISABLED_RAW[label]
             assert set(golden_raw) <= set(raw)
             for key, expected in golden_raw.items():

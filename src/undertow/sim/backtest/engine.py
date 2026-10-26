@@ -793,6 +793,7 @@ class _Replay:
         self.replay.register_position(
             tick_lower=new_position.tick_lower,
             tick_upper=new_position.tick_upper,
+            liquidity=int(round(new_position.liquidity)),
         )
         _f0, _f1, g0, g1 = self.replay.accrue(
             tick_lower=new_position.tick_lower,
@@ -949,6 +950,7 @@ def run_backtest(
             run.replay.register_position(
                 tick_lower=initial_position.tick_lower,
                 tick_upper=initial_position.tick_upper,
+                liquidity=int(round(initial_position.liquidity)),
             )
             # Seed the inside snapshots from the *pre-event* state now, before
             # replaying the first event, so the first event's fee is credited
