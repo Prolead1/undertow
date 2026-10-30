@@ -5,7 +5,7 @@
 
 Uniswap~v3 indexes price by integer ticks. An LP picks a lower and an upper
 tick, and the deposit backs trades only while the pool price stays between
-them~\cite{adams2021uniswap}. In protocol units the price is a raw square root,
+them\cite{adams2021uniswap}. In protocol units the price is a raw square root,
 $s=\sqrt{1.0001^{\text{tick}}}$, which increases with the tick; the human price
 is $q(s)=10^{d_1-d_0}/s^2$ USDC per WETH, so a lower tick means a higher ETH
 price. Inside a band $[s_a,s_b]$ the position holds
@@ -57,7 +57,7 @@ with equally valued legs, if the ETH price ratio is $r=q_t/q_0$, then
 which is second order in the price move; at $r=1.2$ it is $-0.41\,\%$. On v3
 the same expression applies only inside the band, and outside it the position
 is a one-sided holding, so IL depends on where the band was
-placed~\cite{loesch2021impermanent}.
+placed\cite{loesch2021impermanent}.
 
 The second loss is sharper. Compare the position with a portfolio that
 continuously rebalances to hold the same instantaneous exposure. A second-order
@@ -68,7 +68,7 @@ portfolio at the rate
 \label{eq:lvr}
 \end{equation}
 which is the loss-versus-rebalancing of Milionis et
-al.~\cite{milionis2022lvr}. Adverse selection therefore grows with the square
+al.\cite{milionis2022lvr}. Adverse selection therefore grows with the square
 of volatility and with position size, and fee income must exceed it for passive
 provision to be viable. Concentration raises fee density but not the fee rate,
 so it helps only when the extra fee share outweighs the extra exposure to
@@ -94,11 +94,11 @@ The decisions interfere. A wider band delays the next costly recentring but
 earns less per trade; a hedge removes directional variance but pays funding and
 perp fees; acting sooner protects fee income but multiplies transaction costs.
 Because acting is lumpy, the problem is one of impulse
-control~\cite{anchuri2026rammstein}, and because the outcome is uncertain, the
+control\cite{anchuri2026rammstein}, and because the outcome is uncertain, the
 right measure is not profit but profit per unit of risk. We use two such
 measures throughout: the annualised Sharpe ratio and the conditional
 value-at-risk (CVaR) at the $5\,\%$ level, a coherent risk measure that can be
-optimised through its convex representation~\cite{rockafellar2000cvar}.
+optimised through its convex representation\cite{rockafellar2000cvar}.
 Figure~\ref{fig:decisions} makes the sequence concrete.
 
 \begin{figure*}[t]

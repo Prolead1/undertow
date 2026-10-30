@@ -5,37 +5,37 @@ The economics of passive provision is now well understood. Milionis et al.\
 formalised the loss a constant-product LP suffers against a delta-rebalanced
 portfolio and derived the rate $\frac{1}{8}\sigma^2 V$ for a full-range
 position; the loss appears on any price path, informed traders or not, and
-protocol fees and the choice of curve shift only the balance~\cite{milionis2022lvr}.
+protocol fees and the choice of curve shift only the balance\cite{milionis2022lvr}.
 Fritsch and Canidio measured the losses on real pools and found that arbitrage
 losses typically dominate the fees earned, with passive full-range positions
-outperforming concentrated ones in their sample~\cite{fritsch2024measuring}.
+outperforming concentrated ones in their sample\cite{fritsch2024measuring}.
 Loesch et al.\ studied v3 positions directly and showed that concentration
-magnifies impermanent loss when the price leaves the band~\cite{loesch2021impermanent}.
+magnifies impermanent loss when the price leaves the band\cite{loesch2021impermanent}.
 Together these results define the terrain: gross fee yield is not an LP's
 return.
 
 A second line of work learns the LP's decisions. Zhang et al.\ train a hedged
 double deep Q-network and report large gains over baselines, but the hedge is
 assumed frictionless and the policy sees no regime
-features~\cite{zhang2023adaptive}. ZeroSwap learns the spread of a market maker
+features\cite{zhang2023adaptive}. ZeroSwap learns the spread of a market maker
 so that quoted prices track an external reference, an orthogonal lever to range
-placement~\cite{nadkarni2023zeroswap}. RAmmStein poses regime-dependent
+placement\cite{nadkarni2023zeroswap}. RAmmStein poses regime-dependent
 rebalancing thresholds as a problem of impulse control and reports that
 rebalancing lazily when the regime warrants it improves net ROI with far fewer
 rebalances, though its net metric excludes impermanent loss and the study relies
-on off-chain data for one pair~\cite{anchuri2026rammstein}. Chionas et al.\
+on off-chain data for one pair\cite{anchuri2026rammstein}. Chionas et al.\
 treat concentrated liquidity as a risk-aversion problem in simulation and find
 that higher volatility and gas widen optimal positions and reduce rebalancing,
 while a risk penalty trims the adverse tail; their analysis uses no on-chain
-data and no hedge~\cite{chionas2026concentrated}. Classical market making
+data and no hedge\cite{chionas2026concentrated}. Classical market making
 supplies the risk-sensitive vocabulary we use, but its state is a limit order
-book and its actions are quotes, not range geometry~\cite{avellaneda2008high}.
+book and its actions are quotes, not range geometry\cite{avellaneda2008high}.
 
 The learning machinery is standard. We use proximal policy optimisation with
-clipping~\cite{schulman2017ppo}, implemented through Stable-Baselines3 on
-Gymnasium environments~\cite{raffin2021stablebaselines3,towers2024gymnasium},
+clipping\cite{schulman2017ppo}, implemented through Stable-Baselines3 on
+Gymnasium environments\cite{raffin2021stablebaselines3,towers2024gymnasium},
 and evaluate risk with CVaR at the $5\,\%$ level through its
-Rockafellar--Uryasev representation~\cite{rockafellar2000cvar}.
+Rockafellar--Uryasev representation\cite{rockafellar2000cvar}.
 
 What is missing is one study that trains a single policy over the joint timing,
 width and hedge decisions, charges every friction on both legs, and evaluates it
