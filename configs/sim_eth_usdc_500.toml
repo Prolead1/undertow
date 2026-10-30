@@ -1,8 +1,10 @@
 # Sim config for the ETH/USDC 0.05% pool (configs/eth_usdc_500.toml) — the
-# primary study pool.  Same episode/action-grid values as configs/sim_default.toml;
-# named explicitly for runs that pin the dataset.  Widths are half-ranges in
-# tick-spacing units, so spacing 10 needs the wider ladder to cover the same
-# price band the 0.30% contrast pool does at spacing 60.
+# primary study pool.  Named explicitly for runs that pin the dataset.  The
+# episode values match configs/sim_default.toml, but the action grid and the PPO
+# update recipe are the stabilized primary-pool overrides (ADR-036): the default
+# 91-action grid made hold inexplorable and the default update sizes thrashed.
+# Widths are half-ranges in tick-spacing units, so spacing 10 needs the wider
+# ladder to cover the same price band the 0.30% contrast pool does at spacing 60.
 
 [episode]
 duration_days = 30
@@ -13,8 +15,13 @@ fee_tier_bps = 500
 tick_spacing = 10
 
 [action_grid]
-center_offsets = [-4, -3, -2, -1, 0, 1, 2, 3, 4]
-widths = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000]
+# ADR-011's factored grid, config-reduced for this pool: 3 centre offsets x
+# 9 widths + hold = 28 actions.  The default 91-action grid made hold
+# inexplorable -- the flat softmax sampled it only ~1/N of the time, so the
+# policy never built the hold advantage that avoiding the per-rebalance gas
+# dominates.  (ADR-011's grid itself is unchanged; only this pool's config is.)
+center_offsets = [-1, 0, 1]
+widths = [2, 5, 10, 25, 50, 100, 250, 500, 1000]
 include_hold = true
 
 [gas]
@@ -54,6 +61,21 @@ parallel_envs = 4
 total_timesteps = 1000000
 checkpoint_freq_steps = 100000
 log_freq_steps = 10000
+# Stabilized PPO update recipe (ADR-036).  The primary run thrashed: the
+# captured rollout advantages correctly favoured hold (adv_hold > 0,
+# adv_reb < 0) but the hold fraction flipped between ~0.51 and ~0.01
+# update-to-update because a 64-sample mini-batch over 10 epochs moved the
+# policy too far from the behaviour policy that collected the rollout.  Smaller
+# steps, a larger batch, fewer epochs and a KL stop let the advantage signal
+# dominate; on the real train env the greedy policy then held all 4320 steps
+# and matched the scripted hold-only return (+0.0885).  hold_bias keeps the
+# hold prior (now on a 28-action grid).
+learning_rate = 0.0001
+batch_size = 512
+n_epochs = 4
+ent_coef = 0.001
+target_kl = 0.01
+hold_bias = 4.0
 vec_env = "subproc"
 
 [backtest]

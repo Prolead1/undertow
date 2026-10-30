@@ -7,12 +7,15 @@ The pinned hyperparameters are the PLAN.md §7 anchor setup: an MLP policy of
 
 Rollout sizing
 --------------
-The anchor's SB3 defaults (``n_steps=2048``, ``batch_size=64``, ``n_epochs=10``,
-``learning_rate=3e-4``) are *not* fields of :class:`TrainingConfig`, so the
-rollout is derived from the config in a way that reproduces those values for the
-production budget (1e6 timesteps, 4 envs → 2048/64) and shrinks gracefully for
-the tiny CPU configurations used by the test-suite. The derivation is purely a
-function of the config, so it is deterministic and reviewable.
+The optimisation knobs (``batch_size``, ``n_epochs``, ``learning_rate``,
+``ent_coef``, ``target_kl``) are :class:`TrainingConfig` fields.  ``n_steps`` is
+not a field: the rollout is derived from the config so the production budget
+(1e6 timesteps, 4 envs → 2048) reproduces the anchor rollout and shrinks
+gracefully for the tiny CPU configurations used by the test-suite.  With the
+default ``batch_size=64``/``n_epochs=10`` the derivation reproduces the PLAN.md
+§7 anchor values; the primary 0.05 % pool overrides them (ADR-036).  The
+derivation is purely a function of the config, so it is deterministic and
+reviewable.
 
 Learning curve
 --------------
@@ -63,11 +66,9 @@ __all__ = ["train_single_seed"]
 
 logger = logging.getLogger("undertow.sim.train.ppo_runner")
 
-#: Anchor PPO rollout/optimisation defaults (PLAN.md §7 anchor setup, §8.4.4).
+#: Anchor PPO rollout length (PLAN.md §7 anchor setup, §8.4.4).
+#: The remaining optimisation knobs live in ``TrainingConfig`` (ADR-036).
 PPO_N_STEPS: int = 2048
-PPO_BATCH_SIZE: int = 64
-PPO_N_EPOCHS: int = 10
-PPO_LEARNING_RATE: float = 3e-4
 PPO_DEVICE: str = "cpu"  # CPU keeps runs bit-reproducible and GPU-free in tests
 
 #: Accepted ``training.vec_env`` backends (validated again by ``TrainingConfig``).
@@ -118,7 +119,7 @@ def _pin_torch_threads() -> None:
 def _snap_batch_size(rollout: int, cap: int) -> int:
     """Pick a valid SB3 mini-batch size for ``rollout`` samples.
 
-    Targets a quarter of the rollout, capped at ``cap`` (the anchor's
+    Targets a quarter of the rollout, capped at ``cap`` (the default config's
     ``batch_size=64`` comes from the cap, not the quarter), then snaps to a
     divisor of ``rollout``. The result always satisfies
     ``1 < batch_size <= rollout`` and ``rollout % batch_size == 0``. When the
@@ -138,10 +139,14 @@ def _snap_batch_size(rollout: int, cap: int) -> int:
 def _derive_rollout(training: TrainingConfig) -> tuple[int, int, int]:
     """Derive ``(n_steps, batch_size, n_epochs)`` from the training config.
 
-    For the production budget (1e6 timesteps / 4 envs) this reproduces the
-    anchor values 2048 / 64 / 10. Smaller budgets get proportionally smaller
-    rollouts so a test never trains much more than ``total_timesteps``. The
-    returned ``batch_size`` always satisfies SB3's invariants
+    ``n_steps`` comes from the budget, while ``batch_size`` and ``n_epochs``
+    come from the config.  For the production budget (1e6 timesteps / 4 envs)
+    with the anchor defaults this reproduces 2048 / 64 / 10. Smaller budgets
+    get proportionally smaller rollouts so a test never trains much more than
+    ``total_timesteps``.  The configured ``batch_size`` is capped to and snapped
+    to a divisor of the rollout -- normally down, but up to the smallest divisor
+    above the target when the target has none (a prime rollout then takes a
+    full-batch step) -- so the returned value always satisfies SB3's invariants
     ``1 < batch_size <= rollout`` and ``rollout % batch_size == 0``.
     """
     parallel = max(1, int(training.parallel_envs))
@@ -152,8 +157,8 @@ def _derive_rollout(training: TrainingConfig) -> tuple[int, int, int]:
     if rollout < 2:  # SB3 requires batch_size > 1 and batch_size <= rollout
         n_steps = 2
         rollout = n_steps * parallel
-    batch_size = _snap_batch_size(rollout, PPO_BATCH_SIZE)
-    return n_steps, batch_size, PPO_N_EPOCHS
+    batch_size = _snap_batch_size(rollout, int(training.batch_size))
+    return n_steps, batch_size, int(training.n_epochs)
 
 
 class _LearningCurveCallback(BaseCallback):
@@ -402,10 +407,12 @@ def _train_single_seed(
         model = PPO(
             "MlpPolicy",
             vec_env,
-            learning_rate=PPO_LEARNING_RATE,
+            learning_rate=training.learning_rate,
             n_steps=n_steps,
             batch_size=batch_size,
             n_epochs=n_epochs,
+            ent_coef=training.ent_coef,
+            target_kl=training.target_kl,
             gamma=training.discount_gamma,
             gae_lambda=training.gae_lambda,
             clip_range=training.clip_epsilon,

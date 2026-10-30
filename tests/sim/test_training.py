@@ -142,6 +142,11 @@ def _training_config(
     checkpoint_freq_steps: int = 128,
     parallel_envs: int = 1,
     hold_bias: float = 0.0,
+    learning_rate: float = 3e-4,
+    batch_size: int = 64,
+    n_epochs: int = 10,
+    ent_coef: float = 0.0,
+    target_kl: float | None = None,
 ) -> SimConfig:
     """A tiny, fast CPU training config (hundreds of steps, one env by default)."""
     return SimConfig(
@@ -153,6 +158,11 @@ def _training_config(
             checkpoint_freq_steps=checkpoint_freq_steps,
             parallel_envs=parallel_envs,
             hold_bias=hold_bias,
+            learning_rate=learning_rate,
+            batch_size=batch_size,
+            n_epochs=n_epochs,
+            ent_coef=ent_coef,
+            target_kl=target_kl,
             # Training-mechanics tests isolate the PPO loop from the post-training
             # rollout recording (which needs a full env `info` and is covered in
             # tests/sim/test_rollouts.py).
@@ -375,6 +385,25 @@ class TestRolloutDerivation:
         config = TrainingConfig(total_timesteps=1_000_000, parallel_envs=4)
         assert _derive_rollout(config) == (2048, 64, 10)
 
+    def test_honors_the_configured_batch_size_and_epochs(self) -> None:
+        config = TrainingConfig(
+            total_timesteps=1_000_000,
+            parallel_envs=4,
+            batch_size=512,
+            n_epochs=4,
+        )
+        # The primary pool's stabilized recipe: 512 divides the 2048*4 rollout.
+        assert _derive_rollout(config) == (2048, 512, 4)
+
+    def test_configured_batch_size_snaps_to_a_divisor_of_the_rollout(self) -> None:
+        # 100 does not divide the 256-step rollout; the derivation must snap it
+        # down rather than hand SB3 an invalid mini-batch size.
+        config = TrainingConfig(total_timesteps=1024, parallel_envs=1, batch_size=100)
+        n_steps, batch_size, _ = _derive_rollout(config)
+        rollout = n_steps * 1
+        assert rollout % batch_size == 0
+        assert 1 < batch_size <= 100
+
     @pytest.mark.parametrize("parallel_envs", [1, 2, 3, 4, 8])
     @pytest.mark.parametrize(
         "total_timesteps",
@@ -519,6 +548,48 @@ class TestHoldBias:
         model, bias = calls[0]
         assert isinstance(model, PPO)
         assert bias == pytest.approx(3.0)
+
+
+class TestOptimizerKnobWiring:
+    def test_train_single_seed_passes_the_configured_optimizer_knobs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: list[dict[str, object]] = []
+        applied: list[tuple[object, float]] = []
+
+        class _RecordingPPO(PPO):
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                captured.append(dict(kwargs))
+                super().__init__(*args, **kwargs)
+
+        monkeypatch.setattr("undertow.sim.train.ppo_runner.PPO", _RecordingPPO)
+        monkeypatch.setattr(
+            "undertow.sim.train.ppo_runner._apply_hold_bias",
+            lambda model, bias: applied.append((model, bias)),
+        )
+        config = _training_config(
+            total_timesteps=1024,
+            log_freq_steps=1024,
+            checkpoint_freq_steps=1000,
+            learning_rate=1e-4,
+            batch_size=16,
+            n_epochs=4,
+            ent_coef=0.001,
+            target_kl=0.01,
+            hold_bias=4.0,
+        )
+        _train_single_seed(_BanditEnv, config, 0, tmp_path)
+
+        assert len(captured) == 1
+        kwargs = captured[0]
+        assert kwargs["learning_rate"] == pytest.approx(1e-4)
+        assert kwargs["batch_size"] == 16  # 16 divides the 256-step rollout
+        assert kwargs["n_epochs"] == 4
+        assert kwargs["ent_coef"] == pytest.approx(0.001)
+        assert kwargs["target_kl"] == pytest.approx(0.01)
+        # The hold prior is still applied exactly once, on the constructed model.
+        assert len(applied) == 1
+        assert applied[0][1] == pytest.approx(4.0)
 
 
 # ---------------------------------------------------------------------------
