@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -237,6 +238,8 @@ class TestTrainingConfig:
         # Rollouts are recorded by default so the replay views have data.
         assert tc.record_rollouts is True
         assert tc.rollout_max_episodes == 5
+        # No hold prior by default: behaviour is unchanged unless opted in.
+        assert tc.hold_bias == 0.0
 
     def test_rollouts_can_still_be_disabled(self) -> None:
         assert TrainingConfig(record_rollouts=False).record_rollouts is False
@@ -245,6 +248,14 @@ class TestTrainingConfig:
         assert TrainingConfig(vec_env="subproc").vec_env == "subproc"
         with pytest.raises(SimConfigError, match="vec_env"):
             TrainingConfig(vec_env="threads")  # type: ignore[arg-type]
+
+    def test_hold_bias_accepts_a_positive_prior(self) -> None:
+        assert TrainingConfig(hold_bias=2.5).hold_bias == 2.5
+
+    @pytest.mark.parametrize("hold_bias", [-1.0, -1e-9, math.nan, math.inf])
+    def test_hold_bias_must_be_finite_and_non_negative(self, hold_bias) -> None:
+        with pytest.raises(SimConfigError, match="hold_bias"):
+            TrainingConfig(hold_bias=hold_bias)
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +383,23 @@ class TestLoadSimConfig:
         assert cfg.hedge.enabled is False
         assert cfg.hedge.fee_bps == 5.0
         assert cfg.hedge.ratio == 1.0
+
+    def test_hold_bias_round_trips_through_the_training_section(self, tmp_path) -> None:
+        path = tmp_path / "hold_bias.toml"
+        _write_toml(path, "[training]\nhold_bias = 2.5\n")
+        cfg = load_sim_config(str(path))
+        # ``_populate`` picks the new dataclass field up without a loader change.
+        assert cfg.training.hold_bias == 2.5
+        assert cfg.training.total_timesteps == 1_000_000  # other keys default
+
+    @pytest.mark.parametrize("literal", ["-0.5", "nan", "-inf"])
+    def test_hold_bias_validation_applies_through_the_loader(
+        self, tmp_path, literal
+    ) -> None:
+        path = tmp_path / "bad_hold_bias.toml"
+        _write_toml(path, f"[training]\nhold_bias = {literal}\n")
+        with pytest.raises(SimConfigError, match="hold_bias"):
+            load_sim_config(str(path))
 
 
 # ---------------------------------------------------------------------------

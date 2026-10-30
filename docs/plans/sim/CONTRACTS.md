@@ -186,6 +186,7 @@ class TrainingConfig:
     checkpoint_freq_steps: int = 100_000
     log_freq_steps: int = 10_000
     vec_env: Literal["dummy", "subproc"] = "dummy"  # ADR-022: per-slot process in "subproc"
+    hold_bias: float = 0.0  # logit prior on hold (index 0); 0.0 = off
 
 @dataclass(frozen=True, slots=True)
 class BacktestConfig:

@@ -13,14 +13,17 @@ import dataclasses
 import json
 import os
 import shutil
-from collections.abc import Callable
+import types
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
 import pytest
+import torch
 from gymnasium import spaces
 from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import DummyVecEnv
 
 from tests.sim.synthetic_pool import tiny_episode
 from undertow.sim.config import SimConfig, TrainingConfig
@@ -34,9 +37,13 @@ from undertow.sim.train import (
     train_ppo,
     train_single_seed,
 )
-from undertow.sim.train.ppo_runner import _derive_rollout, _train_single_seed
+from undertow.sim.train.ppo_runner import (
+    _apply_hold_bias,
+    _derive_rollout,
+    _train_single_seed,
+)
 from undertow.sim.train.runs import compute_config_hash, library_versions
-from undertow.sim.types import Tick
+from undertow.sim.types import SimConfigError, Tick
 
 #: Optimal arm index and reward in the deterministic bandit below.
 _OPTIMAL_ARM = 1
@@ -134,6 +141,7 @@ def _training_config(
     log_freq_steps: int = 64,
     checkpoint_freq_steps: int = 128,
     parallel_envs: int = 1,
+    hold_bias: float = 0.0,
 ) -> SimConfig:
     """A tiny, fast CPU training config (hundreds of steps, one env by default)."""
     return SimConfig(
@@ -144,6 +152,7 @@ def _training_config(
             log_freq_steps=log_freq_steps,
             checkpoint_freq_steps=checkpoint_freq_steps,
             parallel_envs=parallel_envs,
+            hold_bias=hold_bias,
             # Training-mechanics tests isolate the PPO loop from the post-training
             # rollout recording (which needs a full env `info` and is covered in
             # tests/sim/test_rollouts.py).
@@ -427,6 +436,89 @@ class TestRolloutDerivation:
         assert _tensorboard_log(tmp_path) == str(tmp_path / "tensorboard")
         monkeypatch.delitem(sys.modules, "tensorboard")
         assert _tensorboard_log(tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# hold_bias
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def bandit_ppo() -> Iterator[tuple[PPO, DummyVecEnv]]:
+    """An untrained PPO on the deterministic bandit, plus its vector env."""
+    vec_env = DummyVecEnv([_BanditEnv])
+    n_steps, batch_size, n_epochs = _derive_rollout(
+        TrainingConfig(total_timesteps=64, parallel_envs=1)
+    )
+    model = PPO(
+        "MlpPolicy",
+        vec_env,
+        n_steps=n_steps,
+        batch_size=batch_size,
+        n_epochs=n_epochs,
+        seed=0,
+        device="cpu",
+        verbose=0,
+    )
+    try:
+        yield model, vec_env
+    finally:
+        vec_env.close()
+
+
+class TestHoldBias:
+    def test_hold_bias_shifts_the_hold_logit(self, bandit_ppo) -> None:
+        model, _ = bandit_ppo
+        before = model.policy.action_net.bias.detach().clone()
+        _apply_hold_bias(model, 3.5)
+        after = model.policy.action_net.bias.detach()
+        # ``hold`` is index 0 (ADR-011): only that logit moves, by exactly the
+        # configured offset -- every other action keeps its prior.
+        assert float(after[0]) - float(before[0]) == pytest.approx(3.5)
+        assert torch.equal(after[1:], before[1:])
+
+    def test_hold_bias_is_a_noop_at_zero(self, bandit_ppo) -> None:
+        model, _ = bandit_ppo
+        before = model.policy.action_net.bias.detach().clone()
+        _apply_hold_bias(model, 0.0)
+        assert torch.equal(model.policy.action_net.bias.detach(), before)
+
+    @pytest.mark.parametrize(
+        "action_net",
+        [
+            torch.nn.Linear(8, 2, bias=False),  # bias term absent entirely
+            types.SimpleNamespace(bias=torch.empty(0)),  # zero-length bias
+        ],
+    )
+    def test_hold_bias_rejects_a_head_without_bias(self, action_net) -> None:
+        stub = types.SimpleNamespace(
+            policy=types.SimpleNamespace(action_net=action_net)
+        )
+        with pytest.raises(SimConfigError, match="action head"):
+            _apply_hold_bias(stub, 1.0)
+
+    def test_training_applies_the_configured_hold_bias(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[tuple[object, float]] = []
+
+        def _record(model: PPO, bias: float) -> None:
+            calls.append((model, bias))
+
+        monkeypatch.setattr(
+            "undertow.sim.train.ppo_runner._apply_hold_bias", _record
+        )
+        config = _training_config(
+            total_timesteps=64,
+            checkpoint_freq_steps=1000,
+            hold_bias=3.0,
+        )
+        train_single_seed(_BanditEnv, config, 0, tmp_path)
+        # Exactly one application, before ``model.learn``, on the trained model.
+        assert len(calls) == 1
+        model, bias = calls[0]
+        assert isinstance(model, PPO)
+        assert bias == pytest.approx(3.0)
 
 
 # ---------------------------------------------------------------------------

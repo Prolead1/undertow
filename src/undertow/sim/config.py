@@ -168,11 +168,22 @@ class TrainingConfig:
     record_rollouts: bool = True
     #: Maximum evaluation episodes recorded when ``record_rollouts`` is true (U06).
     rollout_max_episodes: int = 5
+    #: Positive offset added to the ``hold`` action's logit when the PPO model is
+    #: constructed. ``hold`` is index 0 of the discrete action grid (ADR-011) and
+    #: the flat softmax otherwise samples it only ~1/N of the time -- too rarely
+    #: for PPO to discover that avoiding the per-rebalance gas dominates. ``0.0``
+    #: disables the prior and preserves today's behaviour exactly.
+    hold_bias: float = 0.0
 
     def __post_init__(self) -> None:
         if self.vec_env not in ("dummy", "subproc"):
             raise SimConfigError(
                 f"training.vec_env must be 'dummy' or 'subproc', got {self.vec_env!r}"
+            )
+        hold_bias = float(self.hold_bias)
+        if not math.isfinite(hold_bias) or hold_bias < 0.0:
+            raise SimConfigError(
+                f"training.hold_bias must be finite and >= 0, got {self.hold_bias!r}"
             )
 
 

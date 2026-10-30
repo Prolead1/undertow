@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv, VecMonitor
@@ -111,8 +112,6 @@ def _pin_torch_threads() -> None:
     (same wall, 3x the CPU) and 8 threads ~5x slower overall.  One thread is also
     what keeps the suite fast under xdist.
     """
-    import torch
-
     torch.set_num_threads(1)
 
 
@@ -319,6 +318,33 @@ def _tensorboard_log(seed_dir: Path) -> str | None:
     return str(seed_dir / "tensorboard")
 
 
+def _apply_hold_bias(model: PPO, bias: float) -> None:
+    """Add ``bias`` to the hold action's logit before training starts.
+
+    ``hold`` is index 0 of the discrete action grid (ADR-011). The flat
+    softmax otherwise samples it ~1/N of the time, which is not enough for
+    PPO to discover that avoiding the rebalance gas dominates; a positive
+    prior lets the advantage estimate see it. 0.0 is a no-op.
+    """
+    bias = float(bias)
+    if bias == 0.0:
+        return
+    action_net = getattr(model.policy, "action_net", None)
+    bias_term = getattr(action_net, "bias", None)
+    if bias_term is None or bias_term.numel() == 0:
+        raise SimConfigError(
+            "training.hold_bias requires a discrete action head with a bias term, "
+            f"got action_net={type(action_net).__name__} without one"
+        )
+    with torch.no_grad():
+        bias_term[0] += bias
+    logger.info(
+        "applied hold_bias=%.4f to the hold logit (now %.4f)",
+        bias,
+        float(bias_term[0].detach()),
+    )
+
+
 def _train_single_seed(
     env_fn: Callable[[], gym.Env],
     config: SimConfig,
@@ -389,6 +415,7 @@ def _train_single_seed(
             verbose=0,
             tensorboard_log=_tensorboard_log(seed_dir),
         )
+        _apply_hold_bias(model, training.hold_bias)
         model.learn(total_timesteps=int(training.total_timesteps), callback=callbacks)
         checkpoint_path = seed_dir / f"ppo_seed_{seed}.zip"
         model.save(str(checkpoint_path))
