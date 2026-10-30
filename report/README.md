@@ -17,8 +17,7 @@ UNDERTOW_REPORT_PDF=~/report-build/thesis.pdf bash scripts/build_report.sh
 
 `report/main.pdf` is committed so the current rendering is visible in the
 repository: rebuild and stage it with every change to the sources. The aux
-files are gitignored. Every PR that touches `report/` also attaches the PDF to
-its GitHub Actions run under the `thesis-report-pdf` artifact.
+files are gitignored.
 
 ## Structure
 
