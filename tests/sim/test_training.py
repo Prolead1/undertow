@@ -68,6 +68,40 @@ class _BanditEnv(gym.Env):
         return np.zeros(2, dtype=np.float64), reward, True, False, {}
 
 
+class _ConstantRewardEnv(gym.Env):
+    """A deterministic environment that pays ``-1`` per step, in fixed episodes.
+
+    Used to probe the learning-curve bookkeeping: with an episode length longer
+    than the first ``log_freq_steps`` boundary, the first grid point is the
+    ``0.0`` placeholder while every later point is a real negative measurement.
+    Negative returns are the discriminating case: ``max(curve)`` would report
+    the ``0.0`` placeholder, so this environment fails against the old
+    ``best_reward`` implementation.
+    """
+
+    observation_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float64)
+    action_space = spaces.Discrete(2)
+
+    def __init__(self, episode_length: int = 30) -> None:
+        self._episode_length = int(episode_length)
+        self._step = 0
+
+    def reset(
+        self, *, seed: int | None = None, options: dict | None = None
+    ) -> tuple[np.ndarray, dict]:
+        del seed, options
+        self._step = 0
+        return np.zeros(2, dtype=np.float64), {}
+
+    def step(
+        self, action: int
+    ) -> tuple[np.ndarray, float, bool, bool, dict]:
+        del action
+        self._step += 1
+        terminated = self._step >= self._episode_length
+        return np.zeros(2, dtype=np.float64), -1.0, terminated, False, {}
+
+
 class _DelayedBanditEnv(gym.Env):
     """A bandit whose episodes last 10 steps, so short runs complete none."""
 
@@ -295,6 +329,36 @@ class TestTrainSingleSeed:
         assert manifest.best_reward == 0.0
         payload = json.loads((tmp_path / "manifest.json").read_text())
         assert payload["learning_curve"] == []
+
+    def test_no_episode_placeholder_does_not_pollute_best_reward(
+        self, tmp_path: Path
+    ) -> None:
+        # Episodes (30 steps) outlive the first boundary (16 steps), so the
+        # first grid point is the 0.0 placeholder; later points are real "-1
+        # per step" episode returns (-30.0).  ``best_reward`` must come from
+        # the real points only -- max(curve) would return the 0.0 placeholder.
+        config = _training_config(total_timesteps=128, log_freq_steps=16)
+        manifest, curve = _train_single_seed(_ConstantRewardEnv, config, 0, tmp_path)
+
+        assert len(curve) == 8  # 128 / 16: the fixed grid contract holds
+        assert curve[0] == 0.0  # no episode completed before the first boundary
+        assert curve[1:] == [-30.0] * 7
+        # The placeholder would win a raw max(); best() must ignore it.
+        assert max(curve) == 0.0
+        assert manifest.best_reward == pytest.approx(-30.0)
+
+    def test_best_falls_back_to_buffer_when_no_grid_point_is_measured(
+        self, tmp_path: Path
+    ) -> None:
+        # The only grid boundary (16) precedes the first episode end (18), so no
+        # point is ever measured; best() must still report the completed
+        # episode's return rather than the placeholder.
+        config = _training_config(total_timesteps=17, log_freq_steps=16)
+        manifest, curve = _train_single_seed(
+            lambda: _ConstantRewardEnv(episode_length=18), config, 0, tmp_path
+        )
+        assert curve == [0.0]
+        assert manifest.best_reward == pytest.approx(-18.0)
 
 
 class TestRolloutDerivation:
