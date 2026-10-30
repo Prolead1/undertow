@@ -1,6 +1,6 @@
-% Undertow thesis report: an IEEE research paper in two columns.
-% Build from this directory:  tectonic main.tex   (or: latexmk -pdf main.tex)
-% Do not commit build artifacts; see .gitignore in this directory.
+% Undertow thesis report: LaTeX sources.
+% Build from this directory:  bash ../scripts/build_report.sh
+% Do not commit build artifacts other than the committed report/main.pdf.
 
 \documentclass[conference]{IEEEtran}
 \IEEEoverridecommandlockouts
@@ -16,30 +16,32 @@
 \usepackage{url}
 \usepackage[hidelinks]{hyperref}
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Draft markers.  \pending{} marks an experiment or number that does not exist
 % yet.  \todo{} marks a structural note for the author.  Both MUST be resolved
-% before submission; the report writer flags every occurrence.
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% before submission; the report-writer agent flags every occurrence.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \newcommand{\pending}[1]{\textcolor{red}{\textsf{[PENDING: #1]}}}
 \newcommand{\todo}[1]{\textcolor{orange}{\textsf{[TODO: #1]}}}
 
-% Monetary quantities are in token0 (USDC); see Section~\ref{sec:background}.
+% Monetary quantities are in token0 (USDC); see the background section.
 \newcommand{\usdc}[1]{\SI{#1}{USDC}}
+
+\title{Making Concentrated Liquidity Pay}
+
+\author{
+\IEEEauthorblockN{Thaker, Rahul}
+\IEEEauthorblockA{\textit{Risk Management Institute}\\
+\textit{National University of Singapore}\\
+Singapore}
+}
 
 \begin{document}
 
-\title{Risk-Sensitive Reinforcement Learning for Joint\\
-Concentrated-Liquidity and Hedge Management on Uniswap~v3}
-
-% TODO(author): fill in the real author block before submission.
-\author{
-\IEEEauthorblockN{First Author}
-\IEEEauthorblockA{\textit{Department of Computer Science} \\
-\textit{University Name}\\
-City, Country \\
-author@example.edu}
-}
+% Title page first, then the two-column paper.
+\onecolumn
+\input{sections/titlepage}
+\twocolumn
 
 \maketitle
 
@@ -50,7 +52,7 @@ author@example.edu}
 \begin{IEEEkeywords}
 reinforcement learning, Uniswap~v3, concentrated liquidity, market making,
 loss-versus-rebalancing, impermanent loss, risk-sensitive reinforcement
-learning, simulation.
+learning.
 \end{IEEEkeywords}
 
 \input{sections/01_introduction}

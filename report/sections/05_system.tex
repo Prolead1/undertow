@@ -1,158 +1,82 @@
-\section{The Undertow Testbed}
+\section{Building a Trustworthy Testbed}
 \label{sec:system}
 
-Answering C1--C4 requires an instrument, not an argument. Undertow is that
-instrument: a testbed with two engines in which the same policy can be trained
-cheaply and then measured against exact accounting on real on-chain events.
-Figure~\ref{fig:system} sketches the data flow; this section describes each
-stage and, just as importantly, the failure modes the testbed was built to
-survive.
+A study of this question needs a world in which the LP's costs can be measured
+rather than assumed. That world has to meet two demands at once: it must be
+exact enough that a reported fee or loss is the real one, and fast enough that a
+policy can make millions of decisions. No single engine satisfies both, so the
+testbed uses two and checks them against each other.
+Figure~\ref{fig:testbed} shows the flow.
 
 \begin{figure}[t]
 \centering
-\begin{tikzpicture}[
-  font=\scriptsize,
-  box/.style={draw, rounded corners=2pt, align=center, inner sep=3pt,
-              text width=0.84\columnwidth},
-  >={Latex[length=1.6mm]},
-  node distance=3.2mm,
-]
-\node[box] (events) {on-chain events: swaps, mints, burns, collects};
-\node[box, below=of events] (pipe) {data pipeline: event tape, reference prices, gas, regime labels, funding};
-\node[box, below=of pipe] (view) {\texttt{MarketView}: the only door to history (look-ahead wall; train/eval split)};
-\node[box, below=of view, fill=black!5] (engines) {exact Q128 backtester \quad\textbar\quad fast float64 Gymnasium simulator};
-\node[box, below=of engines] (parity) {parity and look-ahead harness};
-\node[box, below=of parity] (rl) {PPO policy over joint (timing, width, hedge ratio)};
-\node[box, below=of rl] (eval) {evaluation: Sharpe, CVaR, cost decomposition, active/passive boundary};
-\draw[->] (events) -- (pipe);
-\draw[->] (pipe) -- (view);
-\draw[->] (view) -- (engines);
-\draw[->] (engines) -- (parity);
-\draw[->] (parity) -- (rl);
-\draw[->] (rl) -- (eval);
-\end{tikzpicture}
-\caption{Undertow: from on-chain events to a risk-sensitive policy. The two
-engines share one \texttt{MarketView} and are reconciled by the parity harness
-before any training result is reported.}
-\label{fig:system}
+\includegraphics[width=\columnwidth]{figures/testbed.pdf}
+\caption{The testbed. Recorded events feed one tape; two engines consume it, an
+exact backtester for ground truth and a fast simulator for training; the parity
+check reconciles them before a policy is trusted.}
+\label{fig:testbed}
 \end{figure}
 
-\subsection{Data: an on-chain event tape}
+\subsection{The record}
 
-The data layer ingests the raw logs of two real USDC/WETH pools, the
-$0.05\,\%$ primary study pool (\texttt{0x88e6a0\ldots f5640}, tick spacing
-$10$) and the $0.30\,\%$ contrast pool (\texttt{0x8ad599\ldots e6d8}, spacing
-$60$), and converts them into a single \emph{event tape} ordered by block and
-containing swaps, mints, burns and collect events. Alongside the tape it
-builds three auxiliary feeds: reference price closes at a resolution of one
-minute, gas prices at each block, and regime labels produced by thresholds
-committed in advance in the data module. A fourth feed, funding, is pulled from the Binance
-perpetual market margined in USDT at its native $8\,\mathrm{h}$ cadence and
-used by the hedge leg. The pinned window is \textbf{2022-01-01 to 2024-12-31
-UTC}; the walk-forward split trains on 2022--2023 and evaluates on 2024, so the
-test year is never seen during training or calibration. The primary pool's
-training lane alone carries roughly $4.86\times 10^{6}$ events, which is why
-the throughput work described below is a necessity rather than an optimization.
+The data are the raw logs of two real ETH/USDC pools: the $0.05\,\%$ pool used
+as the primary market, and the $0.30\,\%$ pool used as a fee-tier contrast. The
+pipeline turns those logs into one ordered event tape of swaps, mints, burns and
+collects, and joins it with three auxiliary feeds: one-minute reference prices,
+per-block gas prices, and regime labels computed from thresholds fixed in
+advance. A fourth feed, the funding rate of a perpetual margined in USDT, prices the
+hedge. The window runs from January 2022 to December 2024. Training uses 2022 and
+2023; 2024 is held out. The primary pool's training tape alone holds about 4.86
+million events, which is why speed matters so much later. Every read goes
+through one interface that enforces block ordering and the train/eval boundary,
+so an observation at time $t$ cannot accidentally see a bar from $t+1$.
 
-Two design rules protect the results. First, the tape is the ground truth:
-prices, liquidity events and fees are the recorded on-chain values, not a
-fitted process. Second, all access goes through \texttt{MarketView}, which
-enforces both the block ordering and the train/eval boundary, so an
-observation at time $t$ cannot read a bar from $t+1$ even by accident.
+\subsection{The exact engine}
 
-\subsection{The exact backtester}
+The backtester replays a frozen policy against the tape in the protocol's own
+integer arithmetic. Fees come from the pool's recorded fee-growth accumulators,
+exactly as the contract computes them; liquidity events update an external tick
+lattice seeded from a boundary snapshot; swaps are apportioned across the ticks
+they cross. The ledger therefore satisfies an accounting identity by
+construction: fees plus impermanent loss, minus gas and slippage, equals the
+strategy's excess over holding the opening deposit. A backtested
+policy is frozen by construction because the interface exposes no way to update
+it, and every ledger records the configuration and seed that produced it.
 
-The backtester replays a frozen policy against the tape using integer
-arithmetic. Fee accrual is computed in Q128 fixed point from the pool's
-recorded fee growth accumulators, exactly as the protocol does; liquidity
-events update an external tick lattice seeded from a boundary snapshot, and
-swap crossings are apportioned piecewise across the ticks they cross. The
-resulting ledger satisfies an accounting identity by construction,
-\begin{equation}
-\texttt{net} = \texttt{fees} + \texttt{il} - \texttt{gas} - \texttt{slippage}
-= \texttt{excess\_vs\_hodl},
-\label{eq:ledger}
-\end{equation}
-with impermanent loss measured against the fixed initial deposit basket. The
-policy protocol exposes no learning method, since a backtested policy is frozen
-by construction, and every ledger records the config hash, seed and git commit
-that produced it.
+\subsection{Two engines, one check}
 
-\subsection{The fast simulator}
-
-Training on the exact engine is infeasible at millions of steps, so the
-simulator mirrors the same economics in float64. Its agent is
-\emph{marginal}: agent liquidity never moves the price path, and the fee share
-is $\ell_{\text{agent}} / (\ell_{\text{agent}} + \ell_{\text{pool}})$ evaluated
-against the tape's recorded active liquidity. The tick lattice supports both
-minted agent positions and the external pool lattice, and the bookkeeping of
-snapshots and the tape path uses exact Python integers so that a large gross
-liquidity residue cannot silently corrupt a small delta, while a
-burn larger than the position still raises. Two price modes share one
-interface: \emph{replay}, which walks the reference closes at a resolution of
-one minute, and a jump diffusion whose latent regimes follow a Markov chain
-with four states anchored to the regime labels, with drift and volatility for
-each state, Student-$t$ jumps, and transitions estimated from the training
-split only. A throughput pass replaced
-scans at each step with indexes computed as of that step, cached the lattice
-keys and window views, and moved the vectorised environments into separate
-processes; on the pinned hardware the PPO throughput of the full pipeline rose
-from roughly $150$--$175$ to about $450$ steps per second. Actions execute at
-the decision price observed \emph{before} the interval advances, matching the
-backtester and the latency a live LP would face.
-
-\subsection{Parity and look-ahead}
+Training on the exact engine would be far too slow, so the simulator mirrors the
+same economics in floating point. Its agent is marginal: the position never
+moves the price, and its fee share is the fraction of active liquidity it
+supplies. The simulator can run on the recorded events or on a calibrated
+regime-switching jump process fitted to the training years, and it executes each
+action at the price observed before the interval advances, as a live LP would.
 
 Two numeric worlds are only useful if their disagreement is bounded. The parity
-harness feeds the simulator and the backtester the same price path, positions
-and gas series and compares fees, impermanent loss and PnL under a stated
-relative tolerance ($10^{-3}$ for float64 against exact integers). After the
-fee engine was made exact, the remaining drift on the replay of real data is
-small: mean fee differences within each seed are on the order of $10^{-7}$ of
-notional, and impermanent loss matches exactly, comfortably inside tolerance.
-The harness originally exercised only the HOLD policy, which never rebalances;
-it now also runs a policy that rebalances, which is precisely the path the
-C1--C3 fees depend on. Alongside parity, a suite of look-ahead probes attacks
-the composed system: each component is checked to raise rather than read the
-future, and the probes include deliberately adversarial windows at the
-train/eval seam.
+harness feeds both engines the same prices, positions and gas series, and then
+compares fees, impermanent loss and PnL under a stated tolerance. Since the
+simulator's fee engine was made exact, the remaining drift on real data is tiny:
+mean fee differences on the order of $10^{-7}$ of notional per seed, and
+impermanent loss matching exactly. The harness originally exercised only the
+passive policy, which never rebalances; it now also runs a policy that does,
+which is the path the fee and loss results depend on. A separate suite of
+look-ahead probes attacks the composed system at the train/eval seam.
 
-\subsection{Learning and the failure modes it survived}
+\subsection{The failures that shaped the design}
 
-The learning setup is deliberately modest: PPO with clipping on a $2\times256$
-MLP, discount $0.99$, generalized advantage estimation (GAE) with
-$\lambda = 0.95$, clip $0.15$, five fixed seeds, and one million timesteps per
-seed. That simplicity is a feature: if a plain PPO cannot learn the task, the
-task or the interface is broken, and it was. The first two runs collapsed
-instead. Each seed locked onto one deterministic action, some always holding
-and some always repeating a single rebalance, and the measured advantage did
-not separate the actions, with a correlation across actions near zero.
-Diagnosing that collapse produced three interface fixes that are now part of
-the testbed and are ablated for C2. The observation gained the three band
-geometry features, and the features with heavy tails gained signed log
-compression. The reward term for impermanent loss was moved from a rolling
-entry basket to the fixed initial HODL basket so that the reward at each step
-equals the change in the reported excess metric; the old parity harness could not
-catch that divergence because it only ran HOLD. Episodes gained window
-resampling: a reset without an episode seed now advances to a new window of
-30 days instead of replaying the same lane for a million steps. Two cost defects were
-fixed on the way: rebalance slippage is charged on the inventory imbalance
-actually swapped rather than the whole position value, and the marginal fee
-credit is capped at the augmented denominator share so that a tiny agent
-cannot claim an outsized fee fraction. Each fix ships with a unit test and a
-decision record; the C2 table in Section~\ref{sec:results} lists symptom,
-diagnosis, fix and evidence.
+The first two training runs produced policies that did nothing useful. Every
+seed collapsed to one deterministic action, some always holding and some always
+repeating a single rebalance, and the measured advantage barely distinguished
+the actions. The collapse was not a tuning problem. The observation contained no
+information about the band, so a policy could not tell how close the price was
+to an edge or how far a recentring would have to move. The reward measured the
+loss against a rolling entry basket, so after a rebalance it no longer matched
+the metric the evaluation reported. And every training episode replayed the same
+window of thirty days, so the agent never saw a different market. Two cost defects
+surfaced while fixing those: slippage was charged on the whole position value
+instead of the inventory actually swapped, and the marginal fee credit was not
+capped when the agent supplied only a small share of liquidity.
 
-\subsection{Evaluation and reproducibility}
-
-The evaluation runner freezes a checkpoint and scores it on windows held out
-from training, emitting each episode's equity curve, cost ledgers and regime
-slices, then aggregating annualized Sharpe, raw PnL and excess-versus-HODL with
-confidence intervals across seeds and regimes. \pending{CVaR at $5\,\%$ exists
-as a metric in the metrics layer; wiring it into the aggregated evaluation
-report is the S21 deliverable, after which it joins the primary statistics.}
-The RQ1 ablation table, the RQ2 regime matrix and the report on the gap
-between simulator and backtester are generated from the same runner, and a
-dashboard that is read only replays policies against price and ranks runs by
-Sharpe out of sample. Every artefact carries the config hash and commit, so a
-reported number can be traced to the exact run that produced it.
+Each repair is small. Together they were the difference between a policy that
+can learn and one that cannot, which is why the failure itself is treated as a
+result rather than an implementation note.

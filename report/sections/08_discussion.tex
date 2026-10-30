@@ -1,57 +1,36 @@
-\section{Discussion and Threats to Validity}
+\section{Discussion}
 \label{sec:discussion}
 
-\pending{The interpretive discussion is deferred until the locked runs land:
-it will connect the C1--C4 results to the active/passive boundary and to the
-design principles for RL that accounts for friction in this setting. The
-validity concerns below are already fixed and do not depend on the results.}
+\pending{The interpretive discussion is deferred until the locked runs land: it
+will connect the four answers to the active/passive boundary and to the design
+lessons for learning in this setting. The validity concerns below do not depend
+on the results.}
 
-\subsection{What the simulator does and does not capture}
+The simulator replays recorded events, so prices, liquidity and fee growth are
+real rather than modelled. Its marginal-agent assumption is the main
+simplification: the position never moves the price, and its fee share is
+proportional to active liquidity. That is the standard replay assumption and it
+is recorded with every run, but it cannot capture queueing at the tick level or
+the impact of an unusually large position. The gas model charges representative
+per-action units rather than per-transaction receipts, so gas is a defensible
+floor rather than an exact quote, and the hedge uses a perpetual proxy whose
+funding and basis are representative rather than exact for a specific venue.
 
-Undertow replays recorded on-chain events, so market prices, liquidity and fee
-growth are real rather than modeled. The simulator's assumption that the agent
-is marginal, however, means the agent's own liquidity never moves the price,
-and its fee share is proportional to active liquidity. This is the standard
-replay assumption, and every run manifest records it, but it cannot capture
-queueing at the tick level or the price impact an unusually large position
-would have. The gas model charges representative gas units for each action plus
-a flat tip surcharge rather than receipts for each transaction, so gas
-estimates are a defensible floor, not an exact quote. The hedge leg uses a
-perpetual proxy margined in USDT rather than whatever venue an LP would
-actually use, so its funding and basis are representative rather than exact for
-a venue. Each of these is a modeling choice with a stated direction, not a
-hidden assumption.
+Several threats bound what the study can claim. The evidence covers one asset
+pair at two fee tiers, so the boundary is measured within that scope and does
+not automatically transfer to other pairs. CVaR at $5\,\%$ averages a handful of
+episodes, so it is reported with bootstrap intervals and the worst window rather
+than treated as decisive on its own. The regime labels come from thresholds
+fixed in advance; they organise the reporting and anchor the training process,
+but they are a labelling device, not a discovered state. The boundary sweep
+compares several axes at once, so paired intervals on a pre-registered primary
+metric carry the inference, and any secondary win is labelled as such.
 
-\subsection{Threats to validity}
-
-\begin{itemize}
-  \item \textbf{Scope of one pair.} The study covers one asset pair across two
-  fee tiers. The C4 boundary is measured within that scope; extrapolating it
-  to other pairs requires running the sweep again.
-  \item \textbf{Thin risk tail.} CVaR at $5\,\%$ over thirteen windows and five
-  seeds averages a handful of episodes. We therefore report bootstrap
-  intervals and the worst window alongside it, and we do not treat a small CVaR
-  difference as decisive on its own.
-  \item \textbf{Regime labels come from thresholds fixed in advance.} They are
-  a labelling device, not a discovered latent state. Results are stratified by
-  them for interpretability, and the process that calibrates transitions is
-  anchored to the same labels, which keeps train and evaluation consistent but
-  makes the labels carry weight.
-  \item \textbf{Multiple comparisons.} C4 sweeps several axes and C3 compares
-  many benchmarks; paired confidence intervals and a primary metric registered
-  in advance (Sharpe) are the mitigation, and any secondary win is labelled as
-  such.
-  \item \textbf{The gap from simulation to reality.} The parity harness bounds
-  the gap between simulator and backtester, not the gap between backtester and
-  reality. The latter is quantified where the data permits (fee and collect
-  reconciliation) and discussed where it does not (latency, MEV, private
-  order flow).
-\end{itemize}
-
-\subsection{What we do and do not claim}
-
-We claim results about \emph{performance on recorded market states, measured
-by Sharpe and CVaR under a stated cost model}. We do not claim deployable
-profitability, optimality of the action grid, or that the learned policy would
-survive market conditions absent from 2022--2024. Negative results, where active management
-does not pay, are reported as findings of C4 rather than hidden.
+The parity check bounds the distance between the simulator and the backtester,
+not the distance between the backtester and reality. Where the data allow, the
+external part of the gap is quantified by reconciling fees and collects; where
+they do not, latency, order-flow privacy and MEV are discussed rather than
+measured. We therefore claim results about performance under risk on recorded
+market states under a stated cost model. We do not claim deployable
+profitability, optimality of the action grid, or that the policy would survive
+market conditions absent from 2022 to 2024.
