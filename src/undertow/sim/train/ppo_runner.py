@@ -158,13 +158,27 @@ def _derive_rollout(training: TrainingConfig) -> tuple[int, int, int]:
 
 
 class _LearningCurveCallback(BaseCallback):
-    """Record the mean recent episode return every ``log_freq_steps`` timesteps."""
+    """Record the mean recent episode return every ``log_freq_steps`` timesteps.
+
+    The curve keeps the fixed ``log_freq_steps`` grid, so an early boundary that
+    is reached before any episode has completed contributes a ``0.0``
+    placeholder: there is no reward to average yet.  :meth:`best` deliberately
+    excludes those placeholders -- on a task whose rewards are all negative the
+    placeholder would otherwise dominate ``max(curve)`` and every manifest would
+    report ``best_reward = 0.0``.
+    """
 
     def __init__(self, log_freq_steps: int, verbose: int = 0) -> None:
         super().__init__(verbose)
         self.log_freq_steps = max(1, int(log_freq_steps))
         self.curve: list[float] = []
+        #: Rewards measured on completed episodes only (grid placeholders excluded).
+        self._measured: list[float] = []
         self._next_eval = self.log_freq_steps
+
+    def _has_episodes(self) -> bool:
+        """True when at least one episode has completed in the info buffer."""
+        return bool(getattr(self.model, "ep_info_buffer", None))
 
     def mean_reward(self) -> float:
         """Mean reward of the episodes currently in the model's info buffer."""
@@ -173,9 +187,25 @@ class _LearningCurveCallback(BaseCallback):
             return 0.0
         return float(np.mean([ep["r"] for ep in buffer]))
 
+    def best(self) -> float:
+        """Best measured mean episode return.
+
+        Falls back to the current info-buffer mean -- ``0.0`` when the buffer is
+        empty -- if no measurement has been recorded yet.
+        """
+        if self._measured:
+            return float(max(self._measured))
+        return float(self.mean_reward())
+
     def _on_step(self) -> bool:
         while self.num_timesteps >= self._next_eval:
-            self.curve.append(self.mean_reward())
+            value = self.mean_reward()
+            self.curve.append(value)
+            # SB3 refreshes ``ep_info_buffer`` *after* ``on_step``, so an
+            # episode ending exactly on a grid boundary is not visible yet: its
+            # point stays a placeholder and the next boundary captures it.
+            if self._has_episodes():
+                self._measured.append(value)
             self._next_eval += self.log_freq_steps
         return True
 
@@ -379,7 +409,7 @@ def _train_single_seed(
                 )
 
         curve = list(curve_cb.curve)
-        best_reward = float(max(curve)) if curve else float(curve_cb.mean_reward())
+        best_reward = float(curve_cb.best())
         manifest = RunManifest(
             run_id=run_id,
             seed=seed,
