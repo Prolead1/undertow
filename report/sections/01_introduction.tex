@@ -5,7 +5,7 @@
 quoting prices by hand. Uniswap~v3 sharpened the offer: an LP chooses the price
 range it is willing to trade in, so a deposit of \usdc{100000} can earn the
 same fees as a much larger full-range position as long as the price stays
-inside the chosen band~\cite{adams2021uniswap}. Narrowing the band raises the
+inside the chosen band\cite{adams2021uniswap}. Narrowing the band raises the
 fee earned per dollar of capital, and that promise is what drew liquidity
 into v3.
 
@@ -16,12 +16,12 @@ falling and less of the one that is rising. The loss does not reverse when the
 price comes back, because it is a transfer rather than a fluctuation. Milionis
 et al.\ gave this adverse selection cost its modern name, loss-versus-rebalancing
 (LVR), and showed that a full-range position loses value at a rate proportional
-to the square of volatility~\cite{milionis2022lvr}. Fritsch and Canidio then
+to the square of volatility\cite{milionis2022lvr}. Fritsch and Canidio then
 measured realised arbitrage losses across large pools and found that they
-exceed the fees those pools earn~\cite{fritsch2024measuring}. Loesch et al.\
+exceed the fees those pools earn\cite{fritsch2024measuring}. Loesch et al.\
 showed that concentration makes matters worse when the price leaves the band,
 since a narrow position can lose more than a plain full-range
-deposit~\cite{loesch2021impermanent}. Fee income, on its own, is not the LP's
+deposit\cite{loesch2021impermanent}. Fee income, on its own, is not the LP's
 return.
 
 An LP who wants more than a passive range has three decisions to make, and they
@@ -34,21 +34,21 @@ is an impulse, lumpy in cost and taken under uncertainty about volatility,
 order flow and regime. The objective is not simply to earn more, but to earn
 more per unit of risk taken. The decisions are lumpy in cost and made under
 uncertainty, which makes this a problem of impulse control rather than a
-static portfolio choice~\cite{anchuri2026rammstein}.
+static portfolio choice\cite{anchuri2026rammstein}.
 
 Learning these decisions is a natural application of reinforcement learning,
 and recent work takes up parts of it. Zhang et al.\ train a hedged agent for v3
 liquidity provision, but their hedge executes without cost or funding and the
-policy sees no regime information~\cite{zhang2023adaptive}. ZeroSwap learns to
+policy sees no regime information\cite{zhang2023adaptive}. ZeroSwap learns to
 set a market maker's spread so that it tracks an external price, which is a
 different lever: it decides how wide the quoted price is, not where liquidity
-sits~\cite{nadkarni2023zeroswap}. RAmmStein derives rebalancing thresholds that
+sits\cite{nadkarni2023zeroswap}. RAmmStein derives rebalancing thresholds that
 depend on the regime from a model of impulse control and reports large savings in
 rebalance count, but its net return excludes impermanent loss and it works with
-off-chain data for a single pair~\cite{anchuri2026rammstein}. Chionas et al.\
+off-chain data for a single pair\cite{anchuri2026rammstein}. Chionas et al.\
 study risk aversion in concentrated liquidity within a simulation and find that
 volatile, expensive markets push optimal bands wider and rebalances rarer, but
-they use no on-chain data and leave the hedge out~\cite{chionas2026concentrated}.
+they use no on-chain data and leave the hedge out\cite{chionas2026concentrated}.
 None of these studies places the timing, width and hedge decisions in a single
 risk-sensitive policy, charges every friction on both the liquidity and hedge
 legs, and evaluates it on recorded on-chain trades against rules written by
