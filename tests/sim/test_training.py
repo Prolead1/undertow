@@ -551,11 +551,12 @@ class TestHoldBias:
 
 
 class TestOptimizerKnobWiring:
-    def test_train_single_seed_passes_the_configured_optimizer_knobs(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    @staticmethod
+    def _record_ppo_kwargs(
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> list[dict[str, object]]:
+        """Install a PPO subclass that records the kwargs SB3 receives."""
         captured: list[dict[str, object]] = []
-        applied: list[tuple[object, float]] = []
 
         class _RecordingPPO(PPO):
             def __init__(self, *args: object, **kwargs: object) -> None:
@@ -563,6 +564,13 @@ class TestOptimizerKnobWiring:
                 super().__init__(*args, **kwargs)
 
         monkeypatch.setattr("undertow.sim.train.ppo_runner.PPO", _RecordingPPO)
+        return captured
+
+    def test_train_single_seed_passes_the_configured_optimizer_knobs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured = self._record_ppo_kwargs(monkeypatch)
+        applied: list[tuple[object, float]] = []
         monkeypatch.setattr(
             "undertow.sim.train.ppo_runner._apply_hold_bias",
             lambda model, bias: applied.append((model, bias)),
@@ -590,6 +598,28 @@ class TestOptimizerKnobWiring:
         # The hold prior is still applied exactly once, on the constructed model.
         assert len(applied) == 1
         assert applied[0][1] == pytest.approx(4.0)
+
+    def test_train_single_seed_passes_the_historical_default_knobs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured = self._record_ppo_kwargs(monkeypatch)
+        config = _training_config(
+            total_timesteps=1024,
+            log_freq_steps=1024,
+            checkpoint_freq_steps=1000,
+        )
+        _train_single_seed(_BanditEnv, config, 0, tmp_path)
+
+        assert len(captured) == 1
+        kwargs = captured[0]
+        # Pins the runner's pass-through of the default recipe to SB3: the
+        # PLAN.md §7 anchors and SB3 2.9's PPO defaults reach the constructor
+        # unchanged (the sibling override test pins the non-default knobs).
+        assert kwargs["learning_rate"] == pytest.approx(3e-4)
+        assert kwargs["batch_size"] == 64  # 64 divides the 256-step rollout
+        assert kwargs["n_epochs"] == 10
+        assert kwargs["ent_coef"] == 0.0
+        assert kwargs["target_kl"] is None
 
 
 # ---------------------------------------------------------------------------

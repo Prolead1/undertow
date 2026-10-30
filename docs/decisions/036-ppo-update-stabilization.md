@@ -59,6 +59,14 @@ collapses.
   `learning_rate=1e-4`, `target_kl=0.01`, `ent_coef=0.001` and `hold_bias=4`,
   the greedy policy held all 4320 steps and matched the scripted hold-only
   return (+0.0885) exactly.
+- **Evidence on the held-out 2024 walk-forward split.** The stabilized
+  200k-step checkpoint scored **+735.2 USDC** with 0 rebalances and 0 gas,
+  identical to the `hodl` baseline, versus **-80,642 USDC** for the
+  reduced-grid churning pilot (`pilot_holdbias` checkpoint, same split,
+  28-action grid; `logs/eth_usdc_500/pilot-eval-*.log`) and **-86,889 USDC**
+  for the original 91-action run (`results/eth_usdc_500_main`). The recipe is
+  now being run across the full 5-seed × 1M-step budget; its evaluation will be
+  appended here.
 - **Old 91-action checkpoints are incompatible** with the 28-action grid: SB3's
   action-head shape guard raises on load. Pre-change primary runs must be
   retrained and their results are not comparable; the manifest's `git_commit`
@@ -73,8 +81,9 @@ collapses.
   `0.0` default), and the default-action-space CLI/`info` behaviour is
   unchanged.
 - `TrainingConfig` validation now rejects non-finite/non-integral
-  `batch_size`/`n_epochs` (and `batch_size < 2`/`n_epochs < 1`), non-positive
-  or non-finite `learning_rate`/`ent_coef`, and a non-positive or non-finite
+  `batch_size`/`n_epochs` (and `batch_size < 2`/`n_epochs < 1`), a non-positive
+  or non-finite `learning_rate`, a negative or non-finite `ent_coef` (so the
+  SB3 default `0.0` stays accepted), and a non-positive or non-finite
   `target_kl` (`None` disables the stop); `CONTRACTS.md` §15 lists the new
   fields.
 - The primary config's hash changes, so fresh run ids are expected.
