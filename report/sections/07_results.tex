@@ -1,0 +1,33 @@
+\section{Results}
+\label{sec:results}
+
+\pending{This section is intentionally a stub while the RL experiments across
+seeds run. It will report C1--C4 in order, and every number will come from the
+locked runs (manifests under \texttt{results/}), never from a draft memory.
+Nothing in this section may be filled until the runs complete.}
+
+\subsection{C1: Where fees fail to cover LVR and rebalancing}
+\pending{Report the passive benchmark cost decomposition (fees, impermanent
+loss, LVR, gas, slippage) on both fee tiers, the cost of greedy versus lazy
+rebalancing, and the sign of excess-versus-HODL across regimes. The
+preliminary diagnostic over 15 windows recorded in ADR-030 motivates the
+claim; the final table replaces it.}
+
+\subsection{C2: Failure modes in naive RL}
+\pending{Report the collapse before the fixes (policies that repeat one action,
+flat learning curves) and the ablations of each fix (band geometry off, fixed
+training window, reward measured against the rolling basket, execution at
+decision time off), with the evidence for each diagnosis.}
+
+\subsection{C3: The learned joint policy}
+\pending{Report Sharpe and CVaR out of sample for the learned policy against
+the full benchmark ladder of Table~\ref{tab:benchmarks}, paired within windows
+and across seeds, plus the action distribution that shows the policy is not
+degenerate and its decision boundaries recover the band exit and the trade-off
+between fees and gas.}
+
+\subsection{C4: The active/passive boundary}
+\pending{Report the swept boundary where the learned and passive Sharpe
+ratios are equal, as a function of volatility, volume relative to liquidity,
+fee tier, gas and capital, with the analytical LVR threshold from
+Eq.~\eqref{eq:lvr} overlaid.}

@@ -1,0 +1,125 @@
+\section{Experimental Design}
+\label{sec:design}
+
+The claims of Section~\ref{sec:intro} are only as credible as the protocol that
+tests them, so the protocol is fixed before any result is inspected, following
+the binding measurement protocol of ADR-030.
+
+\subsection{Data, windows and episodes}
+
+The study uses two real USDC/WETH pools: the $0.05\,\%$ primary pool (spacing
+$10$) and the $0.30\,\%$ contrast pool (spacing $60$). The study period runs
+from 2022-01-01 to 2024-12-31 (UTC) and is divided walk-forward: 2022--2023
+supplies the training data and 2024 is held out for evaluation. Training
+episodes are windows of 30 days sampled from the training split with the
+environment's window resampling; evaluation tiles the 2024 split into
+nonoverlapping windows of 30 days (thirteen windows, the last partial), and no
+episode crosses the split boundary. Each episode runs at a decision cadence of
+10 minutes with \usdc{100000} of agent capital, which keeps the agent marginal
+relative to pool liquidity and the fee share assumption honest. Every
+configuration in the study is trained with the five fixed seeds
+$\{0,1,2,3,4\}$ and one million timesteps per seed.
+
+\subsection{Benchmarks}
+
+A learned policy that beats only the weakest rule written by hand has
+demonstrated nothing. Our benchmark ladder therefore includes the full
+family of six policies, two additional reference points, and the hedged HODL
+benchmark matched in beta described in Section~\ref{sec:formulation}.
+Table~\ref{tab:benchmarks} lists them. The \emph{best static width} is selected
+on the training split and then frozen for evaluation, so it represents a
+heuristic with hindsight over the training period but not over the test period.
+
+\begin{table}[t]
+\caption{Benchmark policies. Each row is a frozen rule; the learned policy is
+compared against all of them, and C3 is claimed only if it beats the best
+static width and the hedged HODL matched in beta, not just \textsf{hodl}.}
+\label{tab:benchmarks}
+\centering
+\small
+\begin{tabular}{@{}p{0.28\columnwidth}p{0.64\columnwidth}@{}}
+\toprule
+\textbf{Benchmark} & \textbf{Rule} \\
+\midrule
+\textsf{hodl} & Hold the initial token mix; never provide liquidity. \\
+\textsf{passive\_narrow} & Deploy a $\pm 5\,\%$ band once; never recenter. \\
+\textsf{passive\_wide} & Deploy a $\pm 20\,\%$ band once; never recenter. \\
+\textsf{full\_range\_v2} & Full range, equivalent to Uniswap~v2. \\
+\textsf{tau\_reset} & Recenter whenever the price exits the live band. \\
+\textsf{cost\_aware} & Recenter at most daily, and only when the estimated fee gain exceeds gas. \\
+Best static width & The ladder width with the best Sharpe on the training split, frozen for test. \\
+Hedged HODL & Initial basket plus a short perp matched to its beta, with funding and perp costs. \\
+Learned policy & PPO over the joint (timing, width, hedge ratio) action space. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Metrics}
+
+The two primary statistics are:
+\begin{itemize}
+  \item \textbf{Annualized Sharpe ratio.} For each episode, computed on the
+  equity curve at the decision cadence and annualized with the
+  $\sqrt{\text{periods}}$ rule at $52{,}596$ periods per year. We report the
+  mean and a paired bootstrap confidence interval across seeds and windows.
+  \item \textbf{CVaR at $5\,\%$.} The average of the worst $5\,\%$ of episode
+  returns, pooled across seeds, with a bootstrap confidence interval. Because
+  the tail is thin at 13 windows $\times$ 5 seeds, we also report the worst
+  window and its decomposition.
+\end{itemize}
+Secondary statistics are raw PnL, excess-versus-HODL, annualized return,
+Sortino ratio, maximum drawdown, rebalance count, and the cost ledger
+(fee income, gas, slippage, realized impermanent loss). Every performance table
+reports both layers, and tables for each regime stratify by the dominant regime
+label of the window (bull, bear, sideways, high volatility). All comparisons
+against a benchmark use paired differences within each window, so market moves
+common to both policies do not inflate the apparent effect.
+
+\subsection{Ablations}
+
+The failure modes of C2 are ablated one at a time: band geometry removed from
+the observation; training windows held fixed instead of resampled; the hedge
+disabled; the reward's risk penalty toggled ($\lambda = 0$ versus
+$\lambda > 0$); regime features removed. The C1 economic decomposition is
+ablated over frictions (full model, no gas, static fee, no impermanent loss)
+and repeated on the $0.30\,\%$ pool to test the prediction that a higher fee
+tier buys a longer viable range. For C4 the runner sweeps the environment along
+the axes that the economics identifies: realized volatility, volume relative to
+liquidity, fee tier, gas price and capital. Each sweep point is evaluated on
+replayed windows, so the boundary is measured against real market states rather
+than a fitted process.
+
+\subsection{Hypotheses and decision rules}
+
+\begin{itemize}
+  \item \textbf{C1 (limits).} The decomposition of the best passive benchmark
+  is negative in excess-versus-HODL terms and dominated by adverse selection;
+  we report where the sign flips across regimes and fee tiers.
+  \item \textbf{C2 (failure modes).} Each ablated fix degrades the learned
+  policy relative to the full interface, or reproduces on at least one seed
+  the degenerate behavior documented in ADR-030, in which the policy repeats
+  one action. The claim is descriptive: we report the failure, the diagnosis
+  and the effect of the fix.
+  \item \textbf{C3 (joint policy).} The learned policy's mean Sharpe exceeds
+  the best static width's and the hedged HODL benchmark's, with a paired
+  $95\,\%$ confidence interval excluding zero; its $5\,\%$ CVaR is no worse
+  than the best heuristic's; and its action distribution is not degenerate
+  across seeds.
+  \item \textbf{C4 (boundary).} We report the fitted boundary of
+  $\text{Sharpe}_{\text{learned}} - \text{Sharpe}_{\text{passive}} = 0$ along
+  each environmental axis, with the analytical LVR threshold from
+  Eq.~\eqref{eq:lvr} overlaid as the theoretical comparison.
+\end{itemize}
+Rules stated in advance are the point: they prevent the result from being
+chosen after the fact. Where the evidence turns out negative, the negative
+result is reported as the finding.
+
+\subsection{Reproducibility}
+
+Every training run writes a manifest with its config hash, git commit, seed
+and library versions; every evaluation writes each episode's equity curve, cost
+ledger and decision log. Determinism is enforced at the level of individual
+components (seeded generators everywhere, no clock time in state) and
+exercised by the parity and look-ahead suites. Running a reported
+configuration again is expected to reproduce its learning curve, and a
+reported number without a manifest behind it is treated as a bug.

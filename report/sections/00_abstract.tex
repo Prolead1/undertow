@@ -1,0 +1,23 @@
+Concentrated liquidity provision on Uniswap~v3 turns a passive role that only
+earns fees into an active control problem. A liquidity provider (LP) must
+decide when to recenter its price band, how wide to keep it, and how much of
+the position's price exposure to hedge, while fee income competes with
+impermanent loss, loss-versus-rebalancing (LVR), gas and slippage. Empirical
+studies show that fees frequently fail to cover these losses. Whether one
+learned policy can manage all three decisions jointly under realistic
+frictions, and where active management stops paying, remains open. We present
+\emph{Undertow}, a research testbed with two engines: a replay backtester whose
+fee accounting stays in exact integer arithmetic across two years of on-chain
+Uniswap~v3 events, and a fast Gymnasium simulator. We formulate liquidity
+provision as a risk-sensitive Markov decision process (MDP) with impulse
+control over a joint action space of timing, width and hedge ratio. Four claims structure
+the study: a negative limit that locates where fees fall short of LVR and
+rebalancing costs; a methods contribution documenting why naive PPO degenerates
+on this MDP and which fixes (band geometry in the observation, an
+excess-versus-HODL reward, environment diversity, and execution at decision
+time) are necessary; evidence from windows held out from training on whether a
+single risk-sensitive policy dominates the best static width and a hedged
+HODL benchmark matched in beta; and a map of the active/passive boundary in
+terms of volatility, fee tier, gas and capital.
+\pending{The abstract will close with the quantitative headline and the C3/C4
+verdicts once the locked experiments across seeds land.}

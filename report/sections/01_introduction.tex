@@ -1,0 +1,109 @@
+\section{Introduction}
+\label{sec:intro}
+
+\IEEEPARstart{A}{utomated} market makers (AMMs) turned market making into a
+public utility. A liquidity provider (LP) deposits a pair of assets into a
+smart contract, and the contract prices every trade through a deterministic
+trading function. Uniswap~v3 refined that bargain with
+\emph{concentrated liquidity}: an LP chooses a price interval, and the
+deposited capital backs trades only inside it~\cite{adams2021uniswap}. Because
+fee accrual is proportional to the share of active liquidity, narrowing the
+interval raises the fee earned per dollar of capital while the price stays
+inside the band. This is the promise that drew capital to v3: the same deposit
+can quote with ten, a hundred, or a thousand times the fee density of a
+full-range position.
+
+The catch is that liquidity quoted at a stale price is an open invitation to
+traders with better information. Every arbitrage trade that moves the pool
+price toward the market price is a trade against the LP, and the resulting loss
+does not reverse when the price moves back. Milionis et al.\ formalized this
+cost of adverse selection as \emph{loss-versus-rebalancing} (LVR): the shortfall
+of a constant-product LP position relative to a hypothetical portfolio that
+continuously rebalances to the same token mix~\cite{milionis2022lvr}. For a
+full-range constant-product pool, LVR accrues at one eighth of the square of
+volatility times the position value, a rate that grows with the very activity
+that generates fees. The empirical record is unfavorable. Fritsch and Canidio
+compare the arbitrage losses large AMM pools actually realized with the fee
+income those pools produced: in their sample a passive full-range deposit would
+have outperformed the concentrated alternatives~\cite{fritsch2024measuring}.
+Loesch et al.\ reach a related conclusion
+from v3 positions directly: concentration magnifies impermanent loss when the
+price leaves the band, so a narrow range can underperform even a v2
+deposit~\cite{loesch2021impermanent}. Managing a range is not free either:
+hitting the edges forces a recentring trade that pays pool fees plus
+slippage, and each action costs gas.
+
+The LP therefore faces a sequential decision problem, not a portfolio choice.
+At every decision instant it must decide \emph{whether} to act, \emph{where} to
+place the next band and \emph{how wide} to make it, and \emph{how much} of the
+position's directional exposure to hedge. The levers interact: a wider band
+earns less per trade but defers the next costly recentring; a hedge removes
+directional variance but pays funding and perp fees; acting sooner protects fee
+income but multiplies transaction costs. The heuristics in common use (recenter
+when the price exits the band, rebalance when the expected fee gain covers gas,
+hold a wide static band~\cite{adams2021uniswap}) are single points in this
+space, chosen by argument rather than learned from outcomes.
+
+Reinforcement learning (RL) is a natural fit for the joint problem, and recent
+work has begun to explore it. Zhang et al.\ train a hedged double deep
+Q-network agent for v3 liquidity provision and report sizeable gains over
+baselines, but their hedge executes without cost or funding, and the policy
+sees no regime features~\cite{zhang2023adaptive}. ZeroSwap learns to set the
+spread of a market maker so that it tracks an external price, an orthogonal
+lever to range placement, and targets zero profit against competitive
+counterparties~\cite{nadkarni2023zeroswap}. RAmmStein derives rebalancing
+thresholds that depend on the regime through impulse control and reports that a
+policy which rebalances lazily when the regime warrants it improves net ROI
+while cutting rebalance counts by roughly $85\,\%$, but its net metric excludes
+impermanent loss, it studies a single pair, and it relies on off-chain market
+data~\cite{anchuri2026rammstein}. Chionas et al.\ study concentrated liquidity
+as a problem of risk aversion in simulation and find that more volatile and
+more expensive environments push optimal positions wider and less frequently
+rebalanced, with aversion to risk compressing the left tail of returns; their
+analysis, however, is simulation only, uses no on-chain data, and leaves the
+hedge leg open~\cite{chionas2026concentrated}. What is missing is a study that
+(i) evaluates policies on \emph{on-chain} replay, (ii) charges every
+friction (gas, swap fees, slippage, perp costs and funding) on both the LP and
+hedge legs, (iii) optimizes and reports Sharpe and CVaR rather than raw profit,
+and (iv) treats rebalance timing, band width and hedge ratio as one joint
+action.
+
+This paper builds that study around four claims.
+\begin{itemize}
+\item[\textbf{C1}] \textbf{Limits.} On the pools and windows we study, passive
+fee income alone does not cover the sum of LVR, impermanent loss and rebalancing
+costs; we quantify the decomposition and the cost of greedy rebalancing,
+extending the LVR literature with an exact on-chain replay engine.
+\item[\textbf{C2}] \textbf{Failure modes.} Naive RL fails on this Markov
+decision process (MDP). We document degenerate policies that collapse to a
+single action, identify what breaks (an observation in which the live band is
+hidden, a reward whose benchmark drifts away from the reported metric after a
+rebalance, and training windows that never change), and show that each fix (band geometry
+in the observation, an excess-versus-HODL reward, and window resampling) is
+necessary.
+\item[\textbf{C3}] \textbf{A learned joint policy.} A risk-sensitive policy
+that controls band timing, band width and hedge ratio jointly beats the
+strongest family of rules tuned by hand on data held out from training, and the
+way it splits on each feature recovers the underlying economics: band exit, the
+trade-off between fees and gas, and volatility regime.
+\item[\textbf{C4}] \textbf{The active/passive boundary.} We map the region in
+which active management beats a passive or hedged HODL benchmark as a function
+of volatility, fee tier, volume relative to liquidity, gas price and capital.
+\end{itemize}
+
+The claims are ordered deliberately: C1 establishes the economic terrain, C2
+explains why the obvious RL approach fails there, and C3--C4 show what a policy
+that survives the terrain can do. To measure all four against ground truth, we
+built \emph{Undertow}, a testbed that couples an exact replay backtester over
+two years of on-chain Uniswap~v3 events, with fee accounting kept in integer
+arithmetic, to a fast float64 Gymnasium simulator, and we place the two engines
+under a parity harness so that the simulator can be trusted where it is cheap
+and checked where it matters~\cite{towers2024gymnasium}.
+Section~\ref{sec:background} establishes the mechanics and the economics of
+concentrated liquidity. Section~\ref{sec:related} positions the work against
+the literature. Section~\ref{sec:formulation} states the risk-sensitive MDP
+with impulse control. Section~\ref{sec:system} describes the Undertow testbed
+and the failure modes it was built to survive. Section~\ref{sec:design} fixes
+the experimental protocol, Section~\ref{sec:results} reports C1--C4, and
+Section~\ref{sec:discussion} discusses validity and the gap between simulation
+and reality. Section~\ref{sec:conclusion} concludes.

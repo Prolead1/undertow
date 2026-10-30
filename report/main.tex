@@ -1,0 +1,69 @@
+% Undertow thesis report: an IEEE research paper in two columns.
+% Build from this directory:  tectonic main.tex   (or: latexmk -pdf main.tex)
+% Do not commit build artifacts; see .gitignore in this directory.
+
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Draft markers.  \pending{} marks an experiment or number that does not exist
+% yet.  \todo{} marks a structural note for the author.  Both MUST be resolved
+% before submission; the report writer flags every occurrence.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\newcommand{\pending}[1]{\textcolor{red}{\textsf{[PENDING: #1]}}}
+\newcommand{\todo}[1]{\textcolor{orange}{\textsf{[TODO: #1]}}}
+
+% Monetary quantities are in token0 (USDC); see Section~\ref{sec:background}.
+\newcommand{\usdc}[1]{\SI{#1}{USDC}}
+
+\begin{document}
+
+\title{Risk-Sensitive Reinforcement Learning for Joint\\
+Concentrated-Liquidity and Hedge Management on Uniswap~v3}
+
+% TODO(author): fill in the real author block before submission.
+\author{
+\IEEEauthorblockN{First Author}
+\IEEEauthorblockA{\textit{Department of Computer Science} \\
+\textit{University Name}\\
+City, Country \\
+author@example.edu}
+}
+
+\maketitle
+
+\begin{abstract}
+\input{sections/00_abstract}
+\end{abstract}
+
+\begin{IEEEkeywords}
+reinforcement learning, Uniswap~v3, concentrated liquidity, market making,
+loss-versus-rebalancing, impermanent loss, risk-sensitive reinforcement
+learning, simulation.
+\end{IEEEkeywords}
+
+\input{sections/01_introduction}
+\input{sections/02_background}
+\input{sections/03_related_work}
+\input{sections/04_problem_formulation}
+\input{sections/05_system}
+\input{sections/06_experimental_design}
+\input{sections/07_results}
+\input{sections/08_discussion}
+\input{sections/09_conclusion}
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

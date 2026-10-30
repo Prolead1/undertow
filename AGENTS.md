@@ -17,6 +17,11 @@ Undertow is an RL-for-AMM-liquidity research codebase. Two packages:
      ```
 
      Always edit the **repo copy**, never a local copy — it is the single source of truth.
+   - The thesis report has its own standard, versioned at `docs/agents/report-writer.md` (LaTeX, IEEE two-column, originality and voice rules, evidence discipline). Symlink it the same way:
+
+     ```bash
+     ln -sf ../../docs/agents/report-writer.md .pi/agents/report-writer.md
+     ```
 3. **Unit tests are non-negotiable.** Every new or changed logic ships with unit tests that assert real behavior and cover edge cases. Run `uv run pytest` until green.
 4. **Respect the architecture:**
    - `undertow.data` and `undertow.sim` are separate packages with no imports across their boundaries except through stable public interfaces.

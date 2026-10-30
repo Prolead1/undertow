@@ -1,0 +1,13 @@
+# LaTeX build artifacts — never commit.
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+/main.pdf
+*.synctex.gz
+*.toc
+*.run.xml
+*-blx.bib

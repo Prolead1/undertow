@@ -1,0 +1,26 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+\pending{The conclusion will be written once C1--C4 are measured. Its shape is
+fixed: restate the four claims with their verdicts, state the active/passive
+boundary as measured, and list what the study does not settle.}
+
+Concentrated liquidity provision is a problem of impulse control under
+adversarial order flow, and the report's central question is whether a
+risk-sensitive learned policy can jointly manage band timing, band width and
+directional risk better than the best rules tuned by hand once gas, slippage,
+fees and funding are charged. To make that question answerable rather than
+rhetorical, this report has described Undertow: an exact on-chain replay
+backtester, a fast simulator checked for parity against it, a risk-sensitive
+formulation of the LP problem, and a protocol that reports Sharpe and CVaR
+alongside raw PnL. The four claims are ordered so that the negative result
+comes first, because a policy can only be judged against an honest baseline:
+C1 bounds the economics, C2 explains why naive learning fails there, and
+C3--C4 ask what a policy that survives can add.
+
+Future work follows directly from the boundaries of the study: extending the
+joint action space with continuous width and optimal exit, running the boundary
+sweep across more pairs and fee tiers, modeling latency and private order flow
+explicitly, and replacing the representative perpetual proxy with a model of
+funding and basis for a specific venue. Each extension runs the same testbed
+again rather than redesigning it.
