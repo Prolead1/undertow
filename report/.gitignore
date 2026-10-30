@@ -13,3 +13,6 @@
 
 # `main.pdf` is committed on purpose: the repository keeps a current rendering
 # of the report. Rebuild it with scripts/build_report.sh after every edit.
+
+# PNG copies of the figures are inspection aids; the committed figures are PDF.
+/figures/*.png

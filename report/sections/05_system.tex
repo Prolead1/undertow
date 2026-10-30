@@ -6,6 +6,16 @@ rather than assumed. That world has to meet two demands at once: it must be
 exact enough that a reported fee or loss is the real one, and fast enough that a
 policy can make millions of decisions. No single engine satisfies both, so the
 testbed uses two and checks them against each other.
+Figure~\ref{fig:testbed} shows the flow.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/testbed.pdf}
+\caption{The testbed. Recorded events feed one tape; two engines consume it, an
+exact backtester for ground truth and a fast simulator for training; the parity
+check reconciles them before a policy is trusted.}
+\label{fig:testbed}
+\end{figure}
 
 \subsection{The record}
 
