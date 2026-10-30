@@ -15,10 +15,9 @@ bash scripts/build_report.sh                          # tectonic -> latexmk -> p
 UNDERTOW_REPORT_PDF=~/report-build/thesis.pdf bash scripts/build_report.sh
 ```
 
-The compiled `main.pdf` and the aux files are gitignored: only the sources are
-versioned. Every PR that touches `report/` also attaches the compiled PDF to
-its GitHub Actions run under the `thesis-report-pdf` artifact, so the current
-rendering is available without a local toolchain.
+`report/main.pdf` is committed so the current rendering is visible in the
+repository: rebuild and stage it with every change to the sources. The aux
+files are gitignored.
 
 ## Structure
 
