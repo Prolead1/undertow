@@ -1,0 +1,111 @@
+# Corpus manifest for scripts/plagiarism_check.py.
+#
+# The checker extracts prose from report/**/*.tex and reports every run of
+# `ngram` (default 8) consecutive words that also appears in a document below.
+# `group = "external"` matches fail the check; `internal` matches are the repo's
+# own prose and are reported as warnings.
+#
+# PDF sources are cached under data/plagiarism_corpus/ (gitignored). Add a new
+# source only when the report actually cites it, and keep the URL to the
+# open-access copy.
+
+ngram = 8
+
+# -- Cited papers (open access) ------------------------------------------------
+
+[[sources]]
+name = "adams2021uniswap"
+group = "external"
+kind = "pdf"
+url = "https://uniswap.org/whitepaper-v3.pdf"
+file = "adams-2021-uniswap-v3.pdf"
+
+[[sources]]
+name = "milionis2022lvr"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2208.06046"
+file = "milionis-2022-lvr.pdf"
+
+[[sources]]
+name = "fritsch2024measuring"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2404.05803"
+file = "fritsch-2024-measuring.pdf"
+
+[[sources]]
+name = "loesch2021impermanent"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2111.09192"
+file = "loesch-2021-impermanent-loss.pdf"
+
+[[sources]]
+name = "zhang2023adaptive"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2309.10129"
+file = "zhang-2023-adaptive.pdf"
+
+[[sources]]
+name = "nadkarni2023zeroswap"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2310.09413"
+file = "nadkarni-2023-zeroswap.pdf"
+
+[[sources]]
+name = "anchuri2026rammstein"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2602.19419"
+file = "anchuri-2026-rammstein.pdf"
+
+[[sources]]
+name = "chionas2026concentrated"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2608.19389"
+file = "chionas-2026-concentrated.pdf"
+
+[[sources]]
+name = "schulman2017ppo"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/1707.06347"
+file = "schulman-2017-ppo.pdf"
+
+[[sources]]
+name = "towers2024gymnasium"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2407.17032"
+file = "towers-2024-gymnasium.pdf"
+
+[[sources]]
+name = "raffin2021stablebaselines3"
+group = "external"
+kind = "pdf"
+url = "https://jmlr.org/papers/volume22/20-1364/20-1364.pdf"
+file = "raffin-2021-sb3.pdf"
+
+# -- Internal documents (self-plagiarism screen) -------------------------------
+
+[[sources]]
+name = "repo-docs"
+group = "internal"
+kind = "text"
+glob = "docs/**/*.md"
+
+[[sources]]
+name = "repo-readme"
+group = "internal"
+kind = "text"
+path = "README.md"
+
+[[sources]]
+name = "repo-agents"
+group = "internal"
+kind = "text"
+path = "AGENTS.md"
