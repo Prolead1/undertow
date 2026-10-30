@@ -33,9 +33,9 @@ price reaches an edge. This tension between fee density and band lifetime sits
 underneath every decision in the report. Figure~\ref{fig:payoff} shows the two
 effects together.
 
-\begin{figure*}[t]
+\begin{figure}[t]
 \centering
-\includegraphics[width=\textwidth]{figures/position_payoff.pdf}
+\includegraphics[width=\linewidth]{figures/position_payoff.pdf}
 \caption{A concentrated position versus a passive holding of the same opening
 basket. Left: the position tracks the basket while the price sits inside the
 band and stops following it at the edges, so it gives up the upside of a rally
@@ -43,7 +43,7 @@ while keeping the downside of a fall. Right: the asset mix rotates from WETH
 to USDC as the price rises and freezes at the edge. Illustrative parameters:
 \usdc{100000} entered at \SI{3000}{USDC} per WETH.}
 \label{fig:payoff}
-\end{figure*}
+\end{figure}
 
 \subsection{Two losses, one larger}
 
@@ -78,7 +78,7 @@ losses.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=\columnwidth]{figures/il_lvr.pdf}
+\includegraphics[width=0.55\linewidth]{figures/il_lvr.pdf}
 \caption{The two losses. Top: impermanent loss against the price move, second
 order and small for a full-range position. Bottom: the LVR rate against
 volatility for a \usdc{100000} and a \usdc{200000} position, showing both the
@@ -101,13 +101,13 @@ value-at-risk (CVaR) at the $5\,\%$ level, a coherent risk measure that can be
 optimised through its convex representation\cite{rockafellar2000cvar}.
 Figure~\ref{fig:decisions} makes the sequence concrete.
 
-\begin{figure*}[t]
+\begin{figure}[t]
 \centering
-\includegraphics[width=\textwidth]{figures/decision_path.pdf}
+\includegraphics[width=\linewidth]{figures/decision_path.pdf}
 \caption{Why acting is a decision rather than a rule. An illustrative price
 path with a $\pm5\%$ band: each exit forces a recentring, and each recentring
 adds gas and slippage to a cost that only ever grows. The path is illustrative
 and the costs are simplified; the study charges per-block gas and slippage on
 the inventory actually swapped.}
 \label{fig:decisions}
-\end{figure*}
+\end{figure}

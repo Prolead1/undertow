@@ -1,6 +1,6 @@
 # Undertow thesis report
 
-The submission-form research report for the Undertow project: a two-column
+The submission-form research report for the Undertow project: a one-column
 IEEE paper written in LaTeX. Every rule about how the report is written lives
 in [`docs/agents/report-writer.md`](../docs/agents/report-writer.md) — read it
 before editing prose.
