@@ -1,0 +1,154 @@
+\section{Problem Formulation}
+\label{sec:formulation}
+
+We formulate liquidity provision as a risk-sensitive Markov decision process
+with impulse control. The LP observes a feature vector built from past data,
+chooses between holding and executing an action that rebalances and hedges, and
+receives a reward at each step measuring the change in its excess return over a
+passive benchmark. The process is partially observed: the full market state is
+never available, so we work with the observation map defined below.
+
+\subsection{Episodes, state and observation}
+
+Time is discrete at the pinned decision cadence of $\Delta = \SI{10}{min}$.
+An episode covers a contiguous window of $H = 30$ days drawn from the training
+split, giving $T = 4320$ decision steps; the window's starting date is
+resampled in every training episode (Section~\ref{sec:system}) so that the
+policy cannot memorise a single market path.
+
+The environment's hidden state $s_t$ comprises the market history up to $t$
+(reference prices, realized volatility, volume, active liquidity, gas), the
+LP's live position (raw band, liquidity, uncollected fees), and the hedge
+book (short notional, funding accrued). The agent sees the observation
+$o_t \in \mathbb{R}^{24}$, a vector with a fixed order in three groups:
+\begin{itemize}
+  \item \textbf{Market} (indices 0--5, 11--15): human reference price, raw
+  $\sqrt{P}$, tick, 1\,h and 24\,h log returns, annualized 24\,h realized
+  volatility, pool active liquidity, pool fee tier, recent gas price, recent
+  ETH reference price, and the regime label (ordinal).
+  \item \textbf{Position} (indices 6--10, 18--20): whether the position is in
+  range, position value, uncollected fees in token0 and token1,
+  impermanent loss against the fixed initial HODL basket, and the band
+  geometry, meaning the signed distances from the current tick to the lower
+  and upper bounds and the band width, all in tick-spacing units and positive
+  while the position is in range.
+  \item \textbf{Hedge and time} (indices 16--17, 21--23): short size as a
+  fraction of the LP's ETH delta, hedge equity as a fraction of initial
+  capital, the most recent $8\,\mathrm{h}$ funding rate, and the step index and
+  steps remaining.
+\end{itemize}
+Every feature is closed on the right at the decision time: rolling windows use
+only bars at or before $t$, and the reference price is the last close no later
+than $t$. The features with heavy tails (price, tick, position value, fees,
+liquidity, gas and ETH price) are compressed with a signed log to $O(1)$
+before they reach the network, a strictly monotone transform that preserves
+ordering and signs (ADR-034).
+
+The band geometry group deserves emphasis. The action space below is written
+in tick-spacing units relative to the \emph{current} tick, and the baselines
+are triggered by distance to the band edges. Without those three features a
+memoryless policy cannot tell how close it is to a band exit from price and
+impermanent loss alone, which was the first failure mode we encountered
+(Section~\ref{sec:system}).
+
+\subsection{Action space}
+
+At each decision epoch the agent selects the factored discrete action
+\begin{equation}
+a_t = (\kappa_t,\, c_t,\, w_t,\, h_t),
+\label{eq:action}
+\end{equation}
+where
+\begin{itemize}
+  \item $\kappa_t \in \{\textsf{hold}, \textsf{rebalance}\}$ is the impulse
+  decision;
+  \item $c_t \in \{-4,\dots,+4\}$ shifts the center of the new band in
+  tick-spacings around the current tick (used only when $\kappa_t =
+  \textsf{rebalance}$);
+  \item $w_t \in \{1, 2, 5, 10, 25, 50, 100, 250, 500, 1000\}$ is the band
+  half width of the band in tick-spacings, snapped to the pool's spacing;
+  \item $h_t \in \{0, 0.25, 0.5, 0.75, 1.0\}$ is the target fraction of the
+  LP's ETH delta that the short perpetual hedge carries ($0$ = unhedged;
+  $1$ = the short carries the full LP delta).
+\end{itemize}
+The LP head alone has $1 + 9 \times 10 = 91$ options before hedging. The
+factored encoding keeps the action space small enough for a modest PPO setup
+while covering the three decisions that the economics of
+Section~\ref{sec:background} identify. The current testbed implements the
+deterministic special case $h_t \equiv \bar h$ with $\bar h$ set in
+configuration; the discrete hedge ratio head is the joint policy extension
+evaluated for C3.
+
+\subsection{Reward: the change in excess return}
+
+A rebalance converts inventory between token0 and token1 and pays for the
+privilege. Writing the position value as $V_t$, the fixed initial HODL basket
+as $H_t$, and the cash flows from the hedge at each step as
+$\pi^H_t$ (mark PnL), $\phi_t$ (funding) and $\tau^H_t$ (signed perp trading
+cost), the learning reward is
+\begin{equation}
+\begin{aligned}
+r_t = \frac{1}{W_0}\Big(
+  &\text{fees}_t - \text{gas}_t - \text{slip}_t \\
+  &+ \Delta(V_t - H_t)
+  + \pi^H_t + \phi_t + \tau^H_t
+  - \lambda \, \hat\sigma_t^{r} \Big),
+\end{aligned}
+\label{eq:reward}
+\end{equation}
+where fees are nonnegative income, gas and slip enter as nonnegative cost
+magnitudes, $\Delta(V_t - H_t)$ is the signed change in the strategy's excess
+over the passive basket, $W_0$ is the initial capital, $\hat\sigma_t^{r}$ is a
+trailing estimate of reward volatility, and $\lambda \ge 0$ is a dial for risk
+aversion ($\lambda = 0$ by default). The imperative is \emph{excess versus a fixed
+initial basket}: $H_t$ is the value of the episode's opening deposit held
+passively, never rebased at a rebalance. This makes $\Delta(V_t - H_t)$ the
+change, from one decision to the next, in how far the strategy's value exceeds
+the passive basket, and makes the episode sum equal to the quantity the
+evaluation reports. The hedge leg is included with its true signs: a positive
+funding rate pays the short, while trading the perp costs
+$\tau^H_t \le 0$. Dividing by $W_0$ keeps value targets $O(1)$ without hiding
+any cost.
+
+The reward decomposition in Eq.~\eqref{eq:reward} already exposes the
+economics of C1: fees are the only positive LP term, and LVR enters implicitly
+through $\Delta(V_t - H_t)$ as the adverse selection component of the excess
+change. The evaluation ledger records every term separately so that the
+decomposition can be reported directly.
+
+\subsection{Risk-sensitive objective and evaluation metrics}
+
+The learning objective is the usual discounted return with a coherent risk
+adjustment on the loss distribution $L = -G$, where $G$ is the episode's total
+reward. Using the conditional value at risk at level $\alpha$,
+\begin{equation}
+\mathrm{CVaR}_\alpha(L)
+= \min_{\tau \in \mathbb{R}}
+\left\{
+\tau + \frac{1}{1-\alpha}\,\mathbb{E}\big[(L-\tau)^+\big]
+\right\},
+\label{eq:cvar}
+\end{equation}
+the policy is trained to maximize
+$\mathbb{E}[G] - \lambda \,\mathrm{CVaR}_\alpha(L)$~\cite{rockafellar2000cvar}.
+In the experiments of Section~\ref{sec:results} we report the two primary
+metrics directly: the \emph{annualized Sharpe ratio} of per-episode returns and
+\emph{CVaR at the $5\,\%$ level} (so $\alpha = 0.95$ in
+Eq.~\eqref{eq:cvar}), with raw PnL and excess-versus-HODL as secondary
+statistics. All four are computed from the recorded equity curve of each
+episode and aggregated across seeds with confidence intervals.
+
+\subsection{Hedge leg and benchmarks}
+
+The hedge is a short perpetual position margined in USDT and sized as a
+fraction $h_t$ of the LP's ETH delta,
+$Q^{H}_t = h_t \cdot \partial V_t / \partial q_t$, where the LP delta is
+computed at the current band. Over one step its mark PnL is
+$\pi^H_t = -Q^H_t (q_{t+1} - q_t)$ plus the funding accrual $\phi_t$ at the
+prevailing $8\,\mathrm{h}$ rate, and trading to a new target pays a taker fee.
+Three reference points make the hedge result interpretable: the unhedged LP,
+the deterministic overlay $h_t \equiv \bar h$, and a \emph{hedged HODL}
+portfolio matched in beta that holds the initial basket and shorts the same
+notional. The last is the benchmark that prevents us from claiming success
+against a weaker opponent: a policy that merely removes directional risk must
+still beat a passive portfolio with the same risk profile.

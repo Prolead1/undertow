@@ -1,0 +1,87 @@
+\section{Related Work}
+\label{sec:related}
+
+\subsection{The economics of passive liquidity}
+
+The modern account of AMM LP returns begins with adverse selection. Milionis et
+al.\ characterise the loss a constant-product LP suffers relative to a
+continuously rebalanced portfolio, name it loss-versus-rebalancing, and derive
+the local rate $\frac{1}{8}\sigma^2 V$ for a full-range position; the loss does
+not require informed traders to be modeled explicitly, since any price path
+generates it, and protocol fees and the choice of curve shift the
+balance~\cite{milionis2022lvr}. Their framework implies a viability condition
+that we test against recorded pool histories in C1: fee income must exceed the
+LVR rate.
+
+Whether that condition holds in practice has been tested on-chain. Fritsch and
+Canidio measure realized arbitrage losses against fee income across many large
+AMM pools and find that the losses typically dominate; in their sample a
+passive full-range position would have fared better than concentrated
+alternatives, and even a v2 deposit would have outperformed v3 in several
+pools~\cite{fritsch2024measuring}. Loesch et al.\ study v3 positions directly
+and show that concentrating liquidity magnifies impermanent loss when the price
+leaves the band: a narrow position can lose more than a v2 deposit over the
+same path~\cite{loesch2021impermanent}. Undertow replays each pool's own
+events, so the fee and impermanent loss terms in C1 come from the accumulators
+the protocol wrote.
+
+\subsection{Reinforcement learning for liquidity provision}
+
+Several recent papers apply RL to the LP problem, each isolating a different
+lever. Zhang et al.\ train a hedged double deep Q-network agent and report
+improvements of $9$--$69\,\%$ over baselines, but their hedge is assumed
+frictionless (their Assumptions~2--3), the policy receives no regime features,
+and the evaluation spans four test periods; they also document that the
+\emph{unhedged} agent's PnL changes sign with the market trend, which is
+precisely the directional risk a hedge is meant to
+remove~\cite{zhang2023adaptive}. ZeroSwap takes an orthogonal route: instead of
+choosing where to place liquidity, it learns the spread of a market maker so
+that quoted prices track an external reference. In their competitive regime
+with zero profit the learned spread is the quantity that matters, and a
+static constant-product curve converges to the reference considerably more
+slowly~\cite{nadkarni2023zeroswap}. RAmmStein derives rebalancing thresholds
+that depend on the regime as a problem of impulse control: greedy rebalancing
+loses $8.4\,\%$ in their setting, while a policy that rebalances lazily when the
+regime warrants it gains $1.6\,\%$ net ROI with roughly $85\,\%$ fewer
+rebalances. Their net metric excludes impermanent loss, the study covers a
+single pair, and it relies on off-chain market
+data~\cite{anchuri2026rammstein}. Chionas et al.\ study concentrated liquidity
+as a problem of risk aversion in simulation: higher volatility and higher gas
+push optimal positions wider and reduce rebalancing, and an objective that
+penalizes risk trims the adverse tail of the return distribution. Their
+analysis is simulation only, uses no on-chain data, and does not consider a
+hedge leg~\cite{chionas2026concentrated}.
+
+A separate line of work learns market making quotes in the classical limit
+order book, where the spread and inventory are the control variables and the
+objective is typically a trade-off between mean and variance over inventory
+risk~\cite{avellaneda2008high}. That formulation supplies the risk-sensitive
+vocabulary we use, but its state is a lit order book and its actions are
+quotes, not range geometry.
+
+\subsection{Tools and evaluation}
+
+We use Proximal Policy Optimization (PPO) with clipping as the learning
+algorithm~\cite{schulman2017ppo}, implemented through Stable-Baselines3 on
+Gymnasium environments~\cite{raffin2021stablebaselines3,towers2024gymnasium}.
+For evaluation under risk we use CVaR at the $5\,\%$ level, a coherent risk
+measure optimizable through its Rockafellar--Uryasev convex
+representation~\cite{rockafellar2000cvar}, alongside the annualized Sharpe
+ratio.
+
+\subsection{Positioning}
+
+Across this literature the pieces exist separately: the economics of LVR, the
+idea of learning a rebalance policy, the idea of a hedge, and the idea of risk
+aversion. A single study that trains over the \emph{joint} action of rebalance
+timing, band width and hedge ratio, charges every friction on both legs, and
+evaluates on \emph{validated} on-chain replay under an explicitly
+risk-sensitive metric has not been established. Undertow is built to close that
+gap. Its exact backtester makes the fee and LVR accounting a measured quantity
+rather than a modeling assumption, its float64 simulator makes the joint
+action space trainable, and the parity harness between them bounds the gap from
+simulation to reality that earlier studies which only simulate leave
+open~\cite{chionas2026concentrated}. The rest of this paper formalizes the MDP
+(Section~\ref{sec:formulation}), describes the testbed
+(Section~\ref{sec:system}), and reports the four claims of
+Section~\ref{sec:intro} in order (Section~\ref{sec:results}).
