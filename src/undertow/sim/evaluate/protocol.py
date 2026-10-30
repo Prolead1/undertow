@@ -45,7 +45,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
@@ -77,7 +77,7 @@ from undertow.sim.metrics import (
 from undertow.sim.policies import Policy
 from undertow.sim.prices import ReplayPriceProcess
 from undertow.sim.prices.base import PriceProcess, human_price_to_triplet
-from undertow.sim.types import Action, Tick, UndertowSimError
+from undertow.sim.types import Action, LookAheadError, Regime, Tick, UndertowSimError
 
 if TYPE_CHECKING:
     from undertow.sim.backtest.ledger import BacktestLedger
@@ -223,22 +223,46 @@ def dominant_regime(
 ) -> str:
     """Dominant regime label of the ``[start_seq, end_seq)`` episode.
 
-    Counts ``market_view.regime_at(block_timestamp)`` over every tape row in the
-    episode and returns the most frequent label.  Ties break deterministically
-    (most frequent, then alphabetical) so results are reproducible.  An episode
-    with no labels returns ``"unknown"``.
+    Counts the as-of regime label over every tape row in the episode and
+    returns the most frequent label.  Ties break deterministically (most
+    frequent, then alphabetical) so results are reproducible.  An episode with
+    no labels returns ``"unknown"`` and a row past the active wall raises
+    ``LookAheadError``, exactly as the per-row ``regime_at`` path did.
+
+    The as-of lookup is vectorized into a single ``search_sorted`` call over
+    the window's timestamps.  The old per-row loop called
+    ``regime_at`` once per tape row, and each of those calls built and collected
+    a polars lazy expression, so the evaluation's regime matrix spent minutes to
+    hours here on the multi-million-row regime feed.
     """
     tape = market_view.active_split_data()
+    # ``active_split_data`` is already seq-sorted; the counts are order
+    # independent, so no re-sort is needed.
     sub = tape.filter(
         (pl.col("seq") >= int(start_seq)) & (pl.col("seq") < int(end_seq))
-    ).sort("seq")
-    counts: dict[str, int] = {}
-    for timestamp in sub["block_timestamp"].to_list():
-        label = market_view.regime_at(timestamp)
-        counts[label] = counts.get(label, 0) + 1
-    if not counts:
-        return "unknown"
-    return min(counts, key=lambda label: (-counts[label], label))
+    )
+    if sub.height == 0:
+        return Regime.UNKNOWN.value
+    # The wall check runs before the empty-regime return so a past-wall window
+    # raises even when the regime feed is empty, matching ``regime_at``.
+    stamps = sub["block_timestamp"]
+    latest = cast("datetime | None", stamps.max())
+    wall = market_view.active_end_utc
+    if latest is not None and latest > wall:
+        raise LookAheadError(f"time {latest} is past the active split wall {wall}")
+    regimes = market_view.regimes
+    if regimes.height == 0:
+        return Regime.UNKNOWN.value
+    # ``-1`` marks a timestamp before the first regime row; those rows are
+    # "unknown" and must not wrap around as polars negative indexing would.
+    indices = (
+        regimes["timestamp"].search_sorted(stamps, side="right").cast(pl.Int64) - 1
+    )
+    labels = regimes["regime"].gather(indices.clip(lower_bound=0))
+    labels = labels.set(indices < 0, Regime.UNKNOWN.value)
+    counts = labels.value_counts(sort=False)
+    best = min(counts.rows(), key=lambda row: (-row[1], str(row[0])))
+    return str(best[0])
 
 
 def observation_from_vector(vector: Sequence[float]) -> Observation:

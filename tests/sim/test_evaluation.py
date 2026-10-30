@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
@@ -49,6 +50,7 @@ from undertow.sim.evaluate import (
 from undertow.sim.evaluate.protocol import action_to_index
 from undertow.sim.marketview import MarketView
 from undertow.sim.policies import HODLPolicy, HOLDAction, PassiveNarrowPolicy, TauResetPolicy
+from undertow.sim.types import LookAheadError
 
 # ---------------------------------------------------------------------------
 # Helpers / detectors
@@ -231,6 +233,24 @@ class TestWalkForwardWindows:
             walk_forward_windows(tiny_market_view, _config(duration_days=0))
 
 
+def _per_row_labels(view: MarketView, start: int, end: int) -> list[str]:
+    """The old per-row ``regime_at`` labels for the ``[start, end)`` window."""
+    sub = view.active_split_data().filter(
+        (pl.col("seq") >= start) & (pl.col("seq") < end)
+    )
+    return [view.regime_at(timestamp) for timestamp in sub["block_timestamp"].to_list()]
+
+
+def _dominant(labels: list[str]) -> str:
+    """The documented dominant-label rule (most frequent, then alphabetical)."""
+    if not labels:
+        return "unknown"
+    counts: dict[str, int] = {}
+    for label in labels:
+        counts[label] = counts.get(label, 0) + 1
+    return min(counts, key=lambda label: (-counts[label], label))
+
+
 class TestDominantRegime:
     def test_all_four_regimes_appear(self, tiny_market_view: MarketView) -> None:
         windows = walk_forward_windows(tiny_market_view, _config(duration_days=4))
@@ -241,6 +261,51 @@ class TestDominantRegime:
         empty = tiny_market_view.regimes.clear()
         view = dataclasses.replace(tiny_market_view, regimes=empty)
         assert dominant_regime(view, 0, 100) == "unknown"
+
+    def test_matches_the_per_row_regime_at_semantics(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        # The vectorized as-of lookup must agree with the old per-row loop on
+        # every window.  ``(97, 776)`` is a 252:252 bear/sideways tie on the
+        # fixture, so the alphabetical tie-break is exercised too.
+        windows = [
+            *walk_forward_windows(tiny_market_view, _config(duration_days=4)),
+            (97, 776),
+        ]
+        for start, end in windows:
+            assert dominant_regime(tiny_market_view, start, end) == _dominant(
+                _per_row_labels(tiny_market_view, start, end)
+            )
+
+    def test_partial_regime_coverage_matches_per_row_semantics(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        # Drop most of the regime feed so some tape rows precede the first
+        # retained row (``-1`` indices, must be "unknown") and later rows do
+        # not; the elementwise masking has to agree with the per-row loop.
+        height = tiny_market_view.regimes.height
+        view = dataclasses.replace(
+            tiny_market_view, regimes=tiny_market_view.regimes.tail(height // 2)
+        )
+        labels = _per_row_labels(view, 0, view.step_count())
+        assert "unknown" in labels
+        assert any(label != "unknown" for label in labels)
+        assert dominant_regime(view, 0, view.step_count()) == _dominant(labels)
+
+    def test_row_past_the_active_wall_raises(self, tiny_market_view: MarketView) -> None:
+        # A hand-built view whose tape extends past the active wall must raise
+        # exactly like the old per-row ``regime_at`` loop did.
+        tape = tiny_market_view.active_split_data()
+        beyond = tape.tail(1).with_columns(
+            pl.lit(int(tape["seq"].max()) + 1).cast(pl.Int64).alias("seq"),
+            pl.lit(tiny_market_view.active_end_utc + timedelta(seconds=1))
+            .cast(pl.Datetime("us", "UTC"))
+            .alias("block_timestamp"),
+        )
+        doctored = tape.vstack(beyond)
+        view = dataclasses.replace(tiny_market_view, train=doctored)
+        with pytest.raises(LookAheadError, match="past the active split wall"):
+            dominant_regime(view, 0, int(doctored["seq"].max()) + 1)
 
 
 class TestEvaluatePolicy:
