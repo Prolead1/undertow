@@ -1,33 +1,37 @@
 \section{Results}
 \label{sec:results}
 
-\pending{This section is intentionally a stub while the RL experiments across
-seeds run. It will report C1--C4 in order, and every number will come from the
-locked runs (manifests under \texttt{results/}), never from a draft memory.
-Nothing in this section may be filled until the runs complete.}
+\pending{This section is deliberately a stub while the multi-seed experiments
+run. Each subsection states the question and the shape of the evidence that will
+answer it; no number is written until the locked runs exist.}
 
-\subsection{C1: Where fees fail to cover LVR and rebalancing}
-\pending{Report the passive benchmark cost decomposition (fees, impermanent
-loss, LVR, gas, slippage) on both fee tiers, the cost of greedy versus lazy
-rebalancing, and the sign of excess-versus-HODL across regimes. The
-preliminary diagnostic over 15 windows recorded in ADR-030 motivates the
-claim; the final table replaces it.}
+\subsection{Where do fees fail?}
 
-\subsection{C2: Failure modes in naive RL}
-\pending{Report the collapse before the fixes (policies that repeat one action,
-flat learning curves) and the ablations of each fix (band geometry off, fixed
-training window, reward measured against the rolling basket, execution at
-decision time off), with the evidence for each diagnosis.}
+The first question is economic. We decompose the passive benchmarks into fee
+income, impermanent loss, gas and slippage, and locate the conditions under
+which the losses exceed the fees. \pending{Report the decomposition on both fee
+tiers, the cost of greedy against lazy rebalancing, and where the sign of
+excess over a passive holding flips across regimes.}
 
-\subsection{C3: The learned joint policy}
-\pending{Report Sharpe and CVaR out of sample for the learned policy against
-the full benchmark ladder of Table~\ref{tab:benchmarks}, paired within windows
-and across seeds, plus the action distribution that shows the policy is not
-degenerate and its decision boundaries recover the band exit and the trade-off
-between fees and gas.}
+\subsection{Why does naive learning fail?}
 
-\subsection{C4: The active/passive boundary}
-\pending{Report the swept boundary where the learned and passive Sharpe
-ratios are equal, as a function of volatility, volume relative to liquidity,
-fee tier, gas and capital, with the analytical LVR threshold from
-Eq.~\eqref{eq:lvr} overlaid.}
+The second question is methodological. A standard policy, trained on the
+original interface, collapsed to a single action on every seed. We trace that
+collapse to what the agent could see, what it was rewarded for, and the windows
+it trained on, and we measure what each repair contributes. \pending{Report the
+pre-fix collapse and the per-fix ablations, with the evidence for each
+diagnosis.}
+
+\subsection{Can one policy do better?}
+
+The third question is the central one. \pending{Report out-of-sample Sharpe and
+CVaR for the learned policy against every benchmark, paired per window and
+across seeds, together with the action distribution and the decision boundaries
+it recovers.}
+
+\subsection{Where is active management worth it?}
+
+The fourth question turns the result into a map. \pending{Report the boundary
+along which active and passive provision achieve equal performance under
+risk, as a function of volatility, volume relative to liquidity, fee
+tier, gas and capital, with the analytical LVR threshold overlaid.}

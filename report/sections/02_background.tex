@@ -1,122 +1,77 @@
-\section{Background: Mechanical and Economic Setting}
+\section{How Concentrated Liquidity Works}
 \label{sec:background}
 
-The pair is \textsf{USDC/WETH}: token0 is USDC and token1 is WETH, as in the
-on-chain pools we use. Protocol quantities are raw Uniswap quantities: $s$
-denotes the raw square root of the pool price ($\sqrt{P}$, increasing in tick)
-and $L$ the
-raw liquidity. The ETH price in USD is
-\begin{equation}
-q(s) \;=\; \frac{10^{\,d_1-d_0}}{s^2},
-\label{eq:humanprice}
-\end{equation}
-roughly \SI{3000}{USDC/WETH} at $s \approx 1.8\times 10^{4}$, with token
-decimals $d_0 = 6$ and $d_1 = 18$; because $q$ decreases in $s$, a lower tick
-means a higher ETH price. Monetary quantities are always converted to USDC, and
-the decimal factors cancel from every ratio we report.
+\subsection{A position as a bet on a range}
 
-\subsection{Concentrated liquidity in Uniswap v3}
-
-Uniswap~v3 replaces a single constant-product curve with a family of curves
-indexed by integer \emph{ticks}~\cite{adams2021uniswap}. An LP selects a tick
-interval $[t_\ell, t_u]$, equivalently a raw band $[s_a, s_b]$ with
-$s_a < s_b$, and deposits liquidity $L$ that backs trades only while the pool
-price stays inside the band. For $s \in [s_a, s_b]$, the position holds
+Uniswap~v3 indexes price by integer ticks. An LP picks a lower and an upper
+tick, and the deposit backs trades only while the pool price stays between
+them~\cite{adams2021uniswap}. In protocol units the price is a raw square root,
+$s=\sqrt{1.0001^{\text{tick}}}$, which increases with the tick; the human price
+is $q(s)=10^{d_1-d_0}/s^2$ USDC per WETH, so a lower tick means a higher ETH
+price. Inside a band $[s_a,s_b]$ the position holds
 \begin{equation}
-\begin{aligned}
-x(s) &= \frac{L}{10^{d_0}}\!\left(\frac{1}{s}-\frac{1}{s_b}\right), \\
-y(s) &= \frac{L}{10^{d_1}}\!\left(s-s_a\right),
-\end{aligned}
-\label{eq:amounts}
+x(s)=\frac{L}{10^{d_0}}\left(\frac{1}{s}-\frac{1}{s_b}\right),
+\qquad
+y(s)=\frac{L}{10^{d_1}}\left(s-s_a\right),
 \end{equation}
-in human token units, so its USDC value is
+in token units, so its USDC value is
 \begin{equation}
-V(s) \;=\; x(s) + y(s)\,q(s)
-\;=\; \frac{L}{10^{d_0}}\!\left(\frac{2}{s}-\frac{1}{s_b}
--\frac{s_a}{s^2}\right).
+V(s)\;=\;x(s)+y(s)\,q(s)
+\;=\;\frac{L}{10^{d_0}}\left(\frac{2}{s}-\frac{1}{s_b}-\frac{s_a}{s^2}\right).
 \label{eq:value}
 \end{equation}
-Equation~\eqref{eq:value} makes the payoff structure visible. As the ETH price
-falls ($s$ rises) toward the band, the position rotates into WETH; as the price
-rises ($s$ falls), it rotates into USDC. At $s = s_b$ it holds only WETH, and
-above the band it is a pure WETH holding whose USDC value falls as the ETH
-price falls; symmetrically, at $s = s_a$ it holds only USDC. A v3 position
-therefore has a truncated, concave payoff in the price, in effect a short
-straddle around the current tick: it sells the asset that is appreciating and
-buys the one that is depreciating, and it stops doing so once the price leaves
-the band.
+The formulas describe a simple behaviour. As the ETH price falls, the position
+sells USDC and accumulates WETH; as the price rises it does the opposite. At
+the edge of the band the position holds a single asset, and once the price
+leaves the band it stops trading altogether. The LP is always on the wrong side
+of the move, and a passive position cannot escape it.
 
-Fee income accrues pro rata to the liquidity a position contributes at each
-tick crossed. The pool records cumulative fee growth per unit of liquidity, so
-a position that is in range over an interval earns $L \cdot \Delta\phi$ and a
-position that is out of range earns nothing~\cite{adams2021uniswap}. A narrow
-band raises the LP's share of active liquidity for a given deposit, which
-multiplies fee density, but it shortens the expected time until the price exits
-and hence increases the frequency of costly recentring. This tension between
-fee density and band lifetime is the heart of the control problem.
+Fees accrue in proportion to the position's share of active liquidity.
+Narrowing the band raises that share for a given deposit, which is why
+concentration is attractive, but it also shortens the expected time until the
+price reaches an edge. This tension between fee density and band lifetime sits
+underneath every decision in the report.
 
-\subsection{Impermanent loss and loss-versus-rebalancing}
+\subsection{Two losses, one larger}
 
-A passive LP's return is not the pool's fee yield; it is fee income net of the
-change in the position's value relative to simply holding the initial deposit.
-For a full-range constant-product position initially split evenly in value, if
-the ETH price ratio is $r = q_t / q_0$, the position is worth
-$\rho(r) = 2\sqrt{r}/(1+r)$ relative to the initial basket, so the
-\emph{impermanent loss} (IL) is
+The first loss is familiar. Impermanent loss (IL) is the shortfall of the
+position against simply holding the initial deposit. For a full-range position
+with equally valued legs, if the ETH price ratio is $r=q_t/q_0$, then
 \begin{equation}
-\mathrm{IL}(r) \;=\; \frac{2\sqrt{r}}{1+r} - 1
-\;=\; -\frac{1}{8}(r-1)^2 + O\!\left((r-1)^3\right),
+\mathrm{IL}(r)\;=\;\frac{2\sqrt{r}}{1+r}-1,
 \label{eq:il}
 \end{equation}
-which is second order in the price move; for example,
-$\mathrm{IL}(1.2) = -0.41\,\%$. On v3 the same formula applies only inside the
-band; outside it the position holds only one of the two assets and the
-comparison depends on where the band was
+which is second order in the price move; at $r=1.2$ it is $-0.41\,\%$. On v3
+the same expression applies only inside the band, and outside it the position
+is a one-sided holding, so IL depends on where the band was
 placed~\cite{loesch2021impermanent}.
 
-IL measures the loss relative to the LP's own initial mix, but there is a
-sharper benchmark. Suppose a portfolio continuously rebalances to hold the same
-instantaneous token0 exposure as the LP position. Expanding the full-range
-value function $V(P) = 2\sqrt{kP}$ (in token1 units, with constant product
-$k$) to second order shows that the LP underperforms that portfolio, which
-replicates the LP's delta, at the rate
+The second loss is sharper. Compare the position with a portfolio that
+continuously rebalances to hold the same instantaneous exposure. A second-order
+expansion of the full-range value shows that the LP falls behind that
+portfolio at the rate
 \begin{equation}
-\mathrm{dLVR}_t \;=\; \frac{1}{8}\,\sigma^2\, V_t \,\mathrm{d}t ,
+\mathrm{dLVR}_t\;=\;\frac{1}{8}\,\sigma^2\,V_t\,\mathrm{d}t,
 \label{eq:lvr}
 \end{equation}
-which is the \emph{loss-versus-rebalancing} of Milionis et
-al.~\cite{milionis2022lvr}. Adverse selection therefore compounds with the
-square of volatility and linearly with the value at risk, and fee income must
-exceed it for passive provision to be viable. Concentrating liquidity raises
-the fee density but not the fee rate, so it improves the LP's position only
-when the extra fee share outweighs the extra exposure to arbitrage. The
-empirical studies in Section~\ref{sec:related} find that, on many large pools,
-it does not.
+which is the loss-versus-rebalancing of Milionis et
+al.~\cite{milionis2022lvr}. Adverse selection therefore grows with the square
+of volatility and with position size, and fee income must exceed it for passive
+provision to be viable. Concentration raises fee density but not the fee rate,
+so it helps only when the extra fee share outweighs the extra exposure to
+arbitrage. The measurements in Section~\ref{sec:related} find that, on many
+large pools, it does not.
 
-\subsection{The liquidity provider's control problem}
+\subsection{The decisions and the risk}
 
-The quantities above describe a static position. In practice an LP manages a
-sequence of decisions. Each recentring is an \emph{impulse}: it incurs a fixed
-gas cost, a pool fee on the inventory imbalance that must be swapped to build
-the new range, and slippage. The impulse resets the band's geometry, and with
-it the fee density and the LVR exposure. The LP's choices are therefore (i)
-\emph{when} to recenter, (ii) \emph{where} and \emph{how wide} to place the next
-band, and (iii) \emph{how much market risk to carry}, either by holding the
-endogenous direction of the position or by hedging it with a short perpetual
-futures position whose notional tracks the LP's delta.
-
-Two features make this a problem of impulse control rather than a static
-optimization~\cite{anchuri2026rammstein}. First, the cost of acting is lumpy:
-a rebalance is worth doing only when the expected improvement in fee income,
-band lifetime or risk exceeds a threshold. Second, the state that determines
-whether to act is only partially observed: the volatility regime is latent,
-order flow is adversarial, and the LP sees history through delayed, aggregated
-on-chain events. Risk preferences enter as much as expected return does. An LP
-that maximizes expected fees will accept positions whose return distribution
-has a heavy left tail; an LP averse to risk will trade expected return for a
-compressed tail. We therefore evaluate policies by \emph{annualized Sharpe
-ratio} and by \emph{conditional value at risk at the $5\,\%$ level} (CVaR), a
-coherent risk measure expressible as a convex
-optimization~\cite{rockafellar2000cvar}, and we report raw PnL and
-excess-versus-HODL alongside them. Section~\ref{sec:formulation} turns this
-description into a formal MDP.
+An LP that wants to improve on the passive outcome must decide when to act,
+where and how wide to place the next band, and how much market risk to carry.
+The decisions interfere. A wider band delays the next costly recentring but
+earns less per trade; a hedge removes directional variance but pays funding and
+perp fees; acting sooner protects fee income but multiplies transaction costs.
+Because acting is lumpy, the problem is one of impulse
+control~\cite{anchuri2026rammstein}, and because the outcome is uncertain, the
+right measure is not profit but profit per unit of risk. We use two such
+measures throughout: the annualised Sharpe ratio and the conditional
+value-at-risk (CVaR) at the $5\,\%$ level, a coherent risk measure that can be
+optimised through its convex representation~\cite{rockafellar2000cvar}.

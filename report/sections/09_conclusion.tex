@@ -1,26 +1,30 @@
 \section{Conclusion}
 \label{sec:conclusion}
 
-\pending{The conclusion will be written once C1--C4 are measured. Its shape is
-fixed: restate the four claims with their verdicts, state the active/passive
-boundary as measured, and list what the study does not settle.}
+The story began with a simple bargain: concentrate liquidity in a price range,
+earn more fees while the price stays inside it. The bargain hides a cost. The
+same position that earns the fees is the position that loses to informed order
+flow, and on real pools that loss can exceed the income. An LP who wants to do
+better than accept it must decide when to recenter, how wide to stay and how
+much risk to hedge, and each decision is expensive and uncertain.
 
-Concentrated liquidity provision is a problem of impulse control under
-adversarial order flow, and the report's central question is whether a
-risk-sensitive learned policy can jointly manage band timing, band width and
-directional risk better than the best rules tuned by hand once gas, slippage,
-fees and funding are charged. To make that question answerable rather than
-rhetorical, this report has described Undertow: an exact on-chain replay
-backtester, a fast simulator checked for parity against it, a risk-sensitive
-formulation of the LP problem, and a protocol that reports Sharpe and CVaR
-alongside raw PnL. The four claims are ordered so that the negative result
-comes first, because a policy can only be judged against an honest baseline:
-C1 bounds the economics, C2 explains why naive learning fails there, and
-C3--C4 ask what a policy that survives can add.
+This report set out to measure whether a risk-sensitive learned policy can make
+those decisions jointly better than the best rules written by hand, and to find
+where active management stops paying. Answering that required a world in which
+costs are measured rather than assumed, so we built a testbed from two years of
+recorded trades, with an exact replay engine for ground truth and a classical
+simulator for training, reconciled by a parity harness. The study then asked
+four questions: where fees fail, why a standard agent fails, whether a learned
+policy wins out of sample, and where the boundary between active and passive
+provision lies.
 
-Future work follows directly from the boundaries of the study: extending the
-joint action space with continuous width and optimal exit, running the boundary
-sweep across more pairs and fee tiers, modeling latency and private order flow
-explicitly, and replacing the representative perpetual proxy with a model of
-funding and basis for a specific venue. Each extension runs the same testbed
-again rather than redesigning it.
+\pending{This paragraph will close with the measured verdicts once the
+experiments complete. Its shape is fixed: what the four answers were, which of
+them held, and what the boundary looked like.}
+
+The boundary of the study is also a map for future work. The action space can be
+extended with continuous width and an explicit exit decision. The boundary sweep
+can cover more pairs and fee tiers. Latency, private order flow and the exact
+funding of a real venue can be modelled rather than proxied. Each extension is a
+re-run of the same testbed rather than a redesign of it, which is the point of
+building the testbed before asking the question.
