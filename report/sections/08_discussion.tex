@@ -16,21 +16,30 @@ per-action units rather than per-transaction receipts, so gas is a defensible
 floor rather than an exact quote, and the hedge uses a perpetual proxy whose
 funding and basis are representative rather than exact for a specific venue.
 
-Several threats bound what the study can claim. The evidence covers one asset
-pair at two fee tiers, so the boundary is measured within that scope and does
-not automatically transfer to other pairs. CVaR at $5\,\%$ averages a handful of
-episodes, so it is reported with bootstrap intervals and the worst window rather
-than treated as decisive on its own. The regime labels come from thresholds
-fixed in advance; they organise the reporting and anchor the training process,
-but they are a labelling device, not a discovered state. The boundary sweep
-compares several axes at once, so paired intervals on a pre-registered primary
-metric carry the inference, and any secondary win is labelled as such.
+Table~\ref{tab:threats} states the threats that bound what the study can claim
+and the scope each imposes. The parity check bounds the distance between the
+simulator and the backtester, not the distance between the backtester and
+reality. Where the data allow, the external part of the gap is quantified by
+reconciling fees and collects; where they do not, latency, order-flow privacy
+and MEV are discussed rather than measured. We therefore claim results about
+performance under risk on recorded market states under a stated cost model. We
+do not claim deployable profitability, optimality of the action grid, or that
+the policy would survive market conditions absent from 2022 to 2024.
 
-The parity check bounds the distance between the simulator and the backtester,
-not the distance between the backtester and reality. Where the data allow, the
-external part of the gap is quantified by reconciling fees and collects; where
-they do not, latency, order-flow privacy and MEV are discussed rather than
-measured. We therefore claim results about performance under risk on recorded
-market states under a stated cost model. We do not claim deployable
-profitability, optimality of the action grid, or that the policy would survive
-market conditions absent from 2022 to 2024.
+\begin{table}[tbp]
+\caption{Threats to validity and the scope each imposes.}
+\label{tab:threats}
+\centering
+\small
+\begin{tabular}{@{}L{0.30\linewidth}L{0.64\linewidth}@{}}
+\toprule
+\textbf{Threat} & \textbf{Scope} \\
+\midrule
+One asset pair at two fee tiers & the boundary is measured within that scope and does not automatically transfer to other pairs \\
+CVaR at $5\,\%$ from few episodes & reported with bootstrap intervals and the worst window, not treated as decisive alone \\
+Regime labels from fixed thresholds & a labelling device for reporting and training, not a discovered state \\
+Boundary sweep over several axes & inference rests on paired intervals on the pre-registered primary metric; secondary wins are labelled as such \\
+Simulator and backtester both replay recorded states & claims hold under the stated cost model, not for live execution \\
+\bottomrule
+\end{tabular}
+\end{table}

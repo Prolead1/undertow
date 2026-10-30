@@ -1,9 +1,10 @@
 # Undertow thesis report
 
 The submission-form research report for the Undertow project: a one-column
-IEEE paper written in LaTeX. Every rule about how the report is written lives
-in [`docs/agents/report-writer.md`](../docs/agents/report-writer.md) — read it
-before editing prose.
+research report written in LaTeX with a spacious article layout, IEEE-style
+numeric citations, and a title page. Every rule about how the report is written
+lives in [`docs/agents/report-writer.md`](../docs/agents/report-writer.md);
+read it before editing prose.
 
 ## Build
 
@@ -35,7 +36,7 @@ Regenerate and stage the PDFs whenever the mechanics they illustrate change.
 ## Structure
 
 ```
-main.tex                  IEEEtran setup, title, abstract, input list, \pending{} macro
+main.tex                  class and spacing setup, title, abstract, input list, \pending{} macro
 sections/00_abstract.tex
 sections/01_introduction.tex ... 09_conclusion.tex
 references.bib            verified BibTeX entries (IEEE numeric style)

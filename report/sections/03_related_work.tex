@@ -32,7 +32,7 @@ supplies the risk-sensitive vocabulary we use, but its state is a limit order
 book and its actions are quotes, not range geometry\cite{avellaneda2008high}.
 
 The learning machinery is standard. We use proximal policy optimisation with
-clipping\cite{schulman2017ppo}, implemented through Stable-Baselines3 on
+clipping (PPO)\cite{schulman2017ppo}, implemented through Stable-Baselines3 on
 Gymnasium environments\cite{raffin2021stablebaselines3,towers2024gymnasium},
 and evaluate risk with CVaR at the $5\,\%$ level through its
 Rockafellar--Uryasev representation\cite{rockafellar2000cvar}.

@@ -3,27 +3,72 @@
 
 We model the LP's problem as a risk-sensitive Markov decision process with
 impulse control. Decisions are taken every ten minutes over an episode of
-thirty days. At each decision the agent sees a fixed observation, chooses between
-holding and acting, and receives a reward that measures how far the strategy's value has moved beyond
-a passive benchmark, net of every cost. The process is
-partially observed: the volatility regime and order flow are latent, and the
-agent sees only the history summarised in the observation.
+thirty days. At each decision the agent sees a fixed observation, chooses
+between holding and acting, and receives a reward that measures how far the
+strategy's value has moved beyond a passive benchmark, net of every cost. The
+volatility regime and order flow are latent, so the process is partially
+observed: the agent sees only the history summarised in the observation.
+Figure~\ref{fig:loop} shows one decision cycle.
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners=3pt, align=center, inner sep=5pt,
+              fill=black!4, text width=3.1cm},
+  arr/.style={-{Stealth[length=2.4mm]}, thick},
+  lbl/.style={font=\scriptsize\itshape, midway, fill=white, inner sep=1.5pt}
+]
+  \node[box] (policy) at (0,2.1) {policy $\pi_\theta(a_t \mid o_t)$};
+  \node[box] (action) at (5.1,2.1) {action $a_t$\\timing, width, hedge};
+  \node[box] (market) at (5.1,0) {market step\\ten minutes, episode of thirty days};
+  \node[box] (obs)    at (0,0)   {observation $o_{t+1}$\\24 features from past data};
+  \draw[arr] (policy) -- node[lbl] {act} (action);
+  \draw[arr] (action) -- node[lbl] {transition} (market);
+  \draw[arr] (market) -- node[lbl] {reward $r_t$} (obs);
+  \draw[arr] (obs) -- node[lbl] {observe} (policy);
+\end{tikzpicture}
+\caption{One cycle of the LP decision process. The policy acts every ten
+minutes; a decision to rebalance moves the band and charges gas and slippage,
+while a decision to hold leaves the position where it is. Rewards accumulate
+over an episode of thirty days against the fixed opening basket.}
+\label{fig:loop}
+\end{figure}
 
 \subsection{State}
 
 The observation contains 24 features, all computed from information available
-at the decision time. The market group covers the current price, recent returns
-and realised volatility, the pool's active liquidity and fee tier, the gas
-price and the regime label. The position group covers the value of the live
-position, the fees it has accrued, its loss against the initial basket, and the
-distances from the current tick to each edge of the band together with the band
-width. The hedge group covers the short size relative to the position's ETH
-exposure, the equity in the hedge account, and the most recent funding rate.
-The band geometry deserves emphasis. The action space is written in tick
-spacings relative to the current tick, so a policy that cannot see how close the
-price is to an edge cannot time a rebalance at all. Heavy-tailed features such
-as price, liquidity and gas are compressed with a signed logarithm so that every
+at the decision time. Table~\ref{tab:observation} groups them by source. The
+band geometry deserves emphasis: the action space is written in tick spacings
+relative to the current tick, so a policy that cannot see how close the price
+is to an edge cannot time a rebalance at all. Heavy-tailed features such as
+price, liquidity and gas are compressed with a signed logarithm so that every
 dimension reaches the network on the same scale.
+
+\begin{table}[tbp]
+\caption{The 24 observation features, grouped by source. Every field is
+computed from information available at the decision time, so an observation at
+time $t$ cannot contain a bar from $t+1$.}
+\label{tab:observation}
+\centering
+\small
+\begin{tabular}{@{}L{0.18\linewidth}L{0.65\linewidth}r@{}}
+\toprule
+\textbf{Group} & \textbf{Features} & \textbf{n} \\
+\midrule
+Market & price, sqrt price, tick, 1\,h and 24\,h log returns, realised 24\,h volatility & 6 \\
+Position & in-range flag, position value, two uncollected fee balances, IL against the fixed basket & 5 \\
+Pool & active liquidity, fee tier & 2 \\
+Costs & recent gas price, recent ETH reference price & 2 \\
+Regime & regime label (bull, bear, sideways, high volatility) & 1 \\
+Time & step in episode, steps remaining & 2 \\
+Band & distance to each band edge and band width, in tick spacings & 3 \\
+Hedge & short ratio, hedge equity, recent funding rate & 3 \\
+\midrule
+ & \textbf{Total} & \textbf{24} \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{Action}
 
@@ -32,58 +77,100 @@ At each decision the agent selects a factored action
 a_t = (\kappa_t,\, c_t,\, w_t,\, h_t),
 \label{eq:action}
 \end{equation}
-where $\kappa_t$ decides between holding and rebalancing, $c_t\in\{-4,\dots,4\}$
-shifts the centre of the new band in tick spacings around the current tick,
-$w_t\in\{1,2,5,10,25,50,100,250,500,1000\}$ is the band half-width in tick
-spacings, and $h_t\in\{0,0.25,0.5,0.75,1.0\}$ is the fraction of the LP's ETH
-delta carried by the short hedge, so that $h_t=1$ matches the position's beta.
-The liquidity head alone has $1+9\times10=91$ options. In the experiments of
-this report the hedge ratio is held at a configured value while the liquidity
-head is learned; promoting $h_t$ to a learned head is the joint-policy
-extension evaluated in the last two questions.
+whose four heads are described in Table~\ref{tab:action}. On the $0.05\,\%$
+primary pool the liquidity head alone has $1+9\times10=91$ options. The
+shipped configuration learns the liquidity head with the hedge overlay
+disabled; when the overlay is enabled its ratio is set by configuration.
+Promoting $h_t$ to a learned head, and the hedge-leg benchmarks, are planned
+for the last two questions and their results remain pending.
+
+\begin{table}[tbp]
+\caption{The four action heads. Widths are given as half the band width, in
+tick spacings. The primary pool's spacing of $10$ uses all ten widths; the
+contrast pool's spacing of $60$ uses the six-width ladder.}
+\label{tab:action}
+\centering
+\small
+\begin{tabular}{@{}L{0.14\linewidth}cL{0.28\linewidth}L{0.41\linewidth}@{}}
+\toprule
+\textbf{Head} & \textbf{Symbol} & \textbf{Options} & \textbf{Meaning} \\
+\midrule
+Rebalance & $\kappa_t$ & hold, act & spend gas and slippage to move the band, or leave it \\
+Centre & $c_t$ & $-4,\dots,4$ spacings & shift the centre of the new band around the current tick \\
+Width & $w_t$ & $\{1,2,5,10,25,50,$\newline $100,250,500,1000\}$ spacings & half of the new band's width \\
+Hedge & $h_t$ & $\{0,0.25,0.5,0.75,1.0\}$ & fraction of the LP's ETH delta carried by the short \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{Reward}
 
 A rebalance converts inventory and pays for the privilege. Writing $V_t$ for the
-position value, $H_t$ for the fixed value of the opening deposit held passively,
-and the hedge cash flows as mark PnL $\pi_t$, funding $\phi_t$ and perp cost
-$\tau_t\le 0$, the reward is
-\begin{equation}
+position value, $H_t$ for the fixed value of the opening deposit held
+passively, and the hedge cash flows as mark PnL $\pi_t$, funding $\phi_t$ and
+perp cost $\tau_t\le 0$, the reward is
+\begin{align}
 r_t = \frac{1}{W_0}\Big(
-\text{fees}_t - \text{gas}_t - \text{slip}_t
-+ \Delta(V_t - H_t) + \pi_t + \phi_t + \tau_t
-- \lambda\,\hat\sigma_t \Big),
+  & \mathrm{fees}_t - \mathrm{gas}_t - \mathrm{slip}_t
+    + \Delta(V_t - H_t) \notag \\
+  & + \pi_t + \phi_t + \tau_t - \lambda\,\hat\sigma_t \Big),
 \label{eq:reward}
-\end{equation}
-where fees are non-negative income, gas and slippage enter as positive cost
-magnitudes, $W_0$ is the initial capital, $\hat\sigma_t$ estimates recent reward
-volatility, and $\lambda\ge 0$ dials risk aversion ($\lambda=0$ by default).
+\end{align}
+whose terms are defined in Table~\ref{tab:reward}. Dividing by the initial
+capital $W_0$ keeps value targets at a workable scale without hiding any cost.
 The excess is measured against the \emph{fixed} opening basket: $H_t$ is never
 rebased at a rebalance, so the episode sum equals the excess over holding that
-basket, which is the quantity the evaluation reports. Dividing by $W_0$ keeps value targets at a workable
-scale without hiding any cost.
+basket, which is the quantity the evaluation reports.
+
+\begin{table}[tbp]
+\caption{Every term of the reward, in token0 (USDC) units before the $1/W_0$
+scaling. Gas and slippage enter as positive magnitudes and carry a minus sign
+in the reward.}
+\label{tab:reward}
+\centering
+\small
+\begin{tabular}{@{}L{0.16\linewidth}L{0.62\linewidth}c@{}}
+\toprule
+\textbf{Term} & \textbf{Meaning} & \textbf{Sign} \\
+\midrule
+$\mathrm{fees}_t$ & fee income earned in the step & $+$ \\
+$\mathrm{gas}_t$ & gas for mints, burns, collects and rebalancing swaps & $-$ \\
+$\mathrm{slip}_t$ & slippage on the inventory actually swapped & $-$ \\
+$\Delta(V_t-H_t)$ & change in position value against the fixed opening basket & $\pm$ \\
+$\pi_t$ & mark PnL of the short perpetual & $\pm$ \\
+$\phi_t$ & funding paid or received on the short & $\pm$ \\
+$\tau_t$ & perp taker cost of adjusting the short & $\le 0$ \\
+$\lambda\,\hat\sigma_t$ & penalty on recent reward volatility, $\lambda=0$ by default & $-$ \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{Risk and benchmarks}
 
-The learning objective is the discounted return adjusted for tail risk. With
-losses $L=-G$ defined on the episode return $G$, the conditional value-at-risk
-at level $\alpha$ is
+The learning objective is the discounted return with a penalty on recent
+reward volatility: the risk term in Eq.~\eqref{eq:reward} subtracts a multiple
+of the trailing standard deviation of per-step equity changes, with $\lambda=0$
+by default. Tail risk is measured in the evaluation instead. With losses $L=-G$
+defined on the episode return $G$, the conditional value-at-risk at level
+$\alpha$ is
 \begin{equation}
-\mathrm{CVaR}_\alpha(L)=\min_{\tau\in\mathbb{R}}
-\left\{\tau+\frac{1}{1-\alpha}\mathbb{E}\big[(L-\tau)^+\big]\right\},
+\mathrm{CVaR}_\alpha(L) = \min_{\nu\in\mathbb{R}}
+\left\{\nu+\frac{1}{1-\alpha}\mathbb{E}\big[(L-\nu)^+\big]\right\},
 \label{eq:cvar}
 \end{equation}
-and the policy maximises $\mathbb{E}[G]-\lambda\,\mathrm{CVaR}_\alpha(L)$ with
-$\alpha=0.95$\cite{rockafellar2000cvar}. Evaluation reports the annualised
-Sharpe ratio and CVaR at $5\,\%$ as primary statistics, with raw PnL and excess
-over HODL as secondary ones. Comparisons use paired per-window differences and
+the Rockafellar--Uryasev representation\cite{rockafellar2000cvar}, which we
+report at $\alpha=0.95$. Evaluation therefore reports the annualised Sharpe
+ratio and CVaR at $5\,\%$ as primary statistics, with raw PnL and excess over
+HODL as secondary ones. Comparisons use paired per-window differences and
 confidence intervals across seeds.
 
 The hedge is a short perpetual position sized as a fraction of the LP's delta.
 Its mark PnL over a step is the negative product of the short notional and the
 price change, plus funding and the taker cost of adjusting the position. Three
 reference points make the hedge leg interpretable: the unhedged LP, the
-deterministic overlay, and a hedged HODL portfolio with matched beta. The last is the
-benchmark that prevents us from declaring success against a weaker opponent, a
-policy that merely removes directional risk must still beat a passive portfolio
-with the same risk profile.
+deterministic overlay, and a hedged HODL portfolio with matched beta. The last
+is the benchmark that prevents us from declaring success against a weaker
+opponent: a policy that merely removes directional risk must still beat a
+passive portfolio with the same risk profile. The overlay is disabled in the
+shipped configuration, so the hedged benchmark of
+Table~\ref{tab:benchmarks} remains pending.
