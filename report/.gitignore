@@ -1,4 +1,4 @@
-# LaTeX build artifacts — never commit.
+# LaTeX aux files - build products, never commit.
 *.aux
 *.bbl
 *.blg
@@ -6,8 +6,10 @@
 *.fls
 *.log
 *.out
-/main.pdf
 *.synctex.gz
 *.toc
 *.run.xml
 *-blx.bib
+
+# `main.pdf` is committed on purpose: the repository keeps a current rendering
+# of the report. Rebuild it with scripts/build_report.sh after every edit.
