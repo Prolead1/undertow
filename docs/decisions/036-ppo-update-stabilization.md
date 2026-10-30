@@ -64,9 +64,22 @@ collapses.
   identical to the `hodl` baseline, versus **-80,642 USDC** for the
   reduced-grid churning pilot (`pilot_holdbias` checkpoint, same split,
   28-action grid; `logs/eth_usdc_500/pilot-eval-*.log`) and **-86,889 USDC**
-  for the original 91-action run (`results/eth_usdc_500_main`). The recipe is
-  now being run across the full 5-seed × 1M-step budget; its evaluation will be
-  appended here.
+  for the original 91-action run (`results/eth_usdc_500_main`). The full
+  5-seed × 1M-step budget (`results/eth_usdc_500_rl`, commit `fb740ac`;
+  manifest HEAD `afcb68f` is identical `src/` training code; config hash
+  `78db78f032d34abc`) reproduced the outcome: every seed's 5 deterministic
+  rollouts (25/25 episodes) held 100 % of steps, final `ep_rew` ranged -0.17
+  to -0.29 across seeds (previous churning run: ≈ -0.95 to -0.97), with KL ~0.001–0.002
+  and clip fraction ~0.02; `best_reward` selected seed 4 (-0.1669). On the
+  same held-out 2024 split `ppo_seed_4` scored **+735.2 USDC** (Sharpe 0.654,
+  maxDD -0.122, 0 rebalances, 0 gas) — identical to `hodl`; baselines for
+  context: `full_range_v2` +2,183 (0.639), `passive_wide` +1,623 (1.526),
+  `passive_narrow` +1,082 (1.296), `cost_aware` -1,992, `tau_reset` -17,680.
+  Sim-to-backtest gap: 742.96 sim vs 735.21 on-chain = 7.75 USDC
+  (fees +0.61, gas/slippage 0.00, IL -5.78). Honest limitation: the learned
+  policy is a pass-hold policy — positive, stable and non-churning — but it
+  ties `hodl` and does not beat `passive_wide`/`full_range_v2`; band
+  selection (learning to widen) is the next iteration.
 - **Old 91-action checkpoints are incompatible** with the 28-action grid: SB3's
   action-head shape guard raises on load. Pre-change primary runs must be
   retrained and their results are not comparable; the manifest's `git_commit`
