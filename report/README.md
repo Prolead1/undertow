@@ -7,16 +7,18 @@ before editing prose.
 
 ## Build
 
-A LaTeX toolchain is required. Any of these works:
+A LaTeX toolchain is required, but the wrapper picks whichever engine exists.
+Run it from the repository root:
 
 ```bash
-tectonic main.tex                    # self-contained; fetches packages on first run
-latexmk -pdf main.tex                # TeX Live / MiKTeX
-pdflatex main.tex && bibtex main && pdflatex main.tex && pdflatex main.tex
+bash scripts/build_report.sh                          # tectonic -> latexmk -> pdflatex
+UNDERTOW_REPORT_PDF=~/report-build/thesis.pdf bash scripts/build_report.sh
 ```
 
-The build products (`*.pdf`, `*.aux`, `*.bbl`, …) are gitignored: only the
-sources are versioned.
+The compiled `main.pdf` and the aux files are gitignored: only the sources are
+versioned. Every PR that touches `report/` also attaches the compiled PDF to
+its GitHub Actions run under the `thesis-report-pdf` artifact, so the current
+rendering is available without a local toolchain.
 
 ## Structure
 

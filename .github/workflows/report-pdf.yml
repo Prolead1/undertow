@@ -1,0 +1,51 @@
+name: report-pdf
+
+# Build the thesis report and attach the PDF to the run so it can be viewed
+# without a local LaTeX toolchain. Runs only when the report or its build
+# script changes; `quality` remains the required gate.
+
+on:
+  pull_request:
+    paths:
+      - "report/**"
+      - "scripts/build_report.sh"
+      - ".github/workflows/report-pdf.yml"
+  push:
+    branches: [main]
+    paths:
+      - "report/**"
+      - "scripts/build_report.sh"
+      - ".github/workflows/report-pdf.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tectonic
+        run: |
+          set -euo pipefail
+          version="0.17.0"
+          base="https://github.com/tectonic-typesetting/tectonic/releases/download"
+          url="${base}/tectonic%40${version}/tectonic-${version}-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSL --retry 3 --proto '=https' -o tectonic.tar.gz "${url}"
+          # Pinned asset and SHA-256; update both together when bumping.
+          echo "8533d07f9ccbd7a65824b9e0459041bca34af1eb33daba48f59215593753a3b7  tectonic.tar.gz" | sha256sum -c -
+          tar xzf tectonic.tar.gz tectonic
+          sudo mv tectonic /usr/local/bin/tectonic
+
+      - name: Build report
+        run: bash scripts/build_report.sh
+
+      - name: Upload PDF
+        uses: actions/upload-artifact@v4
+        with:
+          name: thesis-report-pdf
+          path: report/main.pdf
+          if-no-files-found: error
+          retention-days: 90

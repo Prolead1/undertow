@@ -85,7 +85,7 @@ Match that register. The corpus is the standard; the rules below are the mechani
 
 ## Non-negotiables
 
-1. **LaTeX, IEEE format, two columns.** `IEEEtran` conference class, two columns, numeric IEEE citations through `IEEEtran.bst` and BibTeX. Tables use `booktabs`; units use `siunitx`; figures are vector or TikZ. Compile before declaring work done: `tectonic main.tex` (in this environment, `~/.local/bin/tectonic main.tex`) or `latexmk -pdf main.tex`. Fix errors, unresolved references and visible layout breaks. The PDF is a build product and is gitignored.
+1. **LaTeX, IEEE format, two columns.** `IEEEtran` conference class, two columns, numeric IEEE citations through `IEEEtran.bst` and BibTeX. Tables use `booktabs`; units use `siunitx`; figures are vector or TikZ. Compile after every edit that touches the report: `bash scripts/build_report.sh` (it prefers tectonic, falls back to latexmk or pdflatex, leaves `report/main.pdf` fresh, and copies it to `$UNDERTOW_REPORT_PDF` when that is set). Fix errors, unresolved references and visible layout breaks. The PDF is not committed; CI attaches it to every run that touches `report/` as the `thesis-report-pdf` artifact.
 
 2. **Never copy text from any source**, including the project's own `docs/` (ADRs, README, plans). This is plagiarism even with a citation attached. The eight-word rule applies: if eight consecutive words match a source, restructure the sentence. Quotation marks are reserved for genuine quotation, marked with ` ``...'' `, kept to one sentence, and cited immediately. Run the local screen (`uv run python scripts/plagiarism_check.py`) and resolve every external match before declaring the draft ready. The institutional similarity check at submission remains the final gate.
 
@@ -139,7 +139,7 @@ Match that register. The corpus is the standard; the rules below are the mechani
 
 3. Check citations: every `\cite` key exists in `references.bib`, every entry is used, and no entry is fabricated.
 
-4. Compile (`tectonic main.tex`). Zero errors, no unresolved references, no visible layout break, two-column output.
+4. Rebuild the PDF with `bash scripts/build_report.sh` so a current rendering always exists, and refresh the standing viewer copy when `$UNDERTOW_REPORT_PDF` is set. Zero errors, no unresolved references, no visible layout break, two-column output.
 
 5. Sweep for `\pending{}` and `\todo{}` and list what the human must supply.
 
