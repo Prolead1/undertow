@@ -1,31 +1,78 @@
 \section{Experimental Design}
 \label{sec:design}
 
-The protocol is fixed before any result is inspected. The study uses the
-$0.05\,\%$ primary pool and the $0.30\,\%$ contrast pool described above, with
-training on 2022--2023 and evaluation on 2024. Training episodes are windows of
-thirty days sampled from the training years; evaluation tiles 2024 into
-non-overlapping windows of thirty days, and no episode crosses the split boundary.
-Each episode runs at a cadence of ten minutes with \usdc{100000} of capital, which
-keeps the agent small relative to pool liquidity. Every configuration is trained
-with five seeds and one million timesteps per seed.
+The protocol is fixed before any result is inspected. Table~\ref{tab:protocol}
+states the pools, the split and the training budget, and
+Fig.~\ref{fig:split} shows how the windows sit on the calendar.
+
+\begin{table}[tbp]
+\caption{The study protocol and the training configuration. Both pools are
+USDC/WETH with USDC as token0; prices are quoted in USDC per WETH.}
+\label{tab:protocol}
+\centering
+\small
+\begin{tabular}{@{}L{0.34\linewidth}L{0.60\linewidth}@{}}
+\toprule
+\textbf{Setting} & \textbf{Value} \\
+\midrule
+Primary pool & 0.05\,\% (500 pips), tick spacing 10 \\
+Contrast pool & 0.30\,\% (3000 pips), tick spacing 60 \\
+Training window & 2022-01-01 to 2023-12-31 UTC \\
+Evaluation window & 2024-01-01 to 2024-12-31 UTC \\
+Episode & thirty days, one decision every ten minutes \\
+Capital & \usdc{100000} per episode \\
+Evaluation tiling & 12 windows of 30 days plus a partial final window (13 episodes) \\
+Seeds & 5 \\
+Training budget & 1\,000\,000 timesteps per seed \\
+Algorithm & clipped PPO, $\gamma=0.99$, GAE $\lambda=0.95$, clip $0.15$ \\
+Network & 2 hidden layers of 256 units \\
+Parallel environments & 4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[font=\small, x=1.4mm, y=2.4mm]
+  \draw[line width=3.2pt, black!25] (0,1.6) -- (66,1.6);
+  \draw[line width=3.2pt, black!55] (66,1.6) -- (100,1.6);
+  \foreach \i in {0,...,12} {
+    \draw[black!70] (66+\i*2.6,1.1) -- (66+\i*2.6,2.1);
+  }
+  \draw[-{Stealth[length=2.2mm]}, thick] (0,0.5) -- (104,0.5);
+  \foreach \x/\lab in {0/2022, 33/2023, 66/2024, 99/2025} {
+    \node[below, font=\scriptsize] at (\x,0.5) {\lab};
+  }
+  \node[above, font=\scriptsize] at (33,2.0) {training: windows of 30 days resampled};
+  \node[above, font=\scriptsize] at (84,2.0) {held out};
+  \draw[dashed, black!60] (66,0.5) -- (66,3.0);
+  \node[above, font=\scriptsize, black!60] at (66,3.0) {split};
+\end{tikzpicture}
+\caption{The walk-forward split. Training episodes are windows of thirty days
+sampled from 2022--2023; evaluation tiles 2024 into windows of thirty days, the
+last a partial period, and no episode crosses the split.}
+\label{fig:split}
+\end{figure}
 
 \subsection{Benchmarks}
 
-A learned policy that beats only the weakest rule written by hand has demonstrated
-nothing. The comparison therefore includes the full ladder in
+A learned policy that beats only the weakest rule written by hand has
+demonstrated nothing. The comparison therefore includes the full ladder in
 Table~\ref{tab:benchmarks}, a best static width chosen on the training split and
-then frozen, and a hedged HODL portfolio with matched beta. The learned policy must
-beat the strongest of these, not merely a passive holding.
+then frozen, and a hedged HODL portfolio with matched beta, and the learned
+policy must beat the strongest of these, not merely a passive holding. The
+hedged HODL benchmark runs once the hedge overlay ships; its values are
+pending.
 
-\begin{table}[t]
+\begin{table}[tbp]
 \caption{Benchmark policies. The learned policy is compared with all of them;
-a positive claim requires beating the best static width and the hedged HODL with
-matched beta, not just \textsf{hodl}.}
+a positive claim requires beating the best static width and the hedged HODL
+with matched beta, not just \textsf{hodl}. The hedged HODL comparator is part
+of the planned protocol and runs once the hedge overlay ships.}
 \label{tab:benchmarks}
 \centering
 \small
-\begin{tabular}{@{}p{0.28\columnwidth}p{0.64\columnwidth}@{}}
+\begin{tabular}{@{}L{0.28\linewidth}L{0.64\linewidth}@{}}
 \toprule
 \textbf{Benchmark} & \textbf{Rule} \\
 \midrule
@@ -44,29 +91,49 @@ Learned policy & PPO over the joint (timing, width, hedge ratio) action space. \
 
 \subsection{Metrics}
 
-The two primary statistics are the annualised Sharpe ratio, computed on each
-episode's equity curve and paired across seeds and windows, and CVaR at the
-$5\,\%$ level, the average of the worst $5\,\%$ of episode returns pooled across
-seeds. Both are reported with bootstrap confidence intervals; because the tail
-is thin at thirteen windows and five seeds, the worst window is reported
-alongside them. Secondary statistics are raw PnL, excess over HODL, annualised
-return, Sortino ratio, maximum drawdown, rebalance count, and the cost ledger of
-fee income, gas, slippage and realised impermanent loss. Per-regime tables
-stratify by each window's dominant label: bull, bear, sideways or high
-volatility.
+Two primary statistics carry the inference: the annualised Sharpe ratio,
+computed on each episode's equity curve and paired across seeds and windows,
+and CVaR at the $5\,\%$ level, the average of the worst $5\,\%$ of episode
+returns pooled across seeds. Both are reported with bootstrap confidence
+intervals; because the tail is thin at thirteen episodes and five seeds, the
+worst episode is reported alongside them. Secondary statistics are raw PnL,
+excess over HODL, annualised return, Sortino ratio, maximum drawdown, rebalance
+count, and the cost ledger of fee income, gas, slippage and realised
+impermanent loss. Per-regime tables stratify by each window's dominant label:
+bull, bear, sideways or high volatility.
 
 \subsection{Ablations and the boundary}
 
-The failure modes are ablated one at a time: band geometry removed from the
-observation, training windows held fixed instead of resampled, the hedge
-disabled, the risk penalty toggled, and the regime features removed. The cost
-decomposition is ablated over frictions (full model, no gas, static fee, no
-impermanent loss) and repeated on the $0.30\,\%$ pool to test whether a higher
-fee tier buys a longer viable range. For the boundary question the runner sweeps
+The failure modes are ablated one at a time, as set out in
+Table~\ref{tab:ablations}. The cost decomposition is repeated over frictions
+and on the $0.30\,\%$ pool. For the boundary question the runner sweeps
 realised volatility, volume relative to liquidity, fee tier, gas price and
-capital, evaluating each point on replayed windows rather than a fitted process.
+capital, evaluating each point on replayed windows rather than a fitted
+process.
 
-The decision rules are stated in advance. The learned policy earns a positive
+\begin{table}[tbp]
+\caption{The ablations, each one isolating a design choice the study relies on.
+Every ablation is trained and evaluated under the protocol of
+Table~\ref{tab:protocol}.}
+\label{tab:ablations}
+\centering
+\small
+\begin{tabular}{@{}L{0.24\linewidth}L{0.34\linewidth}L{0.34\linewidth}@{}}
+\toprule
+\textbf{Design choice} & \textbf{Ablation} & \textbf{Question it answers} \\
+\midrule
+Band geometry & removed from the observation & does the agent need to see the live band to time rebalances? \\
+Window sampling & windows held fixed instead of resampled & how much does resampling the training windows buy? \\
+Hedge & overlay disabled & what does the hedge contribute net of funding? \\
+Risk penalty & toggled & does the risk penalty change the tail without costing Sharpe? \\
+Regime features & removed & do the regime labels inform the policy? \\
+Frictions & full model, no gas, no slippage, static fee, no impermanent loss & which cost drives the result? \\
+Fee tier & repeated on the $0.30\,\%$ pool & does a higher fee tier buy a longer viable range? \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Decision rules are stated in advance: the learned policy earns a positive
 verdict only if its mean Sharpe beats the best static width and the hedged HODL
 with a paired $95\,\%$ confidence interval excluding zero, and its CVaR is no
 worse than the best heuristic's. Where the evidence is negative, the negative

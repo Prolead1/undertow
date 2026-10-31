@@ -2,19 +2,59 @@
 % Build from this directory:  bash ../scripts/build_report.sh
 % Do not commit build artifacts other than the committed report/main.pdf.
 
-\documentclass[conference]{IEEEtran}
-\IEEEoverridecommandlockouts
+\documentclass[11pt,a4paper]{article}
 
-\usepackage[super]{cite}
-\usepackage{amsmath,amssymb,amsfonts}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Layout: one column, generous leading and paragraph separation, so the prose
+% has room to breathe.  Section numbering stays in the IEEE Roman style.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\usepackage[margin=2.7cm,top=2.6cm,bottom=2.8cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{array}
+\usepackage{newtxtext,newtxmath}
+\usepackage{microtype}
+\usepackage{setspace}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{titlesec}
+
+\setstretch{1.25}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.7em plus 0.15em minus 0.1em}
+
+\titlespacing*{\section}{0pt}{2.6ex plus 1ex minus .2ex}{1.3ex plus .2ex}
+\titlespacing*{\subsection}{0pt}{2.2ex plus 1ex minus .2ex}{1.0ex plus .2ex}
+
+\captionsetup{font=small,labelfont=bf,skip=8pt}
+\setlength{\floatsep}{16pt plus 4pt minus 4pt}
+\setlength{\textfloatsep}{20pt plus 4pt minus 4pt}
+\setlength{\intextsep}{16pt plus 4pt minus 4pt}
+\setlength{\abovedisplayskip}{12pt plus 4pt minus 3pt}
+\setlength{\belowdisplayskip}{12pt plus 4pt minus 3pt}
+\setlength{\abovedisplayshortskip}{8pt plus 3pt minus 2pt}
+\setlength{\belowdisplayshortskip}{8pt plus 3pt minus 2pt}
+
+\renewcommand{\thesection}{\Roman{section}}
+\renewcommand{\thesubsection}{\thesection.\Alph{subsection}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\setlist[itemize]{leftmargin=1.4em,itemsep=0.3em,topsep=0.5em}
+\setlist[enumerate]{leftmargin=1.6em,itemsep=0.3em,topsep=0.5em}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Math, figures and tables.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{siunitx}
 \usepackage{xcolor}
 \usepackage{tikz}
-\usetikzlibrary{arrows.meta,positioning}
+\usetikzlibrary{arrows.meta,positioning,calc}
 \usepackage{url}
+\usepackage[super]{cite}
 \usepackage[hidelinks]{hyperref}
+\hypersetup{pageanchor=false}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Draft markers.  \pending{} marks an experiment or number that does not exist
@@ -27,19 +67,15 @@
 % Monetary quantities are in token0 (USDC); see the background section.
 \newcommand{\usdc}[1]{\SI{#1}{USDC}}
 
-\title{Making Concentrated Liquidity Pay}
-
-\author{
-\IEEEauthorblockN{Thaker, Rahul}
-\IEEEauthorblockA{\textit{Risk Management Institute}\\
-\textit{National University of Singapore}\\
-Singapore}
-}
+\title{Making Concentrated Liquidity Pay\\[0.4em]
+  \large Risk-Sensitive Reinforcement Learning on Uniswap~v3}
+\author{Thaker, Rahul\\[0.2em]
+  \small Risk Management Institute, National University of Singapore}
+\date{}
 
 \begin{document}
 
-% Title page first, then the one-column paper.
-\onecolumn
+% Cover page first, then the paper front matter.
 \input{sections/titlepage}
 
 \maketitle
@@ -48,11 +84,9 @@ Singapore}
 \input{sections/00_abstract}
 \end{abstract}
 
-\begin{IEEEkeywords}
-reinforcement learning, Uniswap~v3, concentrated liquidity, market making,
-loss-versus-rebalancing, impermanent loss, risk-sensitive reinforcement
-learning.
-\end{IEEEkeywords}
+\noindent\textbf{Index Terms:} reinforcement learning, Uniswap~v3,
+concentrated liquidity, market making, loss-versus-rebalancing, impermanent
+loss, risk-sensitive reinforcement learning.
 
 \input{sections/01_introduction}
 \input{sections/02_background}

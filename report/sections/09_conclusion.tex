@@ -1,19 +1,18 @@
 \section{Conclusion}
 \label{sec:conclusion}
 
-The story began with a simple bargain: concentrate liquidity in a price range,
-earn more fees while the price stays inside it. The bargain hides a cost. The
-same position that earns the fees is the position that loses to informed order
-flow, and on real pools that loss can exceed the income. An LP who wants to do
-better than accept it must decide when to recenter, how wide to stay and how
-much risk to hedge, and each decision is expensive and uncertain.
+Concentrated liquidity promises more fee income while the price stays inside a
+chosen band, and the same position that earns those fees is the position that
+loses to informed order flow. An LP who wants to do better than accept that
+must decide when to recenter, how wide to stay and how much risk to hedge, and
+each decision is expensive and uncertain.
 
-This report set out to measure whether a risk-sensitive learned policy can make
-those decisions jointly better than the best rules written by hand, and to find
-where active management stops paying. Answering that required a world in which
-costs are measured rather than assumed, so we built a testbed from two years of
-recorded trades, with an exact replay engine for ground truth and a classical
-simulator for training, reconciled by a parity harness. The study then asked
+This report measures whether a risk-sensitive learned policy can make those
+decisions jointly better than the best rules written by hand, and where active
+management stops paying. Answering that required a world in which costs are
+measured rather than assumed, so we built a testbed from three years of
+recorded trades, with an exact replay engine for ground truth, a classical
+simulator for training, and a parity harness between them. The study then asked
 four questions: where fees fail, why a standard agent fails, whether a learned
 policy wins out of sample, and where the boundary between active and passive
 provision lies.
@@ -22,9 +21,9 @@ provision lies.
 experiments complete. Its shape is fixed: what the four answers were, which of
 them held, and what the boundary looked like.}
 
-The boundary of the study is also a map for future work. The action space can be
-extended with continuous width and an explicit exit decision. The boundary sweep
-can cover more pairs and fee tiers. Latency, private order flow and the exact
-funding of a real venue can be modelled rather than proxied. Each extension is a
-re-run of the same testbed rather than a redesign of it, which is the point of
-building the testbed before asking the question.
+The boundary of the study is also a map for future work: the action space can
+be extended with continuous width and an explicit exit decision, the boundary
+sweep can cover more pairs and fee tiers, and latency, private order flow and
+the exact funding of a real venue can be modelled rather than proxied. Each
+extension is a re-run of the same testbed rather than a redesign of it, which
+is the point of building the testbed before asking the question.

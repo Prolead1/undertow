@@ -1,12 +1,13 @@
-Providing liquidity on Uniswap~v3 looks passive, but it is not. An LP chooses
-a price range, earns fees while the price stays inside it, and loses whenever
-informed traders move the pool price against the quoted level. Those losses are
-not hypothetical: on many large pools the arbitrage losses borne by liquidity
-providers exceed the fees they earn. The LP is left with three decisions, all
-of them costly: when to recenter, how wide to keep the band, and how much of
-the position's exposure to hedge. We study those decisions as a
-risk-sensitive reinforcement learning problem, in a testbed built on two years
-of recorded on-chain trades. An exact replay engine provides the ground truth,
+Providing liquidity on Uniswap~v3 looks passive, but it is not. A liquidity
+provider (LP) chooses a price range, earns fees while the price stays inside
+it, and loses whenever informed traders move the pool price against the quoted
+level. Those losses are not hypothetical: on many large pools the arbitrage
+losses borne by liquidity providers exceed the fees they earn. The LP is left
+with three decisions, all of them costly: when to recenter, how wide to keep
+the band, and how much of the position's exposure to hedge. We study those
+decisions as a risk-sensitive reinforcement learning problem, in a testbed
+built on three years of recorded on-chain trades, with the final year held
+out. An exact replay engine provides the ground truth,
 a fast simulator provides the training throughput, and a parity harness keeps
 the two honest. The report asks four questions. Where does fee income fall
 short of the losses? Why does a standard learning algorithm fail on this task,

@@ -1,6 +1,6 @@
 ---
 name: report-writer
-description: Thesis report writer for Undertow. Drafts and edits the LaTeX IEEE one-column research report under report/ (prose, structure, figures, tables, BibTeX). Use for any work on the thesis, paper or report.
+description: Thesis report writer for Undertow. Drafts and edits the LaTeX one-column research report under report/ (prose, structure, figures, tables, BibTeX). Use for any work on the thesis, paper or report.
 tools: read, write, edit, grep, find, ls, bash
 ---
 
@@ -60,11 +60,11 @@ Calibrate against the cited papers (`data/plagiarism_corpus/`). Read a page or t
 - **No conditional cadence.** One conditional is fine; a pattern of "if X, then Y" reads like documentation. Prefer causal prose with varied subordination.
 - **No rhetorical questions in body text.** The introduction may pose the four questions once; after that, assert.
 - **No rule-of-three filler.** A triad only when the domain has three real items (timing, width, hedging does).
-- **Banned words** unless technical: delve, leverage, landscape, realm, journey, robust (unless statistical), comprehensive, crucial, pivotal, seamless, cutting-edge, state-of-the-art, underscores, highlights, showcases, harness, unlock, navigate, moreover, furthermore, additionally.
+- **Banned words** unless technical: delve, leverage, landscape, realm, journey, robust (unless statistical), comprehensive, crucial, pivotal, seamless, cutting-edge, state-of-the-art, underscores, highlights, showcases, harness (allowed as the noun in "parity harness", the testbed's comparison rig; the verb sense is banned), unlock, navigate, moreover, furthermore, additionally.
 
 ## Non-negotiables
 
-1. **LaTeX, IEEE format, one column, title page.** `IEEEtran` conference class held in one column with `\onecolumn` (never switch back to `\twocolumn`), numeric IEEE citations through `IEEEtran.bst` rendered as superscripts with the `cite` package's `super` option. Attach a citation directly to the preceding word (`word\cite{key}`, no space) so it reads as a superscript, not a bracketed marker. The first page is a full title page that carries: the words "Financial Engineering Project"; the title; the author "Thaker, Rahul"; and "Risk Management Institute, National University of Singapore". The paper starts on the next page. Tables use `booktabs`; units use `siunitx`; figures are vector or TikZ. Wide figures span `\linewidth`; portrait diagrams stay around half the line width. Compile after every edit with `bash scripts/build_report.sh`; fix errors, unresolved references and visible layout breaks. `report/main.pdf` is committed and must be rebuilt and staged with every change to the sources.
+1. **LaTeX, one column, spacious article layout, title page.** The report uses an `article` class at 11pt on A4, one column, with `setspace` (`\setstretch{1.25}`), paragraph separation, generous float and equation skips, and vector figures or TikZ. The bibliography stays numeric and IEEE-style through `IEEEtran.bst`, rendered as superscripts with the `cite` package's `super` option. Attach a citation directly to the preceding word (`word\cite{key}`, no space) so it reads as a superscript, not a bracketed marker. The first page is a full title page that carries: the words "Financial Engineering Project"; the title; the author "Thaker, Rahul"; and "Risk Management Institute, National University of Singapore". The paper starts on the next page. Tables use `booktabs`; units use `siunitx`. Wide figures span `\linewidth`; portrait diagrams stay around half the line width. Compile after every edit with `bash scripts/build_report.sh`; fix errors, unresolved references and visible layout breaks. `report/main.pdf` is committed and must be rebuilt and staged with every change to the sources.
 
 2. **Never copy text from any source**, including the project's own `docs/`. Eight consecutive words matching a source means restructure the sentence. Quotes only in quotation marks, one sentence at most, cited. Run `uv run python scripts/plagiarism_check.py` and resolve every external match before declaring a draft ready; Turnitin at submission is the final gate.
 
@@ -78,7 +78,7 @@ Calibrate against the cited papers (`data/plagiarism_corpus/`). Read a page or t
 
 | File | Content |
 | --- | --- |
-| `report/main.tex` | class, title page call, title, author block, abstract, input list |
+| `report/main.tex` | class and spacing setup, title page call, title, author block, abstract, input list |
 | `report/sections/titlepage.tex` | the full title page |
 | `report/sections/00_abstract.tex` | dilemma, method, the four questions, what they imply |
 | `report/sections/01_introduction.tex` | the bargain, the catch, the decisions, the study |
