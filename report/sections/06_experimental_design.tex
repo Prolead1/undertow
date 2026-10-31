@@ -7,7 +7,8 @@ Fig.~\ref{fig:split} shows how the windows sit on the calendar.
 
 \begin{table}[tbp]
 \caption{The study protocol and the training configuration. Both pools are
-USDC/WETH with USDC as token0; prices are quoted in USDC per WETH.}
+USDC/WETH with USDC as token0; prices are quoted in USDC per WETH. Contract
+addresses are Ethereum mainnet and are abbreviated.}
 \label{tab:protocol}
 \centering
 \small
@@ -15,8 +16,8 @@ USDC/WETH with USDC as token0; prices are quoted in USDC per WETH.}
 \toprule
 \textbf{Setting} & \textbf{Value} \\
 \midrule
-Primary pool & 0.05\,\% (500 pips), tick spacing 10 \\
-Contrast pool & 0.30\,\% (3000 pips), tick spacing 60 \\
+Primary pool & 0.05\,\% (500 pips), tick spacing 10, \texttt{0x88e6a0\ldots f5640} \\
+Contrast pool & 0.30\,\% (3000 pips), tick spacing 60, \texttt{0x8ad599\ldots e6d8} \\
 Training window & 2022-01-01 to 2023-12-31 UTC \\
 Evaluation window & 2024-01-01 to 2024-12-31 UTC \\
 Episode & thirty days, one decision every ten minutes \\

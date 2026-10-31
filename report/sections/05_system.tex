@@ -63,6 +63,18 @@ passive policy, which never rebalances; it now also runs a policy that does,
 which is the path the fee and loss results depend on. A separate suite of
 look-ahead probes attacks the composed system at the train/eval seam.
 
+Other testbeds make different trade-offs. SAiFE-gym exposes the market as a
+model: price impact, liquidity depth and gas enter as components, and the
+environments are vectorised for throughput\cite{chionas2026saife}. A second
+line reconstructs the pool's liquidity state parametrically from swap activity
+and reports average fee approximation errors of about two percent on historical
+pools\cite{urusov2025dynamic}. The first buys coverage where recorded state is
+missing, since a model can price liquidity that never existed on chain; the
+second recovers an approximate state from the trades themselves. The two pools
+of this study have their recorded state, so the backtester replays that state
+and the floating-point engine is used only where throughput is needed, with the
+parity check bounding the substitution.
+
 \subsection{The failures that shaped the design}
 
 The first two training runs produced policies that did nothing useful: every

@@ -70,6 +70,41 @@ url = "https://arxiv.org/pdf/2608.19389"
 file = "chionas-2026-concentrated.pdf"
 
 [[sources]]
+name = "xu2025defi"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2501.07508"
+file = "xu-2025-defi.pdf"
+
+[[sources]]
+name = "zhang2025mamba"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2511.22101"
+file = "zhang-2025-mamba.pdf"
+
+[[sources]]
+name = "chionas2026saife"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2609.17788"
+file = "chionas-2026-saife.pdf"
+
+[[sources]]
+name = "urusov2025dynamic"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2505.15338"
+file = "urusov-2025-dynamic.pdf"
+
+[[sources]]
+name = "wang2026execution"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2607.10960"
+file = "wang-2026-execution.pdf"
+
+[[sources]]
 name = "schulman2017ppo"
 group = "external"
 kind = "pdf"
