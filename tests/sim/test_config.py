@@ -580,6 +580,7 @@ def test_shipped_sim_configs_pair_with_their_data_pools() -> None:
     for sim_name, data_name in (
         ("sim_default.toml", "eth_usdc_500.toml"),
         ("sim_eth_usdc_500.toml", "eth_usdc_500.toml"),
+        ("sim_eth_usdc_500_rl.toml", "eth_usdc_500.toml"),
         ("sim_eth_usdc_3000.toml", "eth_usdc_3000.toml"),
     ):
         sim = load_sim_config(repo_root / "configs" / sim_name)
@@ -609,3 +610,36 @@ def test_primary_pool_config_carries_the_stabilized_recipe() -> None:
     assert training.ent_coef == pytest.approx(0.001)
     assert training.target_kl == pytest.approx(0.01)
     assert training.hold_bias == pytest.approx(4.0)
+
+
+def test_shipped_rl_config_carries_the_band_selection_recipe() -> None:
+    """`configs/sim_eth_usdc_500_rl.toml` lands ADR-038's recipe, not defaults."""
+    repo_root = Path(__file__).resolve().parents[2]
+    cfg = load_sim_config(repo_root / "configs" / "sim_eth_usdc_500_rl.toml")
+
+    grid = cfg.action_grid
+    assert grid.center_offsets == (0,)
+    assert grid.widths == (50, 250, 1000)
+    # One-shot band choice: hold + 1 offset x 3 widths (ADR-038).
+    assert 1 + len(grid.center_offsets) * len(grid.widths) == 4
+
+    episode = cfg.episode
+    # One rebalance per episode: the policy deploys once and holds (ADR-037).
+    assert episode.min_rebalance_interval_steps == 1_000_000_000
+
+    training = cfg.training
+    # Near-undiscounted gamma so the step-0 band choice stays in the value
+    # targets over the 4320-step episode.
+    assert training.discount_gamma == pytest.approx(0.9999)
+    assert training.hold_bias == pytest.approx(0.0)
+    assert training.learning_rate == pytest.approx(1e-4)
+    assert training.batch_size == 512
+    assert training.n_epochs == 4
+    assert training.ent_coef == pytest.approx(0.001)
+    assert training.target_kl == pytest.approx(0.01)
+    # Seeds, budget and vectorisation stay at the primary values (ADR-038).
+    assert training.seeds == (0, 1, 2, 3, 4)
+    assert training.total_timesteps == 1_000_000
+    assert training.checkpoint_freq_steps == 100_000
+    assert training.parallel_envs == 4
+    assert training.vec_env == "subproc"

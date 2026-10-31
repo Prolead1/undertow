@@ -1,0 +1,84 @@
+# Sim config for the RL band-selection recipe (ADR-038) on the ETH/USDC 0.05 %
+# pool (configs/eth_usdc_500.toml) — the primary study pool.  Derived from
+# configs/sim_eth_usdc_500.toml: the baselines and the walk-forward [split]
+# windows are unaffected; only the rebalance interval, the action grid and the
+# PPO recipe differ, so the agent learns one band-width choice per episode.
+
+[episode]
+duration_days = 30
+step_minutes = 10
+agent_capital_usdc = 100000.0
+marginal_agent = true
+fee_tier_bps = 500
+tick_spacing = 10
+# One rebalance per episode: the learned policy deploys once (at step 0) and
+# then holds, so the per-step noisy reward never has to teach a rebalance
+# schedule (ADR-037).
+min_rebalance_interval_steps = 1000000000
+
+[action_grid]
+# Three band-width arms + hold: the agent picks a band at step 0 and holds it
+# for the 30-day episode, turning band selection into a single categorical
+# decision (ADR-038).
+center_offsets = [0]
+widths = [50, 250, 1000]
+include_hold = true
+
+[gas]
+mint_units = 460000
+burn_units = 215000
+collect_units = 130000
+rebalance_swap_units = 150000
+
+[slippage]
+fixed_impact_bps = 5.0
+
+[reward]
+risk_penalty_lambda = 0.0
+risk_rolling_window_steps = 144
+normalize_by_capital = true
+fees_enabled = true
+gas_enabled = true
+slippage_enabled = true
+il_enabled = true
+risk_penalty_enabled = false
+
+[split]
+train_start_utc = 2022-01-01T00:00:00Z
+train_end_utc = 2023-12-31T00:00:00Z
+eval_start_utc = 2024-01-01T00:00:00Z
+eval_end_utc = 2024-12-31T00:00:00Z
+
+[training]
+algorithm = "ppo"
+seeds = [0, 1, 2, 3, 4]
+# Band-selection recipe (ADR-038): the band payoff accrues over the full 30-day
+# episode (4320 steps), so a near-undiscounted gamma keeps the step-0 width
+# choice in the value targets (gamma 0.99 discounts it to ~1e-19).  hold_bias
+# is off because the interval gate already removes churn.
+discount_gamma = 0.9999
+gae_lambda = 0.95
+clip_epsilon = 0.15
+hidden_size = 256
+n_hidden = 2
+parallel_envs = 4
+total_timesteps = 1000000
+checkpoint_freq_steps = 100000
+log_freq_steps = 10000
+# Stabilized PPO update recipe (ADR-036) retained: small steps, a large batch,
+# few epochs and a KL stop let the advantage signal dominate the 4-action
+# categorical choice.
+learning_rate = 0.0001
+batch_size = 512
+n_epochs = 4
+ent_coef = 0.001
+target_kl = 0.01
+hold_bias = 0.0
+vec_env = "subproc"
+
+[backtest]
+compute_decomposition = true
+log_decision_every_step = false
+
+[price]
+mode = "replay"
