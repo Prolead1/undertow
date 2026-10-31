@@ -1,6 +1,6 @@
 # ADR 038 — RL band-selection recipe: one-shot band choice under a rebalance interval and a near-undiscounted horizon
 
-**Status:** accepted (pilot-validated; full 5-seed × 1M evaluation in flight)
+**Status:** accepted (pilot-validated; full 5-seed × 1M evaluation complete)
 **Affects:** `configs/sim_eth_usdc_500_rl.toml` · `tests/sim/test_config.py` · ADR-011, ADR-036, ADR-037
 **Raised by:** RL band-selection pilot on the primary 0.05 % pool
 
@@ -84,15 +84,34 @@ The band width is never compared.
   `full_range_v2` +2,183; the previous churning run was **-86,889 USDC** on
   the same split. This is the first learned primary-pool policy that beats
   `hodl` without collapsing to it.
-- **Honest limitation.** The pilot's learned policy deploys the *widest* band
-  and holds, i.e. it is a passive full-range equivalent that pays one
-  deployment cost; it beats `hodl` but trails `full_range_v2` (+2,146.6 vs
-  +2,183, a $36.4 gap). Choosing *when* to deploy — active timing — is future
-  work; this ADR only establishes that the learned band choice is no longer
-  unlearnable.
-- **The full 5-seed × 1M-step evaluation is in flight.** Its per-seed
-  walk-forward results will be appended to this ADR when complete; until
-  then the marginal +2,146.6 claim is explicitly a single-seed pilot.
+- **Full 5-seed × 1M evaluation.** `results/eth_usdc_500_full_rl` ran the
+  shipped `configs/sim_eth_usdc_500_rl.toml` (hash `7b007d2cf07abf27`) for
+  seeds 0–4 at 1M steps. Every seed learned the one-shot structure: at most
+  one executed rebalance per episode, then `hold` for the rest. Seeds 0, 1,
+  2 and 4 deploy at step 0; seed 3 instead holds its reset-time initial band
+  and makes its single rebalance around step 3440–3525 (one of its 13
+  evaluation windows never rebalances). The bandit settles on different
+  widths across seeds: seeds 0 and 2 → width 1000, seed 4 → 250, seeds 1 and
+  3 → 50.
+- **Per-seed 2024 walk-forward (backtester, one seed, 13 windows).** Seed 0
+  +2,146.6 (Sharpe 0.942, maxDD -0.097), seed 1 +1,082.3 (1.296, -0.113),
+  seed 2 +2,146.6 (0.942, -0.097), seed 3 +805.5 (0.591, -0.121), seed 4
+  +1,731.7 (1.591, -0.101). All five beat `hodl` (+735.2); mean +1,582.5 and
+  the best risk-adjusted seed is 4 (Sharpe 1.591).
+- **Official evaluation of the `best_reward` checkpoint (seed 0).** Total PnL
+  **+2,146.6 USDC** (Sharpe 0.942, maxDD -0.097, 1 rebalance/episode, gas
+  -$36.4), versus `full_range_v2` +2,183 (Sharpe 0.639), `passive_wide`
+  +1,623 (1.526), `passive_narrow` +1,082 (1.296), `hodl` +735 (0.654),
+  `cost_aware` -1,992 and `tau_reset` -17,680. The sim-to-backtest gap is
+  9.85 USDC (sim 2,156.42 vs on-chain 2,146.56; fees -0.08, gas 0.00,
+  slippage -0.36, IL -2.60) and the best regime is bull +6,948.3.
+- **Honest limitation.** The learned policy is a one-shot band deploy under
+  the once-per-episode constraint: the 1000-wide seeds beat `hodl` by ~2.9×
+  and match `full_range_v2` to within $36 with a higher Sharpe (0.942 vs
+  0.639), but they do not learn active timing or width switching beyond the
+  initial choice. The bandit's exploration noise leaves two of five seeds on
+  the narrower 50-tick band; widening the width ladder and extending the
+  budget are the next steps.
 - **Pilot provenance vs. shipped config.** The pilot ran a temporary
   `/tmp/pilot_gated.toml` (`seeds = [0]`, `checkpoint_freq_steps = 200000`,
   config hash `faa6ce551b573ea7`); the shipped config trains seeds 0–4 with
