@@ -17,19 +17,36 @@ return.
 A second line of work learns the LP's decisions. Zhang et al.\ train a hedged
 double deep Q-network and report large gains over baselines, but the hedge is
 assumed frictionless and the policy sees no regime
-features\cite{zhang2023adaptive}. ZeroSwap learns the spread of a market maker
-so that quoted prices track an external reference, an orthogonal lever to range
+features\cite{zhang2023adaptive}. A recent replication replaces the feature
+extractor of that model with a sequence model and a revised reward, and adds
+two baselines; it keeps the simulated setting and reports no statistic that
+adjusts for risk\cite{zhang2025mamba}. ZeroSwap learns the spread of a market maker so
+that quoted prices track an external reference, an orthogonal lever to range
 placement\cite{nadkarni2023zeroswap}. RAmmStein poses regime-dependent
 rebalancing thresholds as a problem of impulse control and reports that
 rebalancing lazily when the regime warrants it improves net ROI with far fewer
-rebalances, though its net metric excludes impermanent loss and the study relies
-on off-chain data for one pair\cite{anchuri2026rammstein}. Chionas et al.\
-treat concentrated liquidity as a risk-aversion problem in simulation and find
-that higher volatility and gas widen optimal positions and reduce rebalancing,
-while a risk penalty trims the adverse tail; their analysis uses no on-chain
-data and no hedge\cite{chionas2026concentrated}. Classical market making
-supplies the risk-sensitive vocabulary we use, but its state is a limit order
-book and its actions are quotes, not range geometry\cite{avellaneda2008high}.
+rebalances, though its net metric excludes impermanent loss and the study
+relies on off-chain data for one pair\cite{anchuri2026rammstein}. Chionas et
+al.\ treat concentrated liquidity as a risk-aversion problem in simulation and
+find that higher volatility and gas widen optimal positions and reduce
+rebalancing, while a risk penalty trims the adverse tail; their analysis uses
+no on-chain data and no hedge\cite{chionas2026concentrated}. Classical market
+making supplies the risk-sensitive vocabulary we use, but its state is a limit
+order book and its actions are quotes, not range geometry\cite{avellaneda2008high}.
+
+The closest study to this report trains a PPO agent on hourly WETH/USDC
+$0.05\,\%$ data from the same primary pool used here\cite{xu2025defi}. Xu and
+Brini let the policy decide when to redeploy and how wide to keep the band,
+penalise the loss-versus-rebalancing rate inside the reward, and compare the
+learned policy with a periodic reset across eleven rolling windows; the active
+policy wins seven of them. Three differences matter for the claims of this
+report. Their agent carries no hedge, so directional risk stays in the
+position. Market outcomes are simulated from closed-form fee and loss
+expressions at hourly resolution, with a fixed gas charge and no slippage,
+rather than replayed from the recorded events. And the evaluation is thinner:
+performance is reported as cumulative reward, without a statistic that adjusts
+for risk or an uncertainty interval, and the best of fifty trained agents is
+selected for each window.
 
 The learning machinery is standard. We use proximal policy optimisation with
 clipping (PPO)\cite{schulman2017ppo}, implemented through Stable-Baselines3 on
@@ -37,7 +54,20 @@ Gymnasium environments\cite{raffin2021stablebaselines3,towers2024gymnasium},
 and evaluate risk with CVaR at the $5\,\%$ level through its
 Rockafellar--Uryasev representation\cite{rockafellar2000cvar}.
 
-What is missing is one study that trains a single policy over the joint timing,
-width and hedge decisions, charges every friction on both legs, and evaluates it
-on validated on-chain replay under a risk-sensitive metric. That is the gap
-this report fills.
+No study surveyed here combines the parts this report tests. The line that
+learns decisions supplies them only in pieces: a hedge learned without
+friction, a range policy learned without the hedge, and a mean metric rather
+than one that adjusts for risk. Two of the answers here are measured rather
+than assumed. The passive benchmarks are decomposed into fees, impermanent
+loss, gas and slippage on both fee tiers, so the economics answer rests on the
+pools of this study rather than on a survey, and the ways a standard policy
+collapses on the task are reported as a result rather than hidden in an
+implementation note.
+
+What remains is the combination studied here. One risk-sensitive policy
+chooses timing, width and hedge. A cost ledger replayed from the tape,
+bounded against an exact integer engine, prices every friction on both legs.
+Sharpe and tail statistics carry paired intervals across seeds. And a boundary
+states where active management stops paying. The rest of the report tests that
+combination, with the hedge leg the one part still pending: the overlay is
+disabled in the shipped configuration, so the hedge results are marked as such.

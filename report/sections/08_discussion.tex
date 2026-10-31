@@ -21,7 +21,11 @@ and the scope each imposes. The parity check bounds the distance between the
 simulator and the backtester, not the distance between the backtester and
 reality. Where the data allow, the external part of the gap is quantified by
 reconciling fees and collects; where they do not, latency, order-flow privacy
-and MEV are discussed rather than measured. We therefore claim results about
+and MEV are discussed rather than measured. A different design closes the loop
+by assumption, generating order flow that responds to the fee policy and so
+identifying counterfactuals the tape cannot provide, at the price of trusting
+the response model\cite{wang2026execution}. This report keeps the tape and
+claims only what the tape supports. We therefore claim results about
 performance under risk on recorded market states under a stated cost model. We
 do not claim deployable profitability, optimality of the action grid, or that
 the policy would survive market conditions absent from 2022 to 2024.

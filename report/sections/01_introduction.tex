@@ -40,10 +40,13 @@ regime-dependent rebalancing thresholds and reports fewer rebalances for the
 same net return, but its net metric excludes impermanent loss and it works with
 off-chain data for a single pair\cite{anchuri2026rammstein}. Chionas et al.\
 study risk aversion in concentrated liquidity inside a simulation and leave out
-on-chain data and the hedge\cite{chionas2026concentrated}. None of these places
-timing, width and hedge decisions in a single risk-sensitive policy, charges
-every friction on both the liquidity and hedge legs, and evaluates it on
-recorded on-chain trades against hand-written rules.
+on-chain data and the hedge\cite{chionas2026concentrated}. The closest study
+learns when to redeploy and how wide to stay on the same primary pool used
+here, but it leaves the hedge out and reports cumulative reward
+only\cite{xu2025defi}. What none of these provides is the combination this
+report is designed to test: one risk-sensitive policy over timing, width and
+hedge, every friction charged on both legs, evaluated against hand-written
+rules on the trades that actually occurred.
 
 This report fills that gap. We build a testbed on three years of recorded
 trades from two real ETH/USDC pools, with an exact replay backtester that
