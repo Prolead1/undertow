@@ -39,12 +39,17 @@ from undertow.data import (
     price_to_tick,
 )
 from undertow.sim.backtest import BacktestLedger, run_backtest
+from undertow.sim.cli import _CheckpointPolicy
 from undertow.sim.config import HedgeConfig, RewardConfig, SimConfig
 from undertow.sim.core.pool import PoolEngine, PoolState, TickState
 from undertow.sim.core.position import DEFAULT_DEC0, DEFAULT_DEC1, calc_sqrt_price_a
 from undertow.sim.env.lp_env import LpEnvironment
 from undertow.sim.env.observations import ObservationBuilder
-from undertow.sim.evaluate.protocol import action_to_index, observation_from_vector
+from undertow.sim.evaluate.protocol import (
+    action_to_index,
+    evaluate_episodes,
+    observation_from_vector,
+)
 from undertow.sim.frictions import ProportionalSlippageModel, ReplayGasModel
 from undertow.sim.marketview import MarketView
 from undertow.sim.policies import HODLPolicy, TauResetPolicy
@@ -935,6 +940,102 @@ class TestRebalancingParity:
         assert abs(report.slippage_drift_mean) <= report.tolerance
         assert report.gas_drift_max > report.tolerance
         assert report.slippage_drift_max > report.tolerance
+
+
+class _FixedIndexModel:
+    """Deterministic SB3 stand-in: always predicts ``index`` (ADR-037 test)."""
+
+    def __init__(self, index: int) -> None:
+        self._index = int(index)
+
+    def predict(
+        self, vector: np.ndarray, deterministic: bool = True
+    ) -> tuple[np.ndarray, None]:
+        del vector, deterministic
+        return np.asarray([self._index]), None
+
+
+class TestGatedCheckpointParity:
+    """ADR-037: the gated checkpoint wrapper composes through both engines.
+
+    ``evaluate_episodes`` drives one ``_CheckpointPolicy`` (a stub model that
+    always requests a rebalance) through the exact backtester and the replay
+    simulator on the parity fixture's tiny window: the executed-rebalance count
+    and the gas/slippage totals must match.  The backtester's decision log and
+    the harness's executed-action guard then prove the gated steps executed as
+    holds in *both* worlds, not just that the two state machines agree in
+    isolation.
+    """
+
+    def test_gated_wrapper_matches_across_engines(
+        self, rebalance_market_view: MarketView
+    ) -> None:
+        config = _parity_config()
+        config = replace(
+            config,
+            episode=replace(config.episode, min_rebalance_interval_steps=3),
+        )
+        view = rebalance_market_view
+        windows = [(0, view.step_count())]
+
+        backtest = evaluate_episodes(
+            _CheckpointPolicy(_FixedIndexModel(1), config, name="ppo"),
+            view,
+            config,
+            num_seeds=1,
+            backend="backtest",
+            windows=windows,
+        )
+        replay = evaluate_episodes(
+            _CheckpointPolicy(_FixedIndexModel(1), config, name="ppo"),
+            view,
+            config,
+            num_seeds=1,
+            backend="replay_sim",
+            windows=windows,
+        )
+
+        assert len(backtest) == len(replay) == 1
+        bt, sim = backtest[0], replay[0]
+        # The fixture has 8 decisions; interval 3 allows attempts at 0/3/6 and
+        # gates 1/2/4/5, so gas/slippage are charged on exactly 3 rebalances.
+        assert bt.metrics["n_rebalances"] == sim.metrics["n_rebalances"] == 3.0
+        assert bt.decomposition["total_gas"] < 0.0
+        assert bt.decomposition["total_slippage"] < 0.0
+        assert bt.decomposition["total_gas"] == sim.decomposition["total_gas"]
+        assert bt.decomposition["total_slippage"] == sim.decomposition["total_slippage"]
+
+        # The exact backtester's decision log shows the gated steps as holds.
+        ledger = run_backtest(
+            _CheckpointPolicy(_FixedIndexModel(1), config, name="ppo"), view, config
+        )
+        assert ledger.decision_log.height == 8
+        executed = [
+            "rebalance" if step % 3 == 0 else "hold"
+            for step in range(ledger.decision_log.height)
+        ]
+        assert executed[1:3] == ["hold", "hold"]
+        assert list(ledger.decision_log["action_type"]) == executed
+
+        # The harness's executed-action guard then proves the simulator executed
+        # the identical per-bucket sequence (the gated holds included), with
+        # zero per-step gas/slippage drift.
+        gated_env = _parity_env(
+            view,
+            config,
+            ReplayGasModel(view, config.gas),
+            ProportionalSlippageModel(),
+        )
+        report = run_parity_check(
+            gated_env,
+            ledger,
+            num_episodes=1,
+            seeds=(0,),
+            policy=_CheckpointPolicy(_FixedIndexModel(1), config, name="ppo"),
+        )
+        assert report.passed is True, report
+        assert report.gas_drift_max == 0.0
+        assert report.slippage_drift_max == 0.0
 
 
 class TestHedgeParity:

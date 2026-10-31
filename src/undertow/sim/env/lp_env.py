@@ -193,6 +193,15 @@ class LpEnvironment(gym.Env):
         self._warmup_source: tuple[pl.DataFrame, ...] | None = None
         self._episode_length: int = 0
         self._step_count: int = 0
+        #: Decision step of the last rebalance *attempt* the min-interval gate
+        #: allowed (``episode.min_rebalance_interval_steps``, ADR-037).  The
+        #: gate compares this against ``_step_count``; attempts are recorded
+        #: whether or not the trade executes, because the checkpoint wrapper
+        #: can only mirror attempts, not affordability.  ``reset()`` re-arms it
+        #: to ``-min_interval`` so the first action of an episode is allowed.
+        self._last_rebalance_attempt_step: int = -int(
+            config.episode.min_rebalance_interval_steps
+        )
         self._bar_k: int = -1
         self._done: bool = True
         self._position_id: int | None = None
@@ -583,6 +592,9 @@ class LpEnvironment(gym.Env):
             self._episode_length = config_steps
 
         self._step_count = 0
+        self._last_rebalance_attempt_step = -int(
+            self.config.episode.min_rebalance_interval_steps
+        )
         self._bar_k = -1
         self._event_idx = 0
         self._done = False
@@ -710,6 +722,20 @@ class LpEnvironment(gym.Env):
         if self._done:
             raise EnvError("step() called after the episode ended; call reset()")
         action = self.action_for_index(action_idx)
+
+        # 0. Enforce the learned policy's minimum rebalance interval (ADR-037):
+        # an early *attempt* is coerced to hold before any execution happens.
+        # Every attempt the gate allows is recorded, whether or not the trade
+        # later executes (an unaffordable rebalance still consumed the model's
+        # attempt), so the checkpoint wrapper can mirror the counter exactly.
+        rebalance_gated = False
+        min_interval = int(self.config.episode.min_rebalance_interval_steps)
+        if action.action_type == "rebalance" and min_interval > 0:
+            if self._step_count - self._last_rebalance_attempt_step < min_interval:
+                action = self._action_lookup[0]
+                rebalance_gated = True
+            else:
+                self._last_rebalance_attempt_step = self._step_count
 
         # 1. Capture the decision state (ADR-031).  ``_last_tape_row``,
         # ``_last_mark_price`` and ``_last_il_total`` describe the state the
@@ -854,6 +880,12 @@ class LpEnvironment(gym.Env):
             # above keeps the policy's intent.
             info["action_type"] = "rebalance_rejected"
             info["rebalance_rejected"] = True
+        if rebalance_gated:
+            # The min-interval gate (ADR-037) coerced the attempt to hold before
+            # execution.  ``action_type`` describes the executed hold while
+            # ``action_index`` keeps the model's requested index, matching the
+            # ``rebalance_rejected`` convention above.
+            info["rebalance_gated"] = True
         return observation.to_vector(), float(breakdown.reward), terminated, truncated, info
 
     # ------------------------------------------------------------------

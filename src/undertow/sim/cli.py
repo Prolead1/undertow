@@ -338,12 +338,21 @@ class _CheckpointPolicy:
     the returned discrete index back to the matching factored :class:`Action`
     (ADR-011).  It is the only adapter between an SB3 model and the simulator's
     policy protocol, and lives with the composition root (the CLI).
+
+    It also mirrors :class:`~undertow.sim.env.lp_env.LpEnvironment`'s
+    ``episode.min_rebalance_interval_steps`` gate (ADR-037): the model's early
+    rebalance *attempts* return the hold action and consume the interval, so
+    the backtester and the simulator apply the identical rule when evaluating
+    the same checkpoint.
     """
 
     def __init__(self, model: object, config: SimConfig, name: str = "ppo") -> None:
         self._model = model
         self._name = name
         self._actions = _action_grid(config)
+        self._min_interval = int(config.episode.min_rebalance_interval_steps)
+        self._step = 0
+        self._last_rebalance_attempt_step = -self._min_interval
         self._validate_observation_space(model)
         self._validate_action_space(model)
 
@@ -392,20 +401,41 @@ class _CheckpointPolicy:
         return self._name
 
     def reset(self) -> None:
-        """No episode-local state to reset."""
+        """Re-arm the episode-local min-interval gate.
+
+        Both :func:`run_backtest` and the walk-forward simulator call this once
+        per episode, so the first action is always allowed and the two backends
+        stay in lockstep with the environment (which re-arms on ``reset()``).
+        """
+        self._step = 0
+        self._last_rebalance_attempt_step = -self._min_interval
 
     def act(
         self,
         observation: object,
         rng: np.random.Generator | None = None,
     ) -> Action:
-        """Predict a discrete action index and return its factored action."""
+        """Predict a discrete action index and return its factored action.
+
+        With ``episode.min_rebalance_interval_steps > 0`` an early rebalance
+        attempt is mapped to hold and does not advance the last-attempt step;
+        an allowed attempt is recorded even if the engine later rejects it as
+        unaffordable.  ``self._step`` advances on every call, matching the
+        environment's decision count.
+        """
         del rng  # the checkpoint policy is deterministic
         vector = np.asarray(observation.to_vector(), dtype=np.float64)  # type: ignore[attr-defined]
         raw_action, _state = self._model.predict(vector, deterministic=True)  # type: ignore[attr-defined]
         index = int(np.asarray(raw_action).reshape(-1)[0])
         index = max(0, min(index, len(self._actions) - 1))
-        return self._actions[index]
+        action = self._actions[index]
+        if self._min_interval > 0 and action.action_type == "rebalance":
+            if self._step - self._last_rebalance_attempt_step < self._min_interval:
+                action = self._actions[0]
+            else:
+                self._last_rebalance_attempt_step = self._step
+        self._step += 1
+        return action
 
 
 def _load_checkpoint(checkpoint: Path) -> object:

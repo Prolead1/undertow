@@ -1388,6 +1388,182 @@ class TestEquityContinuity:
         assert reject_env._last_fees_usdc == hold_env._last_fees_usdc
 
 
+class TestMinRebalanceInterval:
+    """ADR-037: a positive interval coerces early rebalance attempts to hold.
+
+    The gated step is book-identical to an explicit hold on the same state, the
+    interval counts every allowed *attempt* (executed or rejected), and
+    ``reset()`` re-allows the first action.  ``0`` keeps the historical
+    unconstrained behaviour.
+    """
+
+    @staticmethod
+    def _make_env(
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+        *,
+        min_interval: int,
+        capital: float = 100_000.0,
+    ) -> LpEnvironment:
+        config = SimConfig(
+            episode=tiny_episode(
+                duration_days=1,
+                step_minutes=10,
+                agent_capital_usdc=capital,
+                min_rebalance_interval_steps=min_interval,
+            ),
+            price_mode=PriceMode.CALIBRATED,
+        )
+        return LpEnvironment(
+            tiny_market_view,
+            _fresh_pool_engine(),
+            _ConstantPriceProcess(3004.0),
+            mock_gas_model,
+            mock_slippage_model,
+            config,
+        )
+
+    def test_early_rebalance_attempts_are_gated_to_hold(
+        self, tiny_market_view: MarketView, mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        env = self._make_env(
+            tiny_market_view, mock_gas_model, mock_slippage_model, min_interval=3
+        )
+        control = self._make_env(
+            tiny_market_view, mock_gas_model, mock_slippage_model, min_interval=0
+        )
+        env.reset(seed=0)
+        control.reset(seed=0)
+        rebalance = Action(action_type="rebalance", center_offset=0, width=1)
+        index = env._action_lookup.index(rebalance)
+        assert env._position is not None
+        entry_width = env._position.tick_upper - env._position.tick_lower
+
+        # Decision step 0: the first attempt is allowed and executes.
+        _, _, _, _, first = env.step(index)
+        control.step(index)
+        assert first["action_type"] == "rebalance"
+        assert "rebalance_gated" not in first
+        assert first["reward_breakdown_raw"]["gas"] < 0.0
+        assert first["tick_upper"] - first["tick_lower"] != entry_width
+        band = (first["tick_lower"], first["tick_upper"])
+        position_id = first["position_id"]
+
+        # Steps 1 and 2: gated holds, book-identical to an explicit hold in a
+        # control env that took the same step-0 rebalance.
+        for _ in range(2):
+            _, gated_reward, _, _, gated = env.step(index)
+            _, hold_reward, _, _, hold = control.step(0)
+            assert gated["action_type"] == "hold"
+            assert gated["rebalance_gated"] is True
+            # The model's requested index is kept while the executed action is
+            # the hold (the ``rebalance_rejected`` convention).
+            assert gated["action_index"] == index
+            raw = gated["reward_breakdown_raw"]
+            assert raw["gas"] == 0.0
+            assert raw["slippage"] == 0.0
+            assert gated["position_id"] == position_id == hold["position_id"]
+            assert (gated["tick_lower"], gated["tick_upper"]) == band
+            # Identical seed and action path: every economic term matches the
+            # explicit hold.
+            assert gated_reward == hold_reward
+            assert raw["pnl_net"] == hold["reward_breakdown_raw"]["pnl_net"]
+            assert gated["equity"] == hold["equity"]
+
+        # Decision step 3: the interval has elapsed; the attempt executes again.
+        _, _, _, _, fourth = env.step(index)
+        assert fourth["action_type"] == "rebalance"
+        assert "rebalance_gated" not in fourth
+        assert fourth["reward_breakdown_raw"]["gas"] < 0.0
+
+    def test_zero_interval_never_gates(
+        self, tiny_market_view: MarketView, mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        env = self._make_env(
+            tiny_market_view, mock_gas_model, mock_slippage_model, min_interval=0
+        )
+        env.reset(seed=0)
+        rebalance = Action(action_type="rebalance", center_offset=0, width=1)
+        index = env._action_lookup.index(rebalance)
+        for _ in range(4):
+            _, _, _, _, info = env.step(index)
+            assert info["action_type"] == "rebalance"
+            assert "rebalance_gated" not in info
+            assert info["reward_breakdown_raw"]["gas"] < 0.0
+
+    def test_interval_one_never_gates_adjacent_decisions(
+        self, tiny_market_view: MarketView, mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """Boundary: ``step - last_attempt >= 1`` holds for adjacent steps."""
+        env = self._make_env(
+            tiny_market_view, mock_gas_model, mock_slippage_model, min_interval=1
+        )
+        env.reset(seed=0)
+        rebalance = Action(action_type="rebalance", center_offset=0, width=1)
+        index = env._action_lookup.index(rebalance)
+        for _ in range(2):
+            info = env.step(index)[4]
+            assert info["action_type"] == "rebalance"
+            assert "rebalance_gated" not in info
+
+    def test_reset_re_allows_the_first_attempt(
+        self, tiny_market_view: MarketView, mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        env = self._make_env(
+            tiny_market_view, mock_gas_model, mock_slippage_model, min_interval=3
+        )
+        env.reset(seed=0)
+        rebalance = Action(action_type="rebalance", center_offset=0, width=1)
+        index = env._action_lookup.index(rebalance)
+        assert env.step(index)[4]["action_type"] == "rebalance"
+        assert env.step(index)[4]["rebalance_gated"] is True
+
+        env.reset(seed=0)
+        info = env.step(index)[4]
+        assert info["action_type"] == "rebalance"
+        assert "rebalance_gated" not in info
+
+    def test_allowed_attempts_are_counted_even_when_the_trade_reverts(
+        self, tiny_market_view: MarketView, mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """The wrapper can mirror attempts, not affordability (ADR-037).
+
+        A $1 position cannot pay the rebalance gas, so every allowed attempt
+        reverts; the gate must still consume the interval, otherwise the env
+        and the checkpoint wrapper would drift apart.
+        """
+        env = self._make_env(
+            tiny_market_view,
+            mock_gas_model,
+            mock_slippage_model,
+            min_interval=3,
+            capital=1.0,
+        )
+        env.reset(seed=0)
+        rebalance = Action(action_type="rebalance", center_offset=0, width=1)
+        index = env._action_lookup.index(rebalance)
+
+        allowed_0 = env.step(index)[4]
+        assert allowed_0["action_type"] == "rebalance_rejected"
+        assert allowed_0["rebalance_rejected"] is True
+        assert "rebalance_gated" not in allowed_0
+
+        for _ in range(2):
+            gated = env.step(index)[4]
+            assert gated["action_type"] == "hold"
+            assert gated["rebalance_gated"] is True
+
+        allowed_3 = env.step(index)[4]
+        assert allowed_3["action_type"] == "rebalance_rejected"
+        assert "rebalance_gated" not in allowed_3
+
+
 class TestDecisionTimeExecution:
     """ADR-031/S22 T1-T3: the action executes at the decision state it observed.
 

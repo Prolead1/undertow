@@ -576,7 +576,7 @@ class TestCliInternals:
         model = _StubModel()
         policy = _CheckpointPolicy(model, tiny_env.config, name="ppo")
         assert policy.name == "ppo"
-        policy.reset()  # no-op, must not raise
+        policy.reset()  # re-arms the ADR-037 gate before acting
         for index in range(tiny_env.n_actions):
             model.next_index = index
             assert policy.act(observation) == tiny_env.action_for_index(index)
@@ -630,6 +630,81 @@ class TestCliInternals:
         model.action_space = types.SimpleNamespace(n=tiny_env.n_actions + 1)
         with pytest.raises(CliError, match="action grid"):
             _CheckpointPolicy(model, tiny_env.config)
+
+    def test_checkpoint_policy_gates_early_rebalance_attempts(
+        self, tiny_env: object
+    ) -> None:
+        """ADR-037: acts 0 and 3 rebalance; the early attempts at 1-2 hold."""
+        from undertow.sim.evaluate import observation_from_vector
+        from undertow.sim.types import Action
+
+        config = dataclasses.replace(
+            tiny_env.config,
+            episode=dataclasses.replace(
+                tiny_env.config.episode, min_rebalance_interval_steps=3
+            ),
+        )
+        vector, _info = tiny_env.reset(seed=0)
+        observation = observation_from_vector(vector)
+        policy = _CheckpointPolicy(_StubModel(next_index=1), config, name="ppo")
+        policy.reset()
+
+        # Index 1 is a rebalance on this grid; the model asks for it every act.
+        returned = [policy.act(observation) for _ in range(4)]
+        assert returned[0].action_type == "rebalance"
+        assert returned[1] == Action(action_type="hold")
+        assert returned[2] == Action(action_type="hold")
+        assert returned[3].action_type == "rebalance"
+
+        # ``reset()`` re-arms the interval for the next episode.
+        policy.reset()
+        assert policy.act(observation).action_type == "rebalance"
+        assert policy.act(observation) == Action(action_type="hold")
+
+    def test_checkpoint_policy_never_gates_when_interval_is_zero(
+        self, tiny_env: object
+    ) -> None:
+        """ADR-037: the default 0 preserves the unconstrained behaviour."""
+        from undertow.sim.evaluate import observation_from_vector
+
+        assert tiny_env.config.episode.min_rebalance_interval_steps == 0
+        vector, _info = tiny_env.reset(seed=0)
+        observation = observation_from_vector(vector)
+        policy = _CheckpointPolicy(_StubModel(next_index=1), tiny_env.config)
+        policy.reset()
+        for _ in range(4):
+            assert policy.act(observation).action_type == "rebalance"
+
+    def test_checkpoint_policy_gate_matches_the_environment(
+        self, tiny_env: object
+    ) -> None:
+        """ADR-037 parity: wrapper and env gate the same requests identically."""
+        from undertow.sim.evaluate import observation_from_vector
+
+        config = dataclasses.replace(
+            tiny_env.config,
+            episode=dataclasses.replace(
+                tiny_env.config.episode, min_rebalance_interval_steps=3
+            ),
+        )
+        env = _make_env_factory(tiny_env.market_view, config)()
+        vector, _info = env.reset(seed=0)
+        policy = _CheckpointPolicy(_StubModel(next_index=1), config, name="ppo")
+        policy.reset()
+
+        wrapper_types: list[str] = []
+        env_types: list[str] = []
+        env_gated: list[bool] = []
+        for _ in range(6):
+            observation = observation_from_vector(vector)
+            wrapper_types.append(policy.act(observation).action_type)
+            vector, _reward, _terminated, _truncated, info = env.step(1)
+            env_types.append(str(info["action_type"]))
+            env_gated.append(bool(info.get("rebalance_gated", False)))
+
+        assert wrapper_types == ["rebalance", "hold", "hold", "rebalance", "hold", "hold"]
+        assert env_types == wrapper_types
+        assert env_gated == [False, True, True, False, True, True]
 
     def test_calibrated_env_factory_builds_calibrated_env(
         self, tiny_market_view: object
