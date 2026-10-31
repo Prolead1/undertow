@@ -61,6 +61,30 @@ class TestEpisodeConfig:
         assert ep.marginal_agent is True
         assert ep.fee_tier_bps == 500  # primary 0.05% study pool
         assert ep.tick_spacing == 10
+        # 0 = unconstrained: historical behaviour (ADR-037).
+        assert ep.min_rebalance_interval_steps == 0
+
+    def test_min_rebalance_interval_accepts_large_values(self) -> None:
+        ep = EpisodeConfig(min_rebalance_interval_steps=1_000_000)
+        assert ep.min_rebalance_interval_steps == 1_000_000
+
+    @pytest.mark.parametrize("value", [-1, -100])
+    def test_min_rebalance_interval_rejects_negative(self, value: int) -> None:
+        with pytest.raises(
+            SimConfigError, match=r"episode\.min_rebalance_interval_steps"
+        ):
+            EpisodeConfig(min_rebalance_interval_steps=value)
+
+    @pytest.mark.parametrize(
+        "value", [1.5, float("nan"), float("inf"), float("-inf")]
+    )
+    def test_min_rebalance_interval_rejects_non_integral_or_non_finite(
+        self, value: float
+    ) -> None:
+        with pytest.raises(
+            SimConfigError, match=r"episode\.min_rebalance_interval_steps"
+        ):
+            EpisodeConfig(min_rebalance_interval_steps=value)  # type: ignore[arg-type]
 
     def test_defaults_match_the_primary_pool_fields(self) -> None:
         """The dataclass defaults are the primary 0.05 % pool, not the 0.30 %
@@ -451,6 +475,31 @@ class TestLoadSimConfig:
         assert cfg.hedge.enabled is False
         assert cfg.hedge.fee_bps == 5.0
         assert cfg.hedge.ratio == 1.0
+
+    def test_min_rebalance_interval_round_trips_through_the_episode_section(
+        self, tmp_path
+    ) -> None:
+        path = tmp_path / "interval.toml"
+        _write_toml(path, "[episode]\nmin_rebalance_interval_steps = 3\n")
+        cfg = load_sim_config(str(path))
+        # ``_populate`` picks the new dataclass field up without a loader change.
+        assert cfg.episode.min_rebalance_interval_steps == 3
+        assert cfg.episode.duration_days == 30  # other keys default
+
+    def test_omitted_min_rebalance_interval_defaults_to_zero(self, tmp_path) -> None:
+        path = tmp_path / "no_interval.toml"
+        _write_toml(path, "[episode]\nduration_days = 7\n")
+        cfg = load_sim_config(str(path))
+        assert cfg.episode.min_rebalance_interval_steps == 0
+
+    @pytest.mark.parametrize("literal", ["-1", "1.5", "nan", "inf"])
+    def test_min_rebalance_interval_validation_applies_through_the_loader(
+        self, tmp_path, literal
+    ) -> None:
+        path = tmp_path / "bad_interval.toml"
+        _write_toml(path, f"[episode]\nmin_rebalance_interval_steps = {literal}\n")
+        with pytest.raises(SimConfigError, match="min_rebalance_interval_steps"):
+            load_sim_config(str(path))
 
     def test_hold_bias_round_trips_through_the_training_section(self, tmp_path) -> None:
         path = tmp_path / "hold_bias.toml"
