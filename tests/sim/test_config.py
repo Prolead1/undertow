@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -237,6 +238,76 @@ class TestTrainingConfig:
         # Rollouts are recorded by default so the replay views have data.
         assert tc.record_rollouts is True
         assert tc.rollout_max_episodes == 5
+        # No hold prior by default: behaviour is unchanged unless opted in.
+        assert tc.hold_bias == 0.0
+
+    def test_optimizer_anchor_defaults(self) -> None:
+        """PLAN.md §7 anchors; ``ent_coef`` follows SB3's 0.0 (ADR-036)."""
+        tc = TrainingConfig()
+        assert tc.learning_rate == 3e-4
+        assert tc.batch_size == 64
+        assert tc.n_epochs == 10
+        assert tc.ent_coef == 0.0
+        assert tc.target_kl is None
+
+    def test_optimizer_knob_boundaries_are_accepted(self) -> None:
+        """The smallest mini-batch and a zero entropy bonus both validate."""
+        tc = TrainingConfig(batch_size=2, ent_coef=0.0)
+        assert tc.batch_size == 2
+        assert tc.ent_coef == 0.0
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("learning_rate", 0),
+            ("learning_rate", -1e-4),
+            ("batch_size", 1),
+            ("n_epochs", 0),
+            ("ent_coef", -0.1),
+            ("target_kl", 0),
+            ("target_kl", -1),
+        ],
+    )
+    def test_optimizer_knobs_reject_invalid_values(self, field, value) -> None:
+        with pytest.raises(SimConfigError, match=field):
+            TrainingConfig(**{field: value})
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("learning_rate", math.nan),
+            ("learning_rate", math.inf),
+            ("learning_rate", -math.inf),
+            ("batch_size", math.nan),
+            ("batch_size", math.inf),
+            ("batch_size", -math.inf),
+            ("n_epochs", math.nan),
+            ("n_epochs", math.inf),
+            ("n_epochs", -math.inf),
+            ("ent_coef", math.nan),
+            ("ent_coef", math.inf),
+            ("ent_coef", -math.inf),
+            ("target_kl", math.nan),
+            ("target_kl", math.inf),
+            ("target_kl", -math.inf),
+        ],
+    )
+    def test_optimizer_knobs_reject_non_finite_values(self, field, value) -> None:
+        with pytest.raises(SimConfigError, match=field):
+            TrainingConfig(**{field: value})
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("batch_size", 2.9),
+            ("batch_size", 64.5),
+            ("n_epochs", 1.5),
+            ("n_epochs", 10.2),
+        ],
+    )
+    def test_optimizer_knobs_reject_non_integral_values(self, field, value) -> None:
+        with pytest.raises(SimConfigError, match=field):
+            TrainingConfig(**{field: value})
 
     def test_rollouts_can_still_be_disabled(self) -> None:
         assert TrainingConfig(record_rollouts=False).record_rollouts is False
@@ -245,6 +316,14 @@ class TestTrainingConfig:
         assert TrainingConfig(vec_env="subproc").vec_env == "subproc"
         with pytest.raises(SimConfigError, match="vec_env"):
             TrainingConfig(vec_env="threads")  # type: ignore[arg-type]
+
+    def test_hold_bias_accepts_a_positive_prior(self) -> None:
+        assert TrainingConfig(hold_bias=2.5).hold_bias == 2.5
+
+    @pytest.mark.parametrize("hold_bias", [-1.0, -1e-9, math.nan, math.inf])
+    def test_hold_bias_must_be_finite_and_non_negative(self, hold_bias) -> None:
+        with pytest.raises(SimConfigError, match="hold_bias"):
+            TrainingConfig(hold_bias=hold_bias)
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +452,66 @@ class TestLoadSimConfig:
         assert cfg.hedge.fee_bps == 5.0
         assert cfg.hedge.ratio == 1.0
 
+    def test_hold_bias_round_trips_through_the_training_section(self, tmp_path) -> None:
+        path = tmp_path / "hold_bias.toml"
+        _write_toml(path, "[training]\nhold_bias = 2.5\n")
+        cfg = load_sim_config(str(path))
+        # ``_populate`` picks the new dataclass field up without a loader change.
+        assert cfg.training.hold_bias == 2.5
+        assert cfg.training.total_timesteps == 1_000_000  # other keys default
+
+    @pytest.mark.parametrize("literal", ["-0.5", "nan", "-inf"])
+    def test_hold_bias_validation_applies_through_the_loader(
+        self, tmp_path, literal
+    ) -> None:
+        path = tmp_path / "bad_hold_bias.toml"
+        _write_toml(path, f"[training]\nhold_bias = {literal}\n")
+        with pytest.raises(SimConfigError, match="hold_bias"):
+            load_sim_config(str(path))
+
+    def test_optimizer_knobs_round_trip_through_the_training_section(self, tmp_path) -> None:
+        path = tmp_path / "optimizer.toml"
+        _write_toml(
+            path,
+            "[training]\n"
+            "learning_rate = 0.0001\n"
+            "batch_size = 512\n"
+            "n_epochs = 4\n"
+            "ent_coef = 0.001\n"
+            "target_kl = 0.01\n",
+        )
+        cfg = load_sim_config(str(path))
+        # ``_populate`` picks the new dataclass fields up without a loader
+        # change: values load and unspecified keys keep their defaults.
+        assert cfg.training.learning_rate == pytest.approx(1e-4)
+        assert cfg.training.batch_size == 512
+        assert cfg.training.n_epochs == 4
+        assert cfg.training.ent_coef == pytest.approx(0.001)
+        assert cfg.training.target_kl == pytest.approx(0.01)
+        assert cfg.training.total_timesteps == 1_000_000
+
+    @pytest.mark.parametrize(
+        ("field", "literal"),
+        [
+            ("learning_rate", "0.0"),
+            ("batch_size", "1"),
+            ("batch_size", "2.9"),
+            ("batch_size", "nan"),
+            ("n_epochs", "0"),
+            ("n_epochs", "1.5"),
+            ("n_epochs", "inf"),
+            ("ent_coef", "-0.1"),
+            ("target_kl", "0.0"),
+        ],
+    )
+    def test_optimizer_validation_applies_through_the_loader(
+        self, tmp_path, field, literal
+    ) -> None:
+        path = tmp_path / "bad_optimizer.toml"
+        _write_toml(path, f"[training]\n{field} = {literal}\n")
+        with pytest.raises(SimConfigError, match=field):
+            load_sim_config(str(path))
+
 
 # ---------------------------------------------------------------------------
 # Shipped config/data pairing
@@ -400,3 +539,24 @@ def test_shipped_sim_configs_pair_with_their_data_pools() -> None:
         )
         assert sim.episode.fee_tier_bps == data.pool.fee_tier.value, sim_name
         assert sim.episode.tick_spacing == data.pool.tick_spacing, sim_name
+
+
+def test_primary_pool_config_carries_the_stabilized_recipe() -> None:
+    """`configs/sim_eth_usdc_500.toml` lands ADR-036's overrides, not defaults."""
+    repo_root = Path(__file__).resolve().parents[2]
+    cfg = load_sim_config(repo_root / "configs" / "sim_eth_usdc_500.toml")
+
+    grid = cfg.action_grid
+    assert grid.center_offsets == (-1, 0, 1)
+    assert grid.widths == (2, 5, 10, 25, 50, 100, 250, 500, 1000)
+    # Factored grid size: hold + offsets x widths; the primary pool uses the
+    # reduced 28-action grid so `hold` is explorable (ADR-036).
+    assert 1 + len(grid.center_offsets) * len(grid.widths) == 28
+
+    training = cfg.training
+    assert training.learning_rate == pytest.approx(1e-4)
+    assert training.batch_size == 512
+    assert training.n_epochs == 4
+    assert training.ent_coef == pytest.approx(0.001)
+    assert training.target_kl == pytest.approx(0.01)
+    assert training.hold_bias == pytest.approx(4.0)

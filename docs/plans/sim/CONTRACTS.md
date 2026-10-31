@@ -181,11 +181,17 @@ class TrainingConfig:
     clip_epsilon: float = 0.15
     hidden_size: int = 256
     n_hidden: int = 2
+    learning_rate: float = 3e-4          # PLAN §7 anchor; primary pool 1e-4 (ADR-036)
+    batch_size: int = 64                 # PLAN §7 anchor; primary pool 512 (ADR-036)
+    n_epochs: int = 10                   # PLAN §7 anchor; primary pool 4 (ADR-036)
+    ent_coef: float = 0.0                # SB3 2.9 PPO default (historical); primary pool 0.001 (ADR-036)
+    target_kl: float | None = None       # None = off; primary pool 0.01 (ADR-036)
     parallel_envs: int = 4
     total_timesteps: int = 1_000_000
     checkpoint_freq_steps: int = 100_000
     log_freq_steps: int = 10_000
     vec_env: Literal["dummy", "subproc"] = "dummy"  # ADR-022: per-slot process in "subproc"
+    hold_bias: float = 0.0  # logit prior on hold (index 0); 0.0 = off
 
 @dataclass(frozen=True, slots=True)
 class BacktestConfig:

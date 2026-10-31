@@ -149,6 +149,30 @@ class TrainingConfig:
     clip_epsilon: float = 0.15
     hidden_size: int = 256
     n_hidden: int = 2
+    #: PPO optimisation knobs.  ``learning_rate``/``batch_size``/``n_epochs``
+    #: are the PLAN.md §7 anchor values; ``ent_coef`` defaults to SB3 2.9's PPO
+    #: default of ``0.0`` (the runner historically never passed the kwarg), so
+    #: together they preserve the historical training behaviour.  The primary
+    #: 0.05 % pool overrides them (``configs/sim_eth_usdc_500.toml``) to
+    #: stabilize noisy gradient updates -- a 64-sample mini-batch over ten
+    #: epochs moved the policy too far from the behaviour policy, so the hold
+    #: fraction thrashed update-to-update even though the captured advantages
+    #: favoured holding (ADR-036).  The primary recipe is ``learning_rate=1e-4``,
+    #: ``batch_size=512``, ``n_epochs=4``, ``ent_coef=0.001``, ``target_kl=0.01``.
+    learning_rate: float = 3e-4
+    #: PPO mini-batch size, snapped to a divisor of the rollout by
+    #: ``ppo_runner._derive_rollout`` so SB3's ``rollout % batch_size == 0``
+    #: invariant always holds.
+    batch_size: int = 64
+    #: Number of PPO epochs over each rollout.
+    n_epochs: int = 10
+    #: Entropy bonus coefficient.  Defaults to SB3 2.9's PPO default ``0.0``;
+    #: the primary 0.05 % pool sets ``0.001`` (ADR-036).
+    ent_coef: float = 0.0
+    #: SB3 KL early-stopping threshold; ``None`` disables it.  The primary pool
+    #: sets a small finite value so an update cannot drift far from the
+    #: behaviour policy that collected the rollout.
+    target_kl: float | None = None
     parallel_envs: int = 4
     total_timesteps: int = 1_000_000
     checkpoint_freq_steps: int = 100_000
@@ -168,11 +192,54 @@ class TrainingConfig:
     record_rollouts: bool = True
     #: Maximum evaluation episodes recorded when ``record_rollouts`` is true (U06).
     rollout_max_episodes: int = 5
+    #: Positive offset added to the ``hold`` action's logit when the PPO model is
+    #: constructed. ``hold`` is index 0 of the discrete action grid (ADR-011) and
+    #: the flat softmax otherwise samples it only ~1/N of the time -- too rarely
+    #: for PPO to discover that avoiding the per-rebalance gas dominates. ``0.0``
+    #: disables the prior and preserves today's behaviour exactly.
+    hold_bias: float = 0.0
 
     def __post_init__(self) -> None:
         if self.vec_env not in ("dummy", "subproc"):
             raise SimConfigError(
                 f"training.vec_env must be 'dummy' or 'subproc', got {self.vec_env!r}"
+            )
+        learning_rate = float(self.learning_rate)
+        if not math.isfinite(learning_rate) or learning_rate <= 0.0:
+            raise SimConfigError(
+                f"training.learning_rate must be finite and > 0, got {self.learning_rate!r}"
+            )
+        batch_size = float(self.batch_size)
+        if not math.isfinite(batch_size) or not batch_size.is_integer():
+            raise SimConfigError(
+                f"training.batch_size must be a finite integer, got {self.batch_size!r}"
+            )
+        if batch_size < 2:
+            raise SimConfigError(
+                f"training.batch_size must be >= 2 (SB3 requires > 1), got {self.batch_size!r}"
+            )
+        n_epochs = float(self.n_epochs)
+        if not math.isfinite(n_epochs) or not n_epochs.is_integer():
+            raise SimConfigError(
+                f"training.n_epochs must be a finite integer, got {self.n_epochs!r}"
+            )
+        if n_epochs < 1:
+            raise SimConfigError(f"training.n_epochs must be >= 1, got {self.n_epochs!r}")
+        ent_coef = float(self.ent_coef)
+        if not math.isfinite(ent_coef) or ent_coef < 0.0:
+            raise SimConfigError(
+                f"training.ent_coef must be finite and >= 0, got {self.ent_coef!r}"
+            )
+        if self.target_kl is not None:
+            target_kl = float(self.target_kl)
+            if not math.isfinite(target_kl) or target_kl <= 0.0:
+                raise SimConfigError(
+                    f"training.target_kl must be None or finite and > 0, got {self.target_kl!r}"
+                )
+        hold_bias = float(self.hold_bias)
+        if not math.isfinite(hold_bias) or hold_bias < 0.0:
+            raise SimConfigError(
+                f"training.hold_bias must be finite and >= 0, got {self.hold_bias!r}"
             )
 
 
