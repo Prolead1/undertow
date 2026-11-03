@@ -44,6 +44,28 @@ class EpisodeConfig:
     marginal_agent: bool = True  # agent liquidity never moves the price path
     fee_tier_bps: int = 500  # 0.05% default: the primary USDC/WETH study pool
     tick_spacing: int = 10
+    #: Minimum number of decision steps between rebalance *attempts* for the
+    #: learned policy.  ``0`` disables the constraint and preserves historical
+    #: behaviour exactly.  A positive value makes the environment coerce an
+    #: earlier rebalance attempt to ``hold``, and the checkpoint evaluation
+    #: wrapper (``_CheckpointPolicy``) gates identically so the simulator and
+    #: the backtester agree (ADR-037).  Scripted baselines ignore this field,
+    #: but the environment gate is policy-agnostic: keep it at ``0`` for
+    #: baseline and parity runs, because the exact backtester has no gate.
+    min_rebalance_interval_steps: int = 0
+
+    def __post_init__(self) -> None:
+        interval = float(self.min_rebalance_interval_steps)
+        if not math.isfinite(interval) or not interval.is_integer():
+            raise SimConfigError(
+                "episode.min_rebalance_interval_steps must be a finite integer, "
+                f"got {self.min_rebalance_interval_steps!r}"
+            )
+        if interval < 0:
+            raise SimConfigError(
+                "episode.min_rebalance_interval_steps must be >= 0, "
+                f"got {self.min_rebalance_interval_steps!r}"
+            )
 
 
 @dataclass(frozen=True, slots=True)

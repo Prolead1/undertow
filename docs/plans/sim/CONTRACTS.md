@@ -126,6 +126,11 @@ class EpisodeConfig:
     marginal_agent: bool = True    # agent liquidity never moves the price path
     fee_tier_bps: int = 500        # Uniswap pips (500 = 0.05% primary; ADR-012); the `_bps` name is a legacy misnomer
     tick_spacing: int = 10
+    # 0 = unconstrained. > 0 applies to every policy stepped in the environment
+    # (including scripted baselines under the replay simulator); the exact
+    # backtester has no gate and only _CheckpointPolicy mirrors it for the
+    # learned policy, so keep 0 for baseline and parity runs (ADR-037).
+    min_rebalance_interval_steps: int = 0
 
 @dataclass(frozen=True, slots=True)
 class ActionGridConfig:
