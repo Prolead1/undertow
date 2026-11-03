@@ -89,6 +89,63 @@ Two facts force the promotion now:
   per-step ratio telemetry lives in the environment `info`/backtester decision
   log rather than a schema bump.
 
+## Evidence — first joint-head run
+
+Five seeds × 1M steps on `configs/sim_eth_usdc_500_hedged.toml` (subproc,
+4 workers, ~2h05m wall, run at commit `f161ff0`; artifacts in
+`results/eth_usdc_500_hedged_rl/`), evaluated over the 13 walk-forward 2024
+windows with joint equity.
+
+**Training.** Final `ep_rew_mean` per seed: −0.449, −0.621, −0.495, −0.396,
+−0.545; every curve was still monotonically improving at 1M steps and none had
+plateaued. The LP-only hold policy converged to −0.167…−0.288 over the same
+budget (ADR-036). The joint space therefore needs more optimisation budget —
+the head is learnable but undertrained at parity.
+
+**Greedy behaviour (3 eval windows/seed).** Every seed held the LP 100 % (the
+C1 result survives the extra head) and chose a seed-specific, near-constant
+hedge ratio: seed 0 `{0.5: 5368, 0.75: 7333}`, seed 1 `{0: 280, 0.25: 1883,
+0.5: 10538}`, seed 2 `{0.25: 12701}`, seed 3 `{0.75: 12701}`, seed 4
+`{0.25: 2398, 0.5: 7985, 0.75: 2313, 1.0: 5}`. A train-view probe of seed 0
+showed a state-dependent split (bear 0.5, bull/high-vol 0.75), so the head can
+express regime conditioning; the fully trained seeds collapsed to constants.
+Seed 3's full-window PnL is *identical* to the constant-ratio 0.75 sweep below,
+confirming the collapse numerically.
+
+**2024 walk-forward (13 windows, joint equity).**
+
+| Policy | total PnL (mean) | Sharpe | maxDD |
+|---|---:|---:|---:|
+| `hodl` (= ratio 0) | +735.21 | 0.654 | −0.1221 |
+| constant ratio 0.25 | +52.47 | 0.340 | −0.0947 |
+| `passive_wide` | +1622.95 | 1.526 | −0.1012 |
+| `full_range_v2` | +2182.65 | 0.639 | −0.0967 |
+| constant ratio 0.50 | −630.26 | −0.173 | −0.0669 |
+| PPO seed 3 (train-best) | −1312.99 | −1.294 | −0.0416 |
+| constant ratio 0.75 | −1313.00 | −1.294 | −0.0416 |
+| `hedged_hodl` (= ratio 1) | −1995.73 | −4.766 | −0.0274 |
+
+Hedging is monotone in 2024: every extra unit of short buys drawdown reduction
+(high-vol maxDD −0.340 for `hodl` → −0.0145 for `hedged_hodl`) at a large
+return cost (ETH rose over the window, and the funding carry does not cover the
+mark loss). The seed chosen by train `best_reward` (0.75) is the worst plausible
+constant; the seed spread is large. This is exactly the C3/C4 boundary the
+report needs: the joint policy is non-degenerate and interpretable, but under
+the λ=0 expected-reward objective the hedge is not worth carrying in an
+up-market, and train-reward model selection over-hedges.
+
+**Sim-to-reality gap.** `ppo_seed_3`: replay sim −1092.35 vs exact backtest
+−1313.00, gap 220.65 USDC. The LP component rows sum to −5.17 (fees +0.61,
+gas 0.00, slippage 0.00, IL −5.78); the residual is dominated by the hedge leg,
+which the gap report's component table does not itemise yet — extend it to the
+hedge terms before quoting the number.
+
+**Next steps the evidence points to.** (1) A longer budget (2–3M) or a ratio
+prior (mirroring `hold_bias`) so the head is not undertrained at 1M; (2) S21's
+risk-sensitive objective plus a validation-based checkpoint rule, since the
+current train-reward selection picks the over-hedged seed; (3) extend the RQ3
+gap components to the hedge leg.
+
 ## Rejected alternatives
 
 - **Flatten the joint action into one `Discrete(n_lp × n_ratio)`.** It makes
