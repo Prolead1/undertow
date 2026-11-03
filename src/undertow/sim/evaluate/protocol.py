@@ -52,7 +52,7 @@ import numpy as np
 import polars as pl
 
 from undertow.sim.backtest import DEFAULT_INITIAL_HALF_WIDTH_TICKS, run_backtest
-from undertow.sim.config import SimConfig
+from undertow.sim.config import SimConfig, resolve_hedge_ratio
 from undertow.sim.core.pool import PoolEngine, PoolState
 from undertow.sim.env import (
     OBSERVATION_VECTOR_LENGTH,
@@ -314,22 +314,70 @@ def observation_from_vector(vector: Sequence[float]) -> Observation:
     )
 
 
-def action_to_index(env: LpEnvironment, action: Action) -> int:
-    """Map a policy :class:`Action` to the environment's discrete action index.
+def action_to_index(env: LpEnvironment, action: Action) -> int | list[int]:
+    """Map a policy :class:`Action` to the environment's action vector.
 
-    The environment's action space is the factored ``ActionGridConfig`` grid
-    (ADR-011); baseline policies return bands outside that grid and are declared
-    out of scope for simulator stepping.  Raises :class:`EvaluationError` with a
-    clear message when the action is not representable rather than silently
-    holding.
+    The LP head is the factored ``ActionGridConfig`` grid (ADR-011); baseline
+    policies return bands outside that grid and are declared out of scope for
+    simulator stepping.  With ``HedgeConfig.agent_ratio`` (S20b) the space is
+    ``MultiDiscrete([n_lp, len(ratios)])`` and the returned value is the
+    two-element ``[lp_index, ratio_index]`` vector.  The ratio is resolved by
+    the shared :func:`~undertow.sim.config.resolve_hedge_ratio`: explicit
+    ratios must be exactly one of the head's values, while a ratio-less action
+    resolves to the unhedged entry.  Without the head the LP index is returned;
+    the ratio is inert when the overlay is disabled and, with the deterministic
+    overlay, must equal the config ratio (the Discrete action cannot carry a
+    different one).  Raises :class:`EvaluationError` with a clear message when
+    the action is not representable rather than silently holding.
     """
+    lp_index: int | None = None
     for index in range(env.n_actions):
-        if env.action_for_index(index) == action:
-            return index
+        candidate = env.action_for_index(index)
+        # Compare the LP fields only, deliberately ignoring ``hedge_ratio`` (and
+        # any future additive Action field): the ratio is resolved separately
+        # below, so an explicit ratio must not make every LP action unmatchable.
+        if (
+            candidate.action_type == action.action_type
+            and candidate.center_offset == action.center_offset
+            and candidate.width == action.width
+        ):
+            lp_index = index
+            break
+    if lp_index is None:
+        raise EvaluationError(
+            f"action {action!r} is not in the environment's discrete action space "
+            f"({env.n_actions} entries); the RQ3 simulator path cannot execute a "
+            "baseline band outside the agent action grid"
+        )
+    if not env.agent_ratio:
+        # No ratio head: with the overlay disabled the ratio is inert (the
+        # account does not exist), so the LP index is the whole action.  With
+        # the deterministic overlay the simulator index cannot carry a ratio,
+        # so an explicit ratio is only representable when it equals the config
+        # one; anything else is an honest error rather than a silent drop (the
+        # backtester can execute it, the Discrete simulator cannot).
+        if (
+            env.config.hedge.enabled
+            and action.hedge_ratio is not None
+            and float(action.hedge_ratio) != float(env.config.hedge.ratio)
+        ):
+            raise EvaluationError(
+                f"action {action!r} asks for hedge_ratio {action.hedge_ratio}, but "
+                f"the deterministic overlay is configured at "
+                f"{env.config.hedge.ratio}; the Discrete simulator path cannot "
+                "override it (enable hedge.agent_ratio or use the backtester)"
+            )
+        return lp_index
+    resolved = resolve_hedge_ratio(
+        action.hedge_ratio, env.config.hedge, agent_ratio=True
+    )
+    for ratio_index, value in enumerate(env.hedge_ratios):
+        if value == resolved:
+            return [lp_index, ratio_index]
     raise EvaluationError(
-        f"action {action!r} is not in the environment's discrete action space "
-        f"({env.n_actions} entries); the RQ3 simulator path cannot execute a "
-        "baseline band outside the agent action grid"
+        f"hedge_ratio {action.hedge_ratio!r} is not one of the environment's "
+        f"head values {env.hedge_ratios}; the simulator path cannot execute an "
+        "off-grid hedge ratio"
     )
 
 
@@ -451,6 +499,44 @@ def episode_metrics(
     }
 
 
+def _joint_accounting(
+    ledger: BacktestLedger,
+) -> tuple[pl.Series, dict[str, float], pl.DataFrame]:
+    """Joint (LP + hedge) equity, decomposition and curve for a ledger.
+
+    ``BacktestLedger.equity_curve`` is the LP leg only (CONTRACTS §13); the
+    hedge leg lives in ``hedge_curve``.  Episode metrics must describe the joint
+    strategy, so the cumulative hedge cash flows are added to the equity series
+    and their totals to the decomposition.  A ledger without a hedge curve (the
+    overlay disabled) is returned unchanged, so LP-only records are
+    byte-identical.
+    """
+    curve = ledger.hedge_curve
+    if curve is None or curve.height == 0:
+        return (
+            ledger.equity_curve["equity"],
+            dict(ledger.pnl_decomposition),
+            ledger.equity_curve,
+        )
+    flows = curve["hedge_pnl"] + curve["hedge_funding"] + curve["hedge_fee"]
+    hedge_equity = flows.cum_sum()
+    equity = ledger.equity_curve["equity"] + hedge_equity
+    decomposition = dict(ledger.pnl_decomposition)
+    hedge_pnl = float(curve["hedge_pnl"].sum())
+    hedge_funding = float(curve["hedge_funding"].sum())
+    hedge_fee = float(curve["hedge_fee"].sum())
+    decomposition.update(
+        {
+            "total_hedge_pnl": hedge_pnl,
+            "total_hedge_funding": hedge_funding,
+            "total_hedge_fee": hedge_fee,
+            "total_hedge": hedge_pnl + hedge_funding + hedge_fee,
+        }
+    )
+    equity_curve = ledger.equity_curve.with_columns(equity.alias("equity"))
+    return equity, decomposition, equity_curve
+
+
 def _record_from_ledger(
     policy: Policy,
     ledger: BacktestLedger,
@@ -460,7 +546,7 @@ def _record_from_ledger(
     seed: int,
 ) -> EpisodeRecord:
     """Package a backtest ledger into an :class:`EpisodeRecord`."""
-    equity = ledger.equity_curve["equity"]
+    equity, decomposition, equity_curve = _joint_accounting(ledger)
     n_rebalances = (
         int((ledger.decision_log["action_type"] == "rebalance").sum())
         if ledger.decision_log.height
@@ -480,12 +566,12 @@ def _record_from_ledger(
         metrics=episode_metrics(
             equity,
             capital,
-            ledger.pnl_decomposition,
+            decomposition,
             int(ledger.periods_per_year),
             n_rebalances,
         ),
-        decomposition=dict(ledger.pnl_decomposition),
-        equity_curve=ledger.equity_curve,
+        decomposition=decomposition,
+        equity_curve=equity_curve,
     )
 
 
@@ -510,6 +596,9 @@ def _run_sim_window(
     gas = 0.0
     slippage = 0.0
     il = 0.0
+    hedge_pnl = 0.0
+    hedge_funding = 0.0
+    hedge_fee = 0.0
     n_rebalances = 0
     equity = capital
     done = False
@@ -523,7 +612,18 @@ def _run_sim_window(
         gas += float(raw["gas"])
         slippage += float(raw["slippage"])
         il += float(raw["il_change"])
-        equity = float(info["equity"]) if "equity" in info else float(raw.get("equity", equity))
+        # S20b: metrics describe the joint strategy, so the hedge leg is added
+        # to the LP equity and decomposed with the ungated economics payload
+        # (an RQ1 hedge ablation must not zero the economic record).
+        economics = info.get("reward_breakdown_economics", raw)
+        hedge_pnl += float(economics.get("hedge_pnl", 0.0))
+        hedge_funding += float(economics.get("hedge_funding", 0.0))
+        hedge_fee += float(economics.get("hedge_fee", 0.0))
+        equity = (
+            float(info["equity"]) + float(info.get("hedge_equity", 0.0))
+            if "equity" in info
+            else float(raw.get("equity", equity))
+        )
         equities.append(equity)
         # Count only executed rebalances: a rebalance the position cannot afford
         # reverts and is recorded as ``rebalance_rejected``, matching the
@@ -546,6 +646,15 @@ def _run_sim_window(
         "total_il": il,
         "net": net,
     }
+    if config.hedge.enabled:
+        decomposition.update(
+            {
+                "total_hedge_pnl": hedge_pnl,
+                "total_hedge_funding": hedge_funding,
+                "total_hedge_fee": hedge_fee,
+                "total_hedge": hedge_pnl + hedge_funding + hedge_fee,
+            }
+        )
     equity_series = pl.Series("equity", equities)
     replay_process = cast(ReplayPriceProcess, env.price_process)
     start_seq = int(replay_process.start_seq)

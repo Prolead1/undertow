@@ -1,7 +1,7 @@
 """Baseline policies for ``undertow.sim`` (CONTRACTS.md §10).
 
-Re-exports the frozen :class:`Policy` protocol and the six baseline policies that
-form the thesis "baseline ladder" (PLAN.md §7).
+Re-exports the frozen :class:`Policy` protocol and the seven baseline policies
+that form the thesis "baseline ladder" (PLAN.md §7).
 """
 
 from undertow.sim.policies.base import HOLDAction, Policy
@@ -10,6 +10,7 @@ from undertow.sim.policies.baselines import (
     FULL_RANGE_WIDTH,
     CostAwareRebalancePolicy,
     FullRangeV2Policy,
+    HedgedHODLPolicy,
     HODLPolicy,
     PassiveNarrowPolicy,
     PassiveWidePolicy,
@@ -23,6 +24,7 @@ __all__ = [
     "CostAwareRebalancePolicy",
     "FullRangeV2Policy",
     "HODLPolicy",
+    "HedgedHODLPolicy",
     "PassiveNarrowPolicy",
     "PassiveWidePolicy",
     "Policy",

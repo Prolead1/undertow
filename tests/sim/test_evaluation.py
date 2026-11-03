@@ -25,7 +25,8 @@ import polars as pl
 import pytest
 
 from tests.sim.synthetic_pool import tiny_episode
-from undertow.sim.config import SimConfig, TrainingConfig
+from undertow.sim.config import HedgeConfig, SimConfig, TrainingConfig
+from undertow.sim.env.lp_env import LpEnvironment
 from undertow.sim.evaluate import (
     ABLATION_VARIANTS,
     METRIC_NAMES,
@@ -50,7 +51,7 @@ from undertow.sim.evaluate import (
 from undertow.sim.evaluate.protocol import action_to_index
 from undertow.sim.marketview import MarketView
 from undertow.sim.policies import HODLPolicy, HOLDAction, PassiveNarrowPolicy, TauResetPolicy
-from undertow.sim.types import LookAheadError
+from undertow.sim.types import Action, LookAheadError
 
 # ---------------------------------------------------------------------------
 # Helpers / detectors
@@ -433,18 +434,136 @@ class TestObservationAdapter:
             observation_from_vector([0.0] * 17)
 
 
+def _hedge_env_from(
+    tiny_env: object, *, agent_ratio: bool, ratio: float = 1.0
+) -> LpEnvironment:
+    """A copy of ``tiny_env`` whose config carries the S20b head choice."""
+    env = tiny_env
+    config = dataclasses.replace(
+        env.config,  # type: ignore[attr-defined]
+        hedge=HedgeConfig(enabled=True, agent_ratio=agent_ratio, ratio=ratio),
+    )
+    return LpEnvironment(
+        env.market_view,  # type: ignore[attr-defined]
+        env.pool_engine,  # type: ignore[attr-defined]
+        env.price_process,  # type: ignore[attr-defined]
+        env.gas_model,  # type: ignore[attr-defined]
+        env.slippage_model,  # type: ignore[attr-defined]
+        config,
+    )
+
+
 class TestActionToIndex:
     def test_hold_maps_to_zero(self, tiny_env: object) -> None:
         assert action_to_index(tiny_env, HOLDAction) == 0  # type: ignore[arg-type]
 
     def test_unrepresentable_action_raises(self, tiny_env: object) -> None:
-        from undertow.sim.types import Action
-
         with pytest.raises(EvaluationError, match="not in the environment"):
             action_to_index(
                 tiny_env,  # type: ignore[arg-type]
                 Action(action_type="rebalance", center_offset=0, width=999),
             )
+
+    def test_joint_head_maps_to_the_ratio_vector(self, tiny_env: object) -> None:
+        joint = _hedge_env_from(tiny_env, agent_ratio=True)
+        assert action_to_index(joint, Action("hold", hedge_ratio=0.5)) == [0, 2]
+        assert action_to_index(joint, Action("hold", hedge_ratio=1.0)) == [0, 4]
+        # A ratio-less action is the unhedged entry (scripted baselines).
+        assert action_to_index(joint, HOLDAction) == [0, 0]
+
+    def test_off_head_ratio_raises(self, tiny_env: object) -> None:
+        joint = _hedge_env_from(tiny_env, agent_ratio=True)
+        with pytest.raises(EvaluationError, match="not one of the"):
+            action_to_index(joint, Action("hold", hedge_ratio=0.4))
+
+    def test_ratio_is_inert_when_the_overlay_is_disabled(self, tiny_env: object) -> None:
+        # The shipped LP-only config: the hedged_hodl baseline degrades to HODL.
+        assert action_to_index(tiny_env, Action("hold", hedge_ratio=1.0)) == 0  # type: ignore[arg-type]
+
+    def test_explicit_ratio_under_the_deterministic_overlay(
+        self, tiny_env: object
+    ) -> None:
+        """Equal to the config ratio is representable; a differing one is not."""
+        deterministic = _hedge_env_from(tiny_env, agent_ratio=False)
+        assert action_to_index(deterministic, Action("hold", hedge_ratio=1.0)) == 0
+        assert action_to_index(deterministic, HOLDAction) == 0
+        different = _hedge_env_from(tiny_env, agent_ratio=False, ratio=0.5)
+        with pytest.raises(EvaluationError, match="cannot"):
+            action_to_index(different, Action("hold", hedge_ratio=1.0))
+
+
+class TestJointEquity:
+    def test_backtest_metrics_include_the_hedge_leg(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        unhedged_config = _config(duration_days=4)
+        hedged_config = dataclasses.replace(
+            unhedged_config, hedge=HedgeConfig(enabled=True, ratio=1.0)
+        )
+        unhedged = evaluate_episodes(HODLPolicy(), tiny_market_view, unhedged_config)
+        hedged = evaluate_episodes(HODLPolicy(), tiny_market_view, hedged_config)
+        assert len(unhedged) == len(hedged)
+        # The fixture has constant-price stretches, so at least one window must
+        # show a genuine mark move for this test to be non-vacuous.
+        assert any(r.decomposition["total_hedge_pnl"] != 0.0 for r in hedged)
+        for before, after in zip(unhedged, hedged, strict=True):
+            # The hedge traded; the decomposition carries its flows.
+            assert after.decomposition["total_hedge_fee"] < 0.0
+            assert after.decomposition["total_hedge"] == pytest.approx(
+                after.decomposition["total_hedge_pnl"]
+                + after.decomposition["total_hedge_funding"]
+                + after.decomposition["total_hedge_fee"]
+            )
+            # The reported total PnL is the LP leg plus the hedge leg, and the
+            # stored equity curve ends at the same joint value.
+            assert after.metrics["total_pnl"] == pytest.approx(
+                before.metrics["total_pnl"] + after.decomposition["total_hedge"]
+            )
+            assert after.equity_curve["equity"][-1] - after.initial_capital == (
+                pytest.approx(after.metrics["total_pnl"])
+            )
+            # LP-only records are unchanged (no hedge keys, same numbers).
+            assert "total_hedge" not in before.decomposition
+
+    def test_replay_sim_metrics_include_the_hedge_leg(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        unhedged_config = _config(duration_days=4)
+        hedged_config = dataclasses.replace(
+            unhedged_config, hedge=HedgeConfig(enabled=True, ratio=1.0)
+        )
+        unhedged = evaluate_episodes(
+            HODLPolicy(), tiny_market_view, unhedged_config, backend="replay_sim"
+        )
+        hedged = evaluate_episodes(
+            HODLPolicy(), tiny_market_view, hedged_config, backend="replay_sim"
+        )
+        for before, after in zip(unhedged, hedged, strict=True):
+            assert after.decomposition["total_hedge"] == pytest.approx(
+                after.metrics["total_pnl"] - before.metrics["total_pnl"]
+            )
+
+    def test_replay_sim_joint_head_with_an_explicit_ratio(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        """The joint ``MultiDiscrete`` path runs end-to-end in the simulator."""
+        from undertow.sim.policies import HedgedHODLPolicy
+
+        config = dataclasses.replace(
+            _config(duration_days=4),
+            hedge=HedgeConfig(enabled=True, agent_ratio=True),
+        )
+        records = evaluate_episodes(
+            HedgedHODLPolicy(0.5),
+            tiny_market_view,
+            config,
+            backend="replay_sim",
+        )
+        assert records
+        # The hedge leg traded (perp fees) and the joint equity was reported.
+        for record in records:
+            assert record.decomposition["total_hedge_fee"] < 0.0
+            assert "total_hedge" in record.decomposition
 
 
 @pytest.mark.slow

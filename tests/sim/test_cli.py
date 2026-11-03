@@ -631,6 +631,82 @@ class TestCliInternals:
         with pytest.raises(CliError, match="action grid"):
             _CheckpointPolicy(model, tiny_env.config)
 
+    @staticmethod
+    def _joint_config(config: object) -> object:
+        from undertow.sim.config import HedgeConfig
+
+        return dataclasses.replace(
+            config, hedge=HedgeConfig(enabled=True, agent_ratio=True)
+        )
+
+    @staticmethod
+    def _multi_model(values: list[int], n_lp: int, n_ratio: int = 5) -> object:
+        import types
+
+        from undertow.sim.env import OBSERVATION_VECTOR_LENGTH
+
+        class _StubMultiModel:
+            def __init__(self) -> None:
+                self.values = values
+
+            def predict(
+                self, vector: np.ndarray, deterministic: bool = True
+            ) -> tuple[np.ndarray, None]:
+                del vector, deterministic
+                return np.asarray(self.values), None
+
+        model = _StubMultiModel()
+        model.observation_space = types.SimpleNamespace(
+            shape=(OBSERVATION_VECTOR_LENGTH,)
+        )
+        model.action_space = types.SimpleNamespace(nvec=[n_lp, n_ratio])
+        return model
+
+    def test_checkpoint_policy_decodes_a_joint_head(self, tiny_env: object) -> None:
+        from undertow.sim.evaluate import observation_from_vector
+
+        vector, _info = tiny_env.reset(seed=0)  # type: ignore[attr-defined]
+        observation = observation_from_vector(vector)
+        config = self._joint_config(tiny_env.config)  # type: ignore[attr-defined]
+        model = self._multi_model([3, 2], tiny_env.n_actions)  # type: ignore[attr-defined]
+        action = _CheckpointPolicy(model, config).act(observation)
+        assert action == dataclasses.replace(
+            tiny_env.action_for_index(3), hedge_ratio=0.5  # type: ignore[attr-defined]
+        )
+
+    def test_checkpoint_policy_clamps_both_joint_heads(self, tiny_env: object) -> None:
+        from undertow.sim.evaluate import observation_from_vector
+
+        vector, _info = tiny_env.reset(seed=0)  # type: ignore[attr-defined]
+        observation = observation_from_vector(vector)
+        config = self._joint_config(tiny_env.config)  # type: ignore[attr-defined]
+        model = self._multi_model(  # type: ignore[attr-defined]
+            [tiny_env.n_actions + 5, 99], tiny_env.n_actions  # type: ignore[attr-defined]
+        )
+        action = _CheckpointPolicy(model, config).act(observation)
+        assert action == dataclasses.replace(
+            tiny_env.action_for_index(tiny_env.n_actions - 1),  # type: ignore[attr-defined]
+            hedge_ratio=1.0,
+        )
+
+    def test_joint_config_rejects_a_discrete_checkpoint(self, tiny_env: object) -> None:
+        import types
+
+        model = _StubModel()
+        model.action_space = types.SimpleNamespace(n=tiny_env.n_actions)  # type: ignore[attr-defined]
+        with pytest.raises(CliError, match="MultiDiscrete"):
+            _CheckpointPolicy(model, self._joint_config(tiny_env.config))  # type: ignore[attr-defined]
+
+    def test_discrete_config_rejects_a_joint_checkpoint(self, tiny_env: object) -> None:
+        model = self._multi_model([0, 0], tiny_env.n_actions)  # type: ignore[attr-defined]
+        with pytest.raises(CliError, match="disables hedge.agent_ratio"):
+            _CheckpointPolicy(model, tiny_env.config)  # type: ignore[attr-defined]
+
+    def test_joint_head_shape_mismatch_raises(self, tiny_env: object) -> None:
+        model = self._multi_model([0, 0], tiny_env.n_actions, n_ratio=4)  # type: ignore[attr-defined]
+        with pytest.raises(CliError, match="expects"):
+            _CheckpointPolicy(model, self._joint_config(tiny_env.config))  # type: ignore[attr-defined]
+
     def test_calibrated_env_factory_builds_calibrated_env(
         self, tiny_market_view: object
     ) -> None:

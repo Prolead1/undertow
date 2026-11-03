@@ -26,6 +26,7 @@ from undertow.sim.config import (
     SplitConfig,
     TrainingConfig,
     load_sim_config,
+    resolve_hedge_ratio,
 )
 from undertow.sim.types import PriceMode, SimConfigError
 
@@ -147,6 +148,53 @@ class TestHedgeConfig:
         assert hc.funding_enabled is True
         assert hc.ratio == 1.0
         assert tuple(hc.ratios) == (0.0, 0.25, 0.5, 0.75, 1.0)
+        # S20b: the joint head is opt-in, so a default config is unchanged.
+        assert hc.agent_ratio is False
+
+    def test_agent_ratio_requires_enabled(self) -> None:
+        with pytest.raises(SimConfigError, match="agent_ratio"):
+            HedgeConfig(enabled=False, agent_ratio=True)
+
+    def test_agent_ratio_with_enabled_is_valid(self) -> None:
+        hc = HedgeConfig(enabled=True, agent_ratio=True)
+        assert hc.agent_ratio is True
+
+    def test_agent_ratio_rejects_empty_ratios(self) -> None:
+        with pytest.raises(SimConfigError, match="ratios"):
+            HedgeConfig(enabled=True, agent_ratio=True, ratios=())
+
+    def test_agent_ratio_requires_an_unhedged_entry(self) -> None:
+        """A ratio-less baseline must have a representable unhedged choice."""
+        with pytest.raises(SimConfigError, match="0.0"):
+            HedgeConfig(enabled=True, agent_ratio=True, ratios=(0.25, 1.0))
+
+    # -- S20b: the shared action-ratio resolver -------------------------------
+    def test_resolve_hedge_ratio_explicit_always_wins(self) -> None:
+        hedge = HedgeConfig(enabled=True, ratio=0.5)
+        assert resolve_hedge_ratio(0.75, hedge, agent_ratio=False) == 0.75
+        assert resolve_hedge_ratio(0.75, hedge, agent_ratio=True) == 0.75
+
+    def test_resolve_hedge_ratio_none_uses_config_when_deterministic(self) -> None:
+        hedge = HedgeConfig(enabled=True, ratio=0.5)
+        assert resolve_hedge_ratio(None, hedge, agent_ratio=False) == 0.5
+
+    def test_resolve_hedge_ratio_none_is_unhedged_for_the_joint_head(self) -> None:
+        hedge = HedgeConfig(enabled=True, agent_ratio=True)
+        assert resolve_hedge_ratio(None, hedge, agent_ratio=True) == 0.0
+
+    def test_resolve_hedge_ratio_rejects_a_bad_explicit_value(self) -> None:
+        hedge = HedgeConfig(enabled=True)
+        with pytest.raises(SimConfigError, match="explicit hedge ratio"):
+            resolve_hedge_ratio(1.5, hedge, agent_ratio=True)
+        with pytest.raises(SimConfigError, match="explicit hedge ratio"):
+            resolve_hedge_ratio(float("nan"), hedge, agent_ratio=False)
+
+    def test_agent_ratio_reads_the_ratio_values_from_toml(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        config = load_sim_config(repo_root / "configs" / "sim_eth_usdc_500_hedged.toml")
+        assert config.hedge.enabled is True
+        assert config.hedge.agent_ratio is True
+        assert tuple(config.hedge.ratios) == (0.0, 0.25, 0.5, 0.75, 1.0)
 
     @pytest.mark.parametrize(
         "fee_bps", [-1.0, -1e-9, float("nan"), float("inf"), float("-inf")]

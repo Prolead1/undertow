@@ -20,6 +20,7 @@ from undertow.sim.policies import (
     FULL_RANGE_WIDTH,
     CostAwareRebalancePolicy,
     FullRangeV2Policy,
+    HedgedHODLPolicy,
     HODLPolicy,
     PassiveNarrowPolicy,
     PassiveWidePolicy,
@@ -79,6 +80,7 @@ def _obs(**kwargs: float | int) -> _StubObservation:
 def _all_policies() -> list[object]:
     return [
         HODLPolicy(),
+        HedgedHODLPolicy(),
         PassiveNarrowPolicy(tick_spacing=TICK_SPACING),
         PassiveWidePolicy(tick_spacing=TICK_SPACING),
         FullRangeV2Policy(tick_spacing=TICK_SPACING),
@@ -111,6 +113,40 @@ def test_hodl_always_holds() -> None:
 
 def test_hodl_accepts_no_rng() -> None:
     assert HODLPolicy().act(_obs(), rng=None).is_hold()
+
+
+# ---------------------------------------------------------------------------
+# Hedged HODL (S20b)
+# ---------------------------------------------------------------------------
+
+
+def test_hedged_hodl_holds_with_a_constant_ratio() -> None:
+    policy = HedgedHODLPolicy(0.5)
+    for step in range(3):
+        action = policy.act(_obs(step_in_episode=step))
+        assert action.is_hold()
+        assert action.hedge_ratio == 0.5
+    assert policy.name == "hedged_hodl"
+    assert policy.hedge_ratio == 0.5
+
+
+def test_hedged_hodl_defaults_to_beta_matched() -> None:
+    assert HedgedHODLPolicy().hedge_ratio == 1.0
+    assert HedgedHODLPolicy().act(_obs()).hedge_ratio == 1.0
+
+
+def test_hedged_hodl_zero_ratio_is_unhedged() -> None:
+    action = HedgedHODLPolicy(0.0).act(_obs())
+    assert action.is_hold()
+    assert action.hedge_ratio == 0.0
+
+
+@pytest.mark.parametrize(
+    "ratio", [-0.01, 1.01, float("nan"), float("inf"), float("-inf")]
+)
+def test_hedged_hodl_rejects_bad_ratios(ratio: float) -> None:
+    with pytest.raises(ValueError, match="hedge_ratio"):
+        HedgedHODLPolicy(ratio)
 
 
 # ---------------------------------------------------------------------------

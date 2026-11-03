@@ -245,7 +245,15 @@ def rank(
 #: ``undertow.sim.cli.POLICY_NAMES``; the UI must not import sim at runtime).
 #: ``tests/ui/test_registry.py`` pins this against the sim list.
 _BASELINE_POLICY_NAMES: frozenset[str] = frozenset(
-    {"hodl", "passive_narrow", "passive_wide", "full_range_v2", "tau_reset", "cost_aware"}
+    {
+        "hodl",
+        "hedged_hodl",
+        "passive_narrow",
+        "passive_wide",
+        "full_range_v2",
+        "tau_reset",
+        "cost_aware",
+    }
 )
 
 

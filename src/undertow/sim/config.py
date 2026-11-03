@@ -100,9 +100,11 @@ class HedgeConfig:
     Disabled by default: with ``enabled=False`` the environment, reward and
     observation are exactly the LP-only ones (the hedge terms are zero).
 
-    ``ratios`` is the discrete hedge-ratio head S20b will expose; this task
-    only consumes ``ratio`` (the deterministic overlay's target fraction of the
-    LP's ETH delta).
+    ``ratio`` is the deterministic overlay's target fraction of the LP's ETH
+    delta (S20).  ``agent_ratio`` promotes the discrete ``ratios`` head to the
+    agent (S20b): the environment then exposes
+    ``MultiDiscrete([n_lp, len(ratios)])``, each decision re-hedges to
+    ``ratios[j] * LP ETH delta``, and ``ratio`` is unused.
     """
 
     enabled: bool = False
@@ -110,6 +112,8 @@ class HedgeConfig:
     funding_enabled: bool = True
     ratio: float = 1.0  # deterministic overlay target = ratio * LP ETH delta
     ratios: Sequence[float] = (0.0, 0.25, 0.5, 0.75, 1.0)  # S20b action head
+    #: S20b: expose ``ratios`` as an agent action head.  Requires ``enabled``.
+    agent_ratio: bool = False
 
     def __post_init__(self) -> None:
         fee_bps = float(self.fee_bps)
@@ -124,6 +128,52 @@ class HedgeConfig:
                 raise SimConfigError(
                     f"hedge.ratios entries must be in [0, 1], got {value!r}"
                 )
+        if self.agent_ratio:
+            if not self.enabled:
+                raise SimConfigError(
+                    "hedge.agent_ratio requires hedge.enabled = true; a disabled "
+                    "overlay has no hedge action to select"
+                )
+            if not self.ratios:
+                raise SimConfigError(
+                    "hedge.ratios must be non-empty when hedge.agent_ratio is true"
+                )
+            if not any(float(value) == 0.0 for value in self.ratios):
+                # Ratio-less actions (scripted baselines, a policy with no
+                # hedge opinion) are resolved as the unhedged entry; without a
+                # 0.0 value there is no representable "no hedge" choice and the
+                # environment and backtester could silently disagree.
+                raise SimConfigError(
+                    "hedge.ratios must contain 0.0 when hedge.agent_ratio is true "
+                    "(the unhedged entry used for policies without a hedge opinion)"
+                )
+
+
+def resolve_hedge_ratio(
+    explicit: float | None,
+    hedge: HedgeConfig,
+    *,
+    agent_ratio: bool,
+) -> float:
+    """Resolve a policy's hedge-ratio opinion to the target fraction (ADR-037).
+
+    An action that carries an explicit ratio always wins.  ``None`` means the
+    policy has no hedge opinion: the deterministic overlay (``agent_ratio=False``)
+    falls back to ``hedge.ratio``, while the joint head resolves it as unhedged
+    (``0.0``, guaranteed present in ``hedge.ratios`` by :class:`HedgeConfig`).
+    The environment, the backtester and the evaluation adapter all call this so
+    the three can never resolve the same action differently.
+    """
+    if explicit is not None:
+        value = float(explicit)
+        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            raise SimConfigError(
+                f"explicit hedge ratio must be in [0, 1], got {explicit!r}"
+            )
+        return value
+    if agent_ratio:
+        return 0.0
+    return float(hedge.ratio)
 
 
 @dataclass(frozen=True, slots=True)

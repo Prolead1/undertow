@@ -6,6 +6,7 @@ Implements `CONTRACTS.md` §1 exactly — no extensions.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal, NewType
@@ -45,6 +46,23 @@ class Action:
     action_type: Literal["hold", "rebalance"]
     center_offset: int = 0  # tick-spacings from current tick; ignored for hold
     width: int = 0  # tick-spacings per side; ignored for hold
+    #: S20b additive: target short as a fraction of the LP's ETH delta at the
+    #: decision mark.  ``None`` (the default) means the action expresses no
+    #: hedge opinion: the S20 deterministic overlay resolves it through
+    #: ``HedgeConfig.ratio`` and the S20b joint head as unhedged, while an
+    #: explicit float in ``[0, 1]`` is a policy-chosen ratio that always wins.
+    hedge_ratio: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.hedge_ratio is None:
+            return
+        ratio = float(self.hedge_ratio)
+        if not math.isfinite(ratio):
+            raise ValueError(f"hedge_ratio must be finite, got {self.hedge_ratio!r}")
+        if not 0.0 <= ratio <= 1.0:
+            raise ValueError(
+                f"hedge_ratio must be in [0, 1], got {self.hedge_ratio!r}"
+            )
 
     def is_hold(self) -> bool:
         return self.action_type == "hold"

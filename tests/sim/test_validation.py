@@ -47,7 +47,11 @@ from undertow.sim.env.observations import ObservationBuilder
 from undertow.sim.evaluate.protocol import action_to_index, observation_from_vector
 from undertow.sim.frictions import ProportionalSlippageModel, ReplayGasModel
 from undertow.sim.marketview import MarketView
-from undertow.sim.policies import HODLPolicy, TauResetPolicy
+from undertow.sim.policies import (
+    HedgedHODLPolicy,
+    HODLPolicy,
+    TauResetPolicy,
+)
 from undertow.sim.prices.replay import ReplayPriceProcess
 from undertow.sim.types import (
     LookAheadError,
@@ -965,6 +969,57 @@ class TestHedgeParity:
         # The fixture's overlay actually traded and accrued funding, so the
         # zero-drift assertion below is not vacuous.
         assert ledger.hedge_curve is not None
+        assert float(ledger.hedge_curve["hedge_fee"].sum()) < 0.0
+        assert float(ledger.hedge_curve["hedge_funding"].sum()) > 0.0
+
+        report = run_parity_check(
+            env,
+            ledger,
+            num_episodes=3,
+            seeds=(0, 1, 2),
+            policy=policy,
+        )
+        assert report.passed is True, report
+        for attr in (
+            "hedge_pnl_drift_mean",
+            "hedge_funding_drift_mean",
+            "hedge_fee_drift_mean",
+            "hedge_pnl_drift_max",
+            "hedge_funding_drift_max",
+            "hedge_fee_drift_max",
+        ):
+            assert abs(getattr(report, attr)) < report.tolerance, (attr, report)
+
+    def test_joint_head_parity_passes_with_a_constant_ratio(self) -> None:
+        """S20b: the agent-ratio head re-hedges like-for-like in both worlds."""
+        view = _parity_view(_REBALANCE_PRICES)
+        settlement = _PARITY_START + timedelta(minutes=30)
+        funding = pl.DataFrame(
+            {
+                "funding_time": [settlement],
+                "symbol": ["ETHUSDC"],
+                "funding_rate": [0.001],
+                "mark_price": [None],
+                "is_gap_filled": [False],
+            }
+        )
+        view = replace(view, funding=funding)
+        config = replace(
+            _parity_config(),
+            hedge=HedgeConfig(
+                enabled=True, agent_ratio=True, ratios=(0.0, 0.5, 1.0)
+            ),
+        )
+        policy = HedgedHODLPolicy(0.5)
+        env = _parity_env(
+            view, config, ReplayGasModel(view, config.gas), ProportionalSlippageModel()
+        )
+        ledger = run_backtest(policy, view, config)
+
+        # Non-vacuous: the joint backtester started flat and traded at the
+        # action's ratio, and the fixture accrued funding.
+        assert ledger.hedge_curve is not None
+        assert set(ledger.decision_log["hedge_ratio"].to_list()) == {0.5}
         assert float(ledger.hedge_curve["hedge_fee"].sum()) < 0.0
         assert float(ledger.hedge_curve["hedge_funding"].sum()) > 0.0
 

@@ -79,6 +79,12 @@ class Action:
     action_type: Literal["hold", "rebalance"]
     center_offset: int = 0       # tick-spacings from current tick; ignored for hold
     width: int = 0               # tick-spacings per side; ignored for hold
+    # S20b additive: target short as a fraction of the LP's ETH delta at the
+    # decision mark. ``None`` = no hedge opinion: the deterministic overlay
+    # (agent_ratio=false) resolves it through ``HedgeConfig.ratio``, the joint
+    # head (agent_ratio=true) as unhedged (the head's 0.0 entry). A float in
+    # [0, 1] is the policy-chosen ratio; non-finite/out-of-range values raise.
+    hedge_ratio: float | None = None
 
     def is_hold(self) -> bool: ...
     def lower_tick(self, current_tick: Tick, tick_spacing: TickSpacing) -> Tick: ...
@@ -164,6 +170,9 @@ class HedgeConfig:                       # S20 additive, disabled by default
     funding_enabled: bool = True
     ratio: float = 1.0                   # deterministic overlay target fraction
     ratios: Sequence[float] = (0.0, 0.25, 0.5, 0.75, 1.0)  # S20b action head
+    # S20b: expose ``ratios`` to the agent.  Requires enabled; ratios must be
+    # non-empty and contain 0.0 (the unhedged entry ratio-less actions use).
+    agent_ratio: bool = False
 
 @dataclass(frozen=True, slots=True)
 class SplitConfig:
@@ -852,6 +861,11 @@ class HODLPolicy:
     """Buy-and-hold the initial token mix. Always returns hold."""
     ...
 
+class HedgedHODLPolicy:                                  # S20b additive
+    """Hold the initial basket and short a constant fraction of its ETH delta
+    (the beta-matched benchmark). Returns hold with ``hedge_ratio=h``."""
+    def __init__(self, hedge_ratio: float = 1.0) -> None: ...
+
 class PassiveNarrowPolicy:
     """Deploy at ±5% around entry price, never rebalance. Always returns hold after
     initial deployment."""
@@ -965,7 +979,17 @@ class LpEnvironment(gym.Env):
 
     Observation space: Box(shape = Observation.to_vector().shape, dtype=float64).
     Action space: Discrete(n_actions), where n_actions = 1 (hold) + |center_offsets| * |widths|.
+    With HedgeConfig.agent_ratio (S20b, requires enabled) the space is
+    MultiDiscrete([n_actions, len(ratios)]): the LP head keeps its index order
+    (so hold_bias still targets logit 0) and the second component selects the
+    step's target hedge ratio ``ratios[j]``; a bare int remains accepted and
+    means the unhedged entry.
     """
+
+    # S20b helpers
+    agent_ratio: bool          # True when the ratio head is part of the space
+    hedge_ratios: tuple[float, ...]
+    def action_for_index(self, action_idx: int | Sequence[int] | np.ndarray) -> Action: ...
 
     def __init__(self, market_view: MarketView, pool_engine: PoolEngine,
                  price_process: PriceProcess, gas_model: GasModel,
@@ -974,7 +998,7 @@ class LpEnvironment(gym.Env):
     def reset(self, *, seed: int | None = None,
               options: dict | None = None) -> tuple[np.ndarray, dict]: ...
 
-    def step(self, action_idx: int) -> tuple[np.ndarray, float, bool, bool, dict]:
+    def step(self, action_idx: int | Sequence[int] | np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]:
         """Returns (observation, reward, terminated, truncated, info).
         info carries the full RewardBreakdown as a dict.
 
@@ -994,7 +1018,13 @@ class LpEnvironment(gym.Env):
         stream's nullable ``mark_price``), and reports the step's
         ``hedge_pnl``/``hedge_funding``/``hedge_fee`` in the breakdown.  With
         the feature disabled every term and observation dimension is the
-        LP-only value.
+        LP-only value.  S20b agent-ratio mode (``agent_ratio=true``) starts
+        the episode flat and each step's target is the action's ratio
+        (unhedged when the action carries none); ``info["hedge_ratio"]``
+        carries the resolved ratio and ``info["action_index"]`` stays the LP
+        head index; at ``reset`` it is ``None`` under the joint head (flat,
+        no ratio chosen yet) and the config ratio under the deterministic
+        overlay (the account is already short it).
 
         ``info`` carries three breakdowns: ``reward_breakdown`` (normalized),
         ``reward_breakdown_raw`` (USDC, ablation-gated) and
@@ -1026,6 +1056,11 @@ class BacktestLedger:
     split: str                            # "train" or "eval"
     # S20 additive (defaulted): per-event hedge series
     # (step, hedge_pnl, hedge_funding, hedge_fee); None when the overlay is off.
+    # S20/S20b additive decision-log columns (only when the overlay is enabled):
+    # hedge_short_size/hedge_trade/hedge_fee (S20) and hedge_ratio (S20b).
+    # ``hedge_ratio`` is the target the decision re-hedged to, resolved by
+    # ``config.resolve_hedge_ratio`` (explicit action value wins; None -> the
+    # config ratio under the deterministic overlay, 0.0/unhedged under the head).
     hedge_curve: pl.DataFrame | None = None
 
 @dataclass(frozen=True, slots=True)
@@ -1050,7 +1085,14 @@ def run_backtest(policy: Policy, market_view: MarketView,
     top-level ``FeeGrowthReplay`` facade (ADR-013): boundary-crossing swaps and
     pre-existing ``feeGrowthOutside`` are handled exactly, and the replay's
     provenance is recorded on ``BacktestLedger.fee_growth_exact``. The policy is
-    never updated inside the backtester."""
+    never updated inside the backtester.
+
+    S20b: with ``HedgeConfig.agent_ratio`` the overlay starts flat and each
+    decision re-hedges to the action's ``hedge_ratio`` (unhedged for a
+    ratio-less action), so a joint policy is scored like-for-like with the
+    simulator.  ``BacktestLedger.equity_curve`` remains the LP leg only
+    (CONTRACTS §13); the evaluation runner adds the cumulative hedge flows to
+    report joint metrics."""
     ...
 
 def summarize_backtest(ledger: BacktestLedger) -> BacktestResult: ...

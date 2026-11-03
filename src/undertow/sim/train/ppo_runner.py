@@ -250,9 +250,16 @@ def _record_rollouts_pass(
             done = False
             for _ in range(_MAX_ROLLOUT_STEPS):
                 action, _state = model.predict(observation, deterministic=True)
-                action_index = int(np.asarray(action).reshape(-1)[0])
+                # A Discrete model yields a scalar, the S20b joint head a
+                # ``(lp_index, ratio_index)`` vector; pass whichever the env's
+                # action space expects (a bare int would silently drop the
+                # ratio head).
+                raw = np.asarray(action).reshape(-1)
+                action_input: int | np.ndarray = (
+                    int(raw[0]) if raw.size == 1 else raw
+                )
                 observation, _reward, terminated, truncated, info = env.step(
-                    action_index
+                    action_input
                 )
                 infos.append(info)
                 done = bool(terminated or truncated)

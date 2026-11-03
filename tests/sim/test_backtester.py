@@ -39,7 +39,13 @@ from undertow.sim.core.position import calc_sqrt_price_a, initial_deposit
 from undertow.sim.env.lp_env import LpEnvironment
 from undertow.sim.frictions import GasCostCalculator, ProportionalSlippageModel
 from undertow.sim.marketview import MarketView
-from undertow.sim.policies import HODLPolicy, PassiveNarrowPolicy, Policy, TauResetPolicy
+from undertow.sim.policies import (
+    HedgedHODLPolicy,
+    HODLPolicy,
+    PassiveNarrowPolicy,
+    Policy,
+    TauResetPolicy,
+)
 from undertow.sim.prices.replay import ReplayPriceProcess
 from undertow.sim.types import Action, BacktestError, Tick, TickSpacing
 
@@ -314,6 +320,74 @@ def test_enabled_hedge_records_curve_and_decision_columns() -> None:
         "net",
     }
     assert float(hedge["hedge_pnl"].sum()) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_agent_ratio_head_matches_the_deterministic_ratio() -> None:
+    """S20b: a constant joint head reproduces the S20 overlay exactly.
+
+    The joint backtester starts flat and the deterministic one pre-trades at
+    the first event; at that same event price and LP delta the two trades
+    coincide, so the hedge curves must be identical trade for trade.
+    """
+    view = _flat_view()
+    joint = run_backtest(
+        HedgedHODLPolicy(0.5),
+        view,
+        SimConfig(
+            hedge=HedgeConfig(
+                enabled=True, agent_ratio=True, ratios=(0.0, 0.5, 1.0)
+            )
+        ),
+    )
+    deterministic = run_backtest(
+        HODLPolicy(),
+        view,
+        SimConfig(hedge=HedgeConfig(enabled=True, ratio=0.5)),
+    )
+    assert joint.hedge_curve is not None
+    assert deterministic.hedge_curve is not None
+    assert joint.hedge_curve.equals(deterministic.hedge_curve)
+    # Every decision re-hedges to the action's ratio (0.5).
+    assert set(joint.decision_log["hedge_ratio"].to_list()) == {0.5}
+    # The frozen LP decomposition still has no hedge keys.
+    assert set(joint.pnl_decomposition) == {
+        "total_fees",
+        "total_gas",
+        "total_slippage",
+        "total_il",
+        "net",
+    }
+
+
+def test_explicit_action_ratio_wins_over_the_deterministic_config() -> None:
+    """The shared resolver keeps env/backtester/adapter semantics aligned."""
+    view = _flat_view()
+    ledger = run_backtest(
+        HedgedHODLPolicy(1.0),
+        view,
+        SimConfig(hedge=HedgeConfig(enabled=True, ratio=0.0)),
+    )
+    assert ledger.hedge_curve is not None
+    assert set(ledger.decision_log["hedge_ratio"].to_list()) == {1.0}
+    assert float(ledger.hedge_curve["hedge_fee"].sum()) < 0.0
+    assert float(ledger.hedge_curve["hedge_pnl"].sum()) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_agent_ratio_head_resolves_a_ratio_less_policy_to_unhedged() -> None:
+    """Scripted baselines stay honest unhedged comparators under a joint config."""
+    view = _flat_view()
+    ledger = run_backtest(
+        HODLPolicy(),
+        view,
+        SimConfig(hedge=HedgeConfig(enabled=True, agent_ratio=True)),
+    )
+    assert ledger.hedge_curve is not None
+    assert set(ledger.decision_log["hedge_ratio"].to_list()) == {0.0}
+    assert ledger.decision_log["hedge_short_size"].to_list() == [
+        0.0
+    ] * ledger.decision_log.height
+    assert float(ledger.hedge_curve["hedge_fee"].sum()) == 0.0
+    assert float(ledger.hedge_curve["hedge_pnl"].sum()) == 0.0
 
 
 def test_hedge_observation_features_are_gated_by_enabled() -> None:

@@ -72,7 +72,7 @@ from undertow.sim.backtest.ledger import (
     git_commit,
 )
 from undertow.sim.coerce import as_int
-from undertow.sim.config import SimConfig
+from undertow.sim.config import SimConfig, resolve_hedge_ratio
 from undertow.sim.core.position import (
     DEFAULT_DEC0,
     DEFAULT_DEC1,
@@ -411,6 +411,7 @@ class _Replay:
         # feature is disabled: the decision log, hedge series and ledger stay
         # byte-identical to the LP-only path.
         self.hedge_enabled: bool = bool(config.hedge.enabled)
+        self.agent_ratio: bool = bool(config.hedge.agent_ratio)
         self.hedge_ratio: float = float(config.hedge.ratio)
         self.hedge: HedgeAccount | None = (
             HedgeAccount(
@@ -469,9 +470,11 @@ class _Replay:
             "fees_collected": [],
         }
         if self.hedge_enabled:
-            # Additive decision-log fields (S20): the hedge trade executed at
-            # each decision.  Absent entirely when the feature is disabled, so
-            # the LP-only artifact schema is unchanged.
+            # Additive decision-log fields (S20/S20b): the hedge trade executed
+            # at each decision and the target ratio it re-hedged to.  Absent
+            # entirely when the feature is disabled, so the LP-only artifact
+            # schema is unchanged.
+            self.decisions["hedge_ratio"] = []
             self.decisions["hedge_short_size"] = []
             self.decisions["hedge_trade"] = []
             self.decisions["hedge_fee"] = []
@@ -943,7 +946,10 @@ def run_backtest(
             run.initial_entry_sqrt = sqrt
             run.initial_entry_price = price
             run.equity = run.capital
-            if run.hedge_enabled:
+            if run.hedge_enabled and not run.agent_ratio:
+                # Deterministic overlay only (S20): with the agent-ratio head
+                # the account starts flat and the first decision establishes
+                # the short, mirroring ``LpEnvironment.reset`` (S20b).
                 run._init_hedge(initial_position, sqrt, price, tape.time[i])
             # Register the synthetic position's boundaries so a later real mint
             # at the same tick cannot re-seed feeGrowthOutside (ADR-013).
@@ -1093,11 +1099,21 @@ def run_backtest(
                 run.decisions["slippage_paid"].append(0.0)
                 run.decisions["fees_collected"].append(0.0)
 
-            # S20: re-hedge the deterministic overlay at the decision state,
-            # after the LP action, and record the trade on the decision row.
+            # S20/S20b: re-hedge at the decision state, after the LP action,
+            # and record the trade on the decision row.  The action may carry
+            # the policy's own ratio; ``None`` keeps the S20 deterministic
+            # overlay resolved through the config.
             if run.hedge_enabled:
                 assert run.hedge is not None
-                target = run.hedge_ratio * position.amount1(sqrt)
+                # The shared resolver keeps the deterministic overlay (config
+                # ratio) and the joint head (unhedged) consistent with the
+                # environment and ``action_to_index``.
+                ratio = resolve_hedge_ratio(
+                    action.hedge_ratio,
+                    run.config.hedge,
+                    agent_ratio=run.agent_ratio,
+                )
+                target = ratio * position.amount1(sqrt)
                 hedge_fee = run.hedge.trade_to(target, price)
                 hedge_fee_event += -hedge_fee
                 traded = (
@@ -1105,6 +1121,7 @@ def run_backtest(
                     if run.hedge.last_trade is not None
                     else 0.0
                 )
+                run.decisions["hedge_ratio"].append(ratio)
                 run.decisions["hedge_short_size"].append(run.hedge.short_size)
                 # The first decision carries the initial deployment trade too,
                 # matching the simulator's reset + step 0.
@@ -1162,6 +1179,7 @@ def run_backtest(
         # disabled run's decision log is byte-identical to the LP-only path.
         decision_log = decision_log.cast(
             {
+                "hedge_ratio": pl.Float64,
                 "hedge_short_size": pl.Float64,
                 "hedge_trade": pl.Float64,
                 "hedge_fee": pl.Float64,

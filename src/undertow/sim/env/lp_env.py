@@ -17,6 +17,9 @@ MDP shape
 * **Action**: ``Discrete(1 + |center_offsets| * |widths|)``; index ``0`` is
   ``hold`` and every subsequent index maps to a ``rebalance`` action on the
   ``ActionGridConfig`` grid (ADR-011: only the agent head uses this grid).
+  With ``HedgeConfig.agent_ratio`` (S20b) the space is
+  ``MultiDiscrete([n_lp, len(ratios)])``: the LP head keeps the same index
+  order and the second component selects the step's target hedge ratio.
 
 Replay vs calibrated (ADR-009/ADR-010)
 --------------------------------------
@@ -54,7 +57,7 @@ same window seed.
 from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import asdict, replace
 from datetime import datetime
 from typing import Any, cast
@@ -65,7 +68,7 @@ import polars as pl
 
 from undertow.data import Q96, sqrt_price_x96_to_tick
 from undertow.sim.coerce import as_float, as_int
-from undertow.sim.config import SimConfig
+from undertow.sim.config import SimConfig, resolve_hedge_ratio
 from undertow.sim.core.pool import PoolEngine, PoolState, TickState
 from undertow.sim.core.position import DEFAULT_DEC0, DEFAULT_DEC1, Position, initial_deposit
 from undertow.sim.env.observations import (
@@ -174,7 +177,19 @@ class LpEnvironment(gym.Env):
                         width=width,
                     )
                 )
-        self.action_space = gym.spaces.Discrete(len(self._action_lookup))
+        # S20b: the joint (LP, hedge-ratio) head.  The LP index order is
+        # unchanged, so the first MultiDiscrete component (and ``hold_bias``'s
+        # logit 0) still means exactly the LP-only action space.
+        self._hedge_ratios: tuple[float, ...] = tuple(
+            float(value) for value in config.hedge.ratios
+        )
+        self._agent_ratio: bool = bool(config.hedge.enabled and config.hedge.agent_ratio)
+        if self._agent_ratio:
+            self.action_space = gym.spaces.MultiDiscrete(
+                [len(self._action_lookup), len(self._hedge_ratios)]
+            )
+        else:
+            self.action_space = gym.spaces.Discrete(len(self._action_lookup))
 
         self._builder = ObservationBuilder(market_view)
         self._capture_pool_base()
@@ -490,8 +505,18 @@ class LpEnvironment(gym.Env):
     # ------------------------------------------------------------------
     @property
     def n_actions(self) -> int:
-        """Size of the discrete action space."""
+        """Size of the LP action head (independent of the hedge-ratio head)."""
         return len(self._action_lookup)
+
+    @property
+    def agent_ratio(self) -> bool:
+        """True when the hedge ratio is part of the agent's action space (S20b)."""
+        return self._agent_ratio
+
+    @property
+    def hedge_ratios(self) -> tuple[float, ...]:
+        """The discrete hedge-ratio head's values (empty-irrelevant when off)."""
+        return self._hedge_ratios
 
     @property
     def episode_length(self) -> int:
@@ -513,15 +538,50 @@ class LpEnvironment(gym.Env):
         """True when the active price process replays a fixed bar window."""
         return isinstance(self.price_process, ReplayPriceProcess)
 
-    def action_for_index(self, action_idx: int) -> Action:
-        """Map a discrete action index to its :class:`Action` (ADR-011)."""
-        idx = int(action_idx)
+    def action_for_index(self, action_idx: int | Sequence[int] | np.ndarray) -> Action:
+        """Map an environment action to its :class:`Action` (ADR-011, S20b).
+
+        A bare int is always the LP head index.  When the hedge-ratio head is
+        active (``HedgeConfig.agent_ratio``) the environment's action space is
+        ``MultiDiscrete([n_lp, len(ratios)])`` and a two-element sequence is
+        accepted as ``(lp_index, ratio_index)``; the returned action carries the
+        resolved :attr:`Action.hedge_ratio`.  A bare int in agent mode keeps
+        ``hedge_ratio=None`` (no hedge opinion), which the joint overlay
+        resolves as unhedged -- the same convention as the backtester and
+        :func:`~undertow.sim.evaluate.protocol.action_to_index`.
+        """
+        ratio: float | None = None
+        if isinstance(action_idx, (int, np.integer)):
+            idx = int(action_idx)
+        elif self._agent_ratio:
+            values = np.asarray(action_idx).reshape(-1)
+            if values.size != 2:
+                raise EnvError(
+                    f"agent-ratio action must be (lp_index, ratio_index), got "
+                    f"{action_idx!r}"
+                )
+            idx = int(values[0])
+            ratio_idx = int(values[1])
+            if ratio_idx < 0 or ratio_idx >= len(self._hedge_ratios):
+                raise EnvError(
+                    f"hedge-ratio index {ratio_idx} is outside the head "
+                    f"[0, {len(self._hedge_ratios)})"
+                )
+            ratio = self._hedge_ratios[ratio_idx]
+        else:
+            raise EnvError(
+                f"action index must be an int for the LP-only action space, got "
+                f"{action_idx!r}"
+            )
         if idx < 0 or idx >= len(self._action_lookup):
             raise EnvError(
                 f"action index {action_idx} is outside the action space "
                 f"[0, {len(self._action_lookup)})"
             )
-        return self._action_lookup[idx]
+        action = self._action_lookup[idx]
+        if ratio is None:
+            return action
+        return replace(action, hedge_ratio=ratio)
 
     # ------------------------------------------------------------------
     # Gymnasium API
@@ -651,7 +711,11 @@ class LpEnvironment(gym.Env):
         self._hedge_pending_fee = 0.0
         self._hedge_last_funding_time = entry_time
         self._hedge_equity = 0.0
-        if self.config.hedge.enabled:
+        if self.config.hedge.enabled and not self._agent_ratio:
+            # Deterministic overlay (S20): the short is established at reset.
+            # With the agent-ratio head (S20b) the account starts flat -- the
+            # first decision chooses the ratio, so pre-trading the configured
+            # ratio would only charge a fee for a position the agent may unwind.
             target_short = float(self.config.hedge.ratio) * self._position.amount1(
                 entry_sqrt
             )
@@ -678,11 +742,18 @@ class LpEnvironment(gym.Env):
             economics=RewardBreakdown(equity=self._equity),
             action=self._action_lookup[0],
             action_index=0,
+            # The reset account is flat under the joint head (no ratio chosen
+            # yet) and short the config ratio under the deterministic overlay.
+            hedge_ratio=(
+                float(self.config.hedge.ratio)
+                if self.config.hedge.enabled and not self._agent_ratio
+                else None
+            ),
         )
         return observation.to_vector(), info
 
     def step(
-        self, action_idx: int
+        self, action_idx: int | Sequence[int] | np.ndarray
     ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         """Advance one decision step, executing the action at the decision state.
 
@@ -710,6 +781,12 @@ class LpEnvironment(gym.Env):
         if self._done:
             raise EnvError("step() called after the episode ended; call reset()")
         action = self.action_for_index(action_idx)
+        # The rollout/info ``action_index`` stays the LP head index: the frozen
+        # §2.1 schema and the UI select it by name and must keep working.
+        if isinstance(action_idx, (int, np.integer)):
+            lp_index = int(action_idx)
+        else:
+            lp_index = int(np.asarray(action_idx).reshape(-1)[0])
 
         # 1. Capture the decision state (ADR-031).  ``_last_tape_row``,
         # ``_last_mark_price`` and ``_last_il_total`` describe the state the
@@ -744,12 +821,19 @@ class LpEnvironment(gym.Env):
         # reset trade's fee (if any) is folded in so the first step's reward
         # accounts for it and episode equity reconciles.
         hedge_fee_magnitude = 0.0
+        hedge_target_ratio: float | None = None
         if self.config.hedge.enabled:
             assert self._hedge is not None
             assert self._position is not None, "reset deploys a position before any step"
-            target_short = float(self.config.hedge.ratio) * self._position.amount1(
-                decision_sqrt
+            # ``None`` is the policy's "no hedge opinion": the shared resolver
+            # keeps the deterministic overlay (config ratio) and the joint head
+            # (unhedged) consistent with the backtester and ``action_to_index``.
+            hedge_target_ratio = resolve_hedge_ratio(
+                action.hedge_ratio,
+                self.config.hedge,
+                agent_ratio=self._agent_ratio,
             )
+            target_short = hedge_target_ratio * self._position.amount1(decision_sqrt)
             hedge_fee_magnitude = self._hedge.trade_to(target_short, decision_price)
 
         # 3. Advance the market one interval; its events accrue to the
@@ -845,7 +929,8 @@ class LpEnvironment(gym.Env):
             raw=raw_breakdown,
             economics=economics_breakdown,
             action=action,
-            action_index=int(action_idx),
+            action_index=lp_index,
+            hedge_ratio=hedge_target_ratio,
         )
         if rebalance_rejected:
             # The requested rebalance did not execute (it could not pay for the
@@ -1295,6 +1380,7 @@ class LpEnvironment(gym.Env):
         economics: RewardBreakdown,
         action: Action,
         action_index: int,
+        hedge_ratio: float | None,
     ) -> dict[str, Any]:
         """Assemble the step ``info`` dict.
 
@@ -1316,6 +1402,9 @@ class LpEnvironment(gym.Env):
             "reward_breakdown_economics": asdict(economics),
             "action": action,
             "action_type": action.action_type,
+            # S20b: the ratio the step actually re-hedged to (None when the
+            # overlay is off or the joint head has not chosen yet).
+            "hedge_ratio": hedge_ratio,
             "step_in_episode": self._step_count,
             "equity": self._equity,
             "hedge_equity": float(self._hedge_equity),
