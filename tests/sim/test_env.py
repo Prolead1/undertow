@@ -3331,3 +3331,220 @@ class TestDisabledGoldenGuard:
             # No ablation is configured, so the ungated economics view is
             # field-for-field the same as the gated raw breakdown.
             assert economics == raw
+
+
+# ---------------------------------------------------------------------------
+# S21 — trailing CVaR risk penalty
+# ---------------------------------------------------------------------------
+class TestPnlCvar:
+    """`_pnl_cvar` and its `compute_reward` integration on a hand-built history."""
+
+    def _env(
+        self,
+        tiny_market_view: MarketView,
+        gas_model: object,
+        slippage_model: object,
+        reward: RewardConfig | None = None,
+    ) -> LpEnvironment:
+        env = _hedge_env(
+            _flat_reference_view(tiny_market_view),
+            _SequencePriceProcess([3004.0] * 10),
+            gas_model,
+            slippage_model,
+            enabled=False,
+        )
+        if reward is not None:
+            env.config = replace(env.config, reward=reward)
+        return env
+
+    def test_exact_value_on_a_hand_computed_history(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        # deltas = [10, -5, 10, -15]; the 5 % quantile interpolates to -13.5,
+        # so the tail is the single -15 loss -> a +15 positive magnitude.
+        env = self._env(
+            tiny_market_view,
+            mock_gas_model,
+            mock_slippage_model,
+            RewardConfig(
+                risk_penalty_enabled=True,
+                risk_penalty_mode="cvar",
+                risk_penalty_lambda=0.1,
+                risk_cvar_alpha=0.95,
+                risk_rolling_window_steps=144,
+            ),
+        )
+        env._joint_equity_history = [100.0, 110.0, 105.0, 115.0, 100.0]
+        assert env._pnl_cvar() == 15.0
+
+    def test_exact_value_respects_the_rolling_window(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        # window=2 keeps the last three equities [105, 115, 100] -> deltas
+        # [10, -15]; 5 % quantile = -11.25, tail = [-15] -> 15.0.
+        env = self._env(
+            tiny_market_view,
+            mock_gas_model,
+            mock_slippage_model,
+            RewardConfig(
+                risk_penalty_enabled=True,
+                risk_penalty_mode="cvar",
+                risk_penalty_lambda=0.1,
+                risk_cvar_alpha=0.95,
+                risk_rolling_window_steps=2,
+            ),
+        )
+        env._joint_equity_history = [100.0, 110.0, 105.0, 115.0, 100.0]
+        assert env._pnl_cvar() == 15.0
+
+    def test_window_smaller_than_two_is_zero(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        env = self._env(
+            tiny_market_view,
+            mock_gas_model,
+            mock_slippage_model,
+            RewardConfig(
+                risk_penalty_enabled=True,
+                risk_penalty_mode="cvar",
+                risk_rolling_window_steps=1,
+            ),
+        )
+        env._joint_equity_history = [100.0, 90.0, 80.0]
+        assert env._pnl_cvar() == 0.0
+
+    def test_gain_only_tail_is_not_a_negative_loss(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        # A monotone rise has no loss anywhere, so the positive loss magnitude
+        # is clamped to zero (a negative magnitude would *reward* taking risk).
+        env = self._env(
+            tiny_market_view,
+            mock_gas_model,
+            mock_slippage_model,
+            RewardConfig(
+                risk_penalty_enabled=True,
+                risk_penalty_mode="cvar",
+                risk_rolling_window_steps=144,
+            ),
+        )
+        env._joint_equity_history = [100.0, 101.0, 102.0, 103.0]
+        assert env._pnl_cvar() == 0.0
+
+    def test_cvar_reads_the_joint_equity_not_the_lp_leg(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """ADR-040 Critical regression: the hedge ratio must move the penalty.
+
+        Two deterministic overlays (ratio 0 and ratio 1) run the same falling
+        price path; their LP-only histories are identical, so the CVaR term may
+        only differ because it reads the joint (LP + hedge) equity path.
+        """
+        from undertow.sim.metrics import cvar_of_equity_changes
+
+        view = _flat_reference_view(tiny_market_view)
+        prices = [3004.0, 2920.0, 2960.0, 2860.0, 2800.0, 2830.0]
+        reward = RewardConfig(
+            risk_penalty_enabled=True,
+            risk_penalty_mode="cvar",
+            risk_penalty_lambda=0.1,
+            risk_cvar_alpha=0.95,
+            risk_rolling_window_steps=144,
+        )
+        envs = {}
+        for ratio in (0.0, 1.0):
+            env = _hedge_env(
+                view,
+                _SequencePriceProcess(prices),
+                mock_gas_model,
+                mock_slippage_model,
+                enabled=True,
+                ratio=ratio,
+            )
+            env.config = replace(env.config, reward=reward)
+            env.reset(seed=0)
+            for _ in prices:
+                env.step(0)
+            envs[ratio] = env
+
+        lp_only, joint = envs[0.0], envs[1.0]
+        # The LP-only histories are identical (same policy, same path).
+        assert lp_only._pnl_history == joint._pnl_history
+        # The unhedged joint path is the LP path, so its CVaR is the LP-term
+        # value; the fully hedged path has a different (smaller) tail.
+        expected_lp = max(
+            0.0, -cvar_of_equity_changes(pl.Series(lp_only._pnl_history), 0.95)
+        )
+        assert lp_only._pnl_cvar() == pytest.approx(expected_lp)
+        # The falling path makes the short profitable, so the joint tail is
+        # strictly smaller (direction, not just inequality).
+        assert joint._pnl_cvar() < lp_only._pnl_cvar()
+
+    def test_cvar_mode_penalizes_the_trailing_cvar(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        lam = 0.1
+        env = self._env(
+            tiny_market_view,
+            mock_gas_model,
+            mock_slippage_model,
+            RewardConfig(
+                risk_penalty_enabled=True,
+                risk_penalty_mode="cvar",
+                risk_penalty_lambda=lam,
+                risk_rolling_window_steps=144,
+            ),
+        )
+        env.reset(seed=0)
+        for _ in range(3):
+            env.step(0)
+        _obs, _reward, _terminated, _truncated, info = env.step(0)
+        risk = info["reward_breakdown_raw"]["risk_penalty"]
+        assert risk == pytest.approx(-lam * env._pnl_cvar())
+        assert risk <= 0.0
+
+    def test_volatility_mode_never_computes_the_cvar(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        env = self._env(
+            tiny_market_view,
+            mock_gas_model,
+            mock_slippage_model,
+            RewardConfig(
+                risk_penalty_enabled=True,
+                risk_penalty_mode="volatility",
+                risk_penalty_lambda=0.1,
+            ),
+        )
+        monkeypatch.setattr(
+            env,
+            "_pnl_cvar",
+            lambda: pytest.fail("cvar must not be computed in volatility mode"),
+        )
+        env.reset(seed=0)
+        _obs, _reward, _terminated, _truncated, info = env.step(0)
+        # The historical volatility term is still what the reward consumes.
+        expected = -0.1 * env._pnl_volatility()
+        assert info["reward_breakdown_raw"]["risk_penalty"] == pytest.approx(expected)

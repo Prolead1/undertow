@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
 import shutil
 import types
@@ -19,6 +20,7 @@ from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
+import polars as pl
 import pytest
 import torch
 from gymnasium import spaces
@@ -30,6 +32,11 @@ from undertow.sim.config import SimConfig, TrainingConfig
 from undertow.sim.core.pool import PoolEngine, PoolState, TickState
 from undertow.sim.core.position import calc_sqrt_price_a
 from undertow.sim.env.lp_env import LpEnvironment
+from undertow.sim.metrics import (
+    cvar_of_equity_changes,
+    periods_per_year_from_step_minutes,
+    sharpe_ratio,
+)
 from undertow.sim.prices.replay import ReplayPriceProcess
 from undertow.sim.train import (
     RunManifest,
@@ -39,10 +46,17 @@ from undertow.sim.train import (
 )
 from undertow.sim.train.ppo_runner import (
     _apply_hold_bias,
+    _checkpoint_step_key,
     _derive_rollout,
+    _select_validation_checkpoint,
     _train_single_seed,
+    _validation_score,
 )
-from undertow.sim.train.runs import compute_config_hash, library_versions
+from undertow.sim.train.runs import (
+    _manifest_rank_key,
+    compute_config_hash,
+    library_versions,
+)
 from undertow.sim.types import SimConfigError, Tick
 
 #: Optimal arm index and reward in the deterministic bandit below.
@@ -876,3 +890,269 @@ class TestThreadPinning:
 
         _pin_torch_threads()
         assert torch.get_num_threads() == 1
+
+
+
+# ---------------------------------------------------------------------------
+# S21 — validation-based checkpoint selection (ADR-040)
+# ---------------------------------------------------------------------------
+class TestValidationSelection:
+    def _selection_config(
+        self,
+        *,
+        metric: str,
+        total_timesteps: int = 128,
+        validation_days: int = 1,
+    ) -> SimConfig:
+        base = _training_config(
+            total_timesteps=total_timesteps,
+            log_freq_steps=64,
+            checkpoint_freq_steps=64,
+        )
+        return dataclasses.replace(
+            base,
+            training=dataclasses.replace(
+                base.training,
+                selection_metric=metric,  # type: ignore[arg-type]
+                validation_days=validation_days,
+            ),
+        )
+
+    def test_select_checkpoint_picks_the_highest_score(self) -> None:
+        from pathlib import Path as _Path
+
+        paths = [_Path("a.zip"), _Path("b.zip"), _Path("c.zip")]
+        assert _select_validation_checkpoint(paths, [0.1, 0.3, 0.2]) == (paths[1], 0.3)
+        # Ties keep the first candidate (deterministic given sorted input).
+        assert _select_validation_checkpoint(paths, [0.5, 0.5, 0.2])[0] == paths[0]
+
+    def test_select_checkpoint_validates_its_inputs(self) -> None:
+        from pathlib import Path as _Path
+
+        with pytest.raises(SimConfigError, match="no validation"):
+            _select_validation_checkpoint([], [])
+        with pytest.raises(SimConfigError, match="candidates"):
+            _select_validation_checkpoint([_Path("a.zip")], [1.0, 2.0])
+
+    def test_checkpoint_step_key_orders_numerically(self) -> None:
+        """S21: the tie-break order is step order, not lexicographic order."""
+        names = [
+            Path("x_1000000_steps.zip"),
+            Path("x_10000_steps.zip"),
+            Path("x_100000_steps.zip"),
+        ]
+        assert sorted(names, key=_checkpoint_step_key) == [
+            Path("x_10000_steps.zip"),
+            Path("x_100000_steps.zip"),
+            Path("x_1000000_steps.zip"),
+        ]
+        # A checkpoint without a step suffix (the canonical final) sorts first.
+        assert _checkpoint_step_key(Path("x.zip")) == (-1, "x.zip")
+
+    def test_manifest_rank_key_direction_and_missing_value(self) -> None:
+        def manifest(**overrides: object) -> RunManifest:
+            defaults: dict[str, object] = {
+                "run_id": "r",
+                "seed": 0,
+                "config_hash": "h",
+                "git_commit": "c",
+                "algorithm": "ppo",
+                "total_timesteps": 1,
+                "best_reward": 1.0,
+                "checkpoint_path": Path("x.zip"),
+            }
+            defaults.update(overrides)
+            return RunManifest(**defaults)  # type: ignore[arg-type]
+
+        # Default reward path ranks on best_reward, ignoring selection_value.
+        assert _manifest_rank_key(manifest(selection_value=99.0)) == 1.0
+        # Validation path ranks on selection_value.
+        assert _manifest_rank_key(
+            manifest(selection_metric="val_sharpe", selection_value=0.75)
+        ) == 0.75
+        # val_cvar is negative-for-loss; the largest value is the smallest loss.
+        assert _manifest_rank_key(
+            manifest(selection_metric="val_cvar", selection_value=-0.02)
+        ) > _manifest_rank_key(
+            manifest(selection_metric="val_cvar", selection_value=-0.10)
+        )
+        with pytest.raises(SimConfigError, match="selection_value"):
+            _manifest_rank_key(manifest(selection_metric="val_sharpe"))
+
+    @pytest.mark.slow
+    def test_selection_metric_requires_a_validation_factory(self, tmp_path: Path) -> None:
+        config = self._selection_config(metric="val_sharpe")
+        with pytest.raises(SimConfigError, match="validation_env_fn"):
+            train_single_seed(_BanditEnv, config, seed=0, log_dir=tmp_path)
+
+    @pytest.mark.slow
+    def test_train_single_seed_promotes_the_selected_checkpoint(
+        self,
+        tiny_market_view: object,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Known-score selection: the promoted file is the chosen checkpoint."""
+        import undertow.sim.train.ppo_runner as runner
+
+        config = self._selection_config(metric="val_sharpe")
+        env_fn = _CountingFactory(
+            _real_env_factory(tiny_market_view, mock_gas_model, mock_slippage_model)
+        )
+        validation_fn = _real_env_factory(
+            tiny_market_view, mock_gas_model, mock_slippage_model
+        )
+        # A stale checkpoint from an earlier run must not compete.
+        checkpoint_dir = tmp_path / "checkpoints"
+        checkpoint_dir.mkdir(parents=True)
+        (checkpoint_dir / "stale.zip").write_bytes(b"stale")
+
+        calls: list[int] = []
+
+        def fake_score(model: object, env_fn: object, config: object) -> float:
+            # Descending scores make the first (sorted, periodic) candidate win.
+            score = 10.0 - len(calls)
+            calls.append(score)
+            return score
+
+        monkeypatch.setattr(runner, "_validation_score", fake_score)
+        manifest = train_single_seed(
+            env_fn,
+            config,
+            seed=0,
+            log_dir=tmp_path,
+            validation_env_fn=validation_fn,  # type: ignore[arg-type]
+        )
+
+        candidates = sorted(
+            checkpoint_dir.glob("*.zip"), key=_checkpoint_step_key
+        ) + [manifest.checkpoint_path]
+        assert not (checkpoint_dir / "stale.zip").exists()
+        assert len(calls) == len(candidates)
+        expected = candidates[0]
+        assert expected != manifest.checkpoint_path
+        # The canonical checkpoint was replaced by the selected periodic file.
+        assert manifest.checkpoint_path.read_bytes() == expected.read_bytes()
+        assert manifest.selection_metric == "val_sharpe"
+        assert manifest.selection_value == 10.0
+        PPO.load(str(manifest.checkpoint_path), device="cpu")
+
+    @pytest.mark.slow
+    def test_train_single_seed_scores_checkpoints_on_the_real_validation_env(
+        self,
+        tiny_market_view: object,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+        tmp_path: Path,
+    ) -> None:
+        config = self._selection_config(metric="val_sharpe", total_timesteps=64)
+        env_fn = _CountingFactory(
+            _real_env_factory(tiny_market_view, mock_gas_model, mock_slippage_model)
+        )
+        validation_fn = _CountingFactory(
+            _real_env_factory(tiny_market_view, mock_gas_model, mock_slippage_model)
+        )
+        manifest = train_single_seed(
+            env_fn,
+            config,
+            seed=0,
+            log_dir=tmp_path,
+            validation_env_fn=validation_fn,  # type: ignore[arg-type]
+        )
+
+        # One reusable env for the whole candidate set (it pays the warmup once).
+        assert validation_fn.calls == 1
+        assert manifest.selection_metric == "val_sharpe"
+        assert manifest.selection_value is not None
+        assert math.isfinite(manifest.selection_value)
+        payload = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+        assert payload["selection_metric"] == "val_sharpe"
+        assert payload["selection_value"] == manifest.selection_value
+        PPO.load(str(manifest.checkpoint_path), device="cpu")
+
+    def test_validation_score_exact_on_a_known_equity_path(self) -> None:
+        """``val_sharpe``/``val_cvar`` are the named metrics on joint equity."""
+
+        class _RampEnv(gym.Env):
+            observation_space = spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float64)
+            action_space = spaces.Discrete(2)
+
+            def __init__(self, *, with_equity: bool = True) -> None:
+                self._step = 0
+                self._with_equity = with_equity
+
+            def reset(self, *, seed=None, options=None):
+                del seed, options
+                self._step = 0
+                return np.zeros(1, dtype=np.float64), {}
+
+            def step(self, action):
+                del action
+                self._step += 1
+                info: dict[str, float] = {}
+                if self._with_equity:
+                    info["equity"] = 100.0 + self._step
+                    info["hedge_equity"] = 0.5
+                return (
+                    np.zeros(1, dtype=np.float64),
+                    0.0,
+                    self._step >= 4,
+                    False,
+                    info,
+                )
+
+        class _FixedModel:
+            def predict(self, observation: object, deterministic: bool = True):
+                del observation, deterministic
+                return np.asarray(0), None
+
+        base = _training_config()
+        config = dataclasses.replace(
+            base,
+            episode=dataclasses.replace(base.episode, agent_capital_usdc=100.0),
+            training=dataclasses.replace(
+                base.training, selection_metric="val_sharpe", validation_days=1
+            ),
+        )
+        # Joint equity = capital start + (100 + step) + 0.5 hedge.
+        expected_equity = pl.Series(
+            "equity", [100.0] + [100.5 + step for step in range(1, 5)]
+        )
+        score = _validation_score(_FixedModel(), _RampEnv(), config)  # type: ignore[arg-type]
+        assert score == pytest.approx(
+            sharpe_ratio(
+                expected_equity,
+                periods_per_year=periods_per_year_from_step_minutes(10),
+            )
+        )
+
+        cvar_config = dataclasses.replace(
+            config,
+            training=dataclasses.replace(config.training, selection_metric="val_cvar"),
+        )
+        score = _validation_score(_FixedModel(), _RampEnv(), cvar_config)  # type: ignore[arg-type]
+        assert score == pytest.approx(cvar_of_equity_changes(expected_equity))
+
+    def test_validation_score_requires_equity_in_info(self) -> None:
+        class _NoEquityEnv(gym.Env):
+            observation_space = spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float64)
+            action_space = spaces.Discrete(2)
+
+            def reset(self, *, seed=None, options=None):
+                del seed, options
+                return np.zeros(1, dtype=np.float64), {}
+
+            def step(self, action):
+                del action
+                return np.zeros(1, dtype=np.float64), 0.0, True, False, {}
+
+        class _FixedModel:
+            def predict(self, observation: object, deterministic: bool = True):
+                del observation, deterministic
+                return np.asarray(0), None
+
+        config = self._selection_config(metric="val_sharpe")
+        with pytest.raises(SimConfigError, match="equity"):
+            _validation_score(_FixedModel(), _NoEquityEnv(), config)  # type: ignore[arg-type]

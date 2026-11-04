@@ -110,7 +110,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import Literal, Sequence
 import numpy as np
 
 from undertow.sim.types import PriceMode, Regime
@@ -167,6 +167,11 @@ class RewardConfig:
     il_enabled: bool = True
     risk_penalty_enabled: bool = False
     hedge_enabled: bool = True          # S20: gates the hedge terms (RQ1 ablation)
+    # S21 additive (defaulted): which trailing risk statistic the penalty uses.
+    # "volatility" = historical -lambda*std(delta equity); "cvar" consumes the
+    # keyword-only compute_reward(pnl_cvar=...) positive loss magnitude instead.
+    risk_penalty_mode: Literal["volatility", "cvar"] = "volatility"
+    risk_cvar_alpha: float = 0.95       # S21: expected-shortfall level in (0, 1)
 
 @dataclass(frozen=True, slots=True)
 class HedgeConfig:                       # S20 additive, disabled by default
@@ -206,6 +211,12 @@ class TrainingConfig:
     log_freq_steps: int = 10_000
     vec_env: Literal["dummy", "subproc"] = "dummy"  # ADR-022: per-slot process in "subproc"
     hold_bias: float = 0.0  # logit prior on hold (index 0); 0.0 = off
+    # S21 additive (defaulted): checkpoint ranking.  "reward" = historical
+    # best learning-curve reward; "val_sharpe"/"val_cvar" require a carved
+    # validation factory (CLI: the last validation_days of the train split).
+    selection_metric: Literal["reward", "val_sharpe", "val_cvar"] = "reward"
+    validation_days: int = 30
+
 
 @dataclass(frozen=True, slots=True)
 class BacktestConfig:
@@ -786,10 +797,18 @@ def compute_reward(
     hedge_pnl: float = 0.0,          # signed USDC
     hedge_funding: float = 0.0,      # signed USDC (positive = short is paid)
     hedge_fee: float = 0.0,          # signed USDC cost (≤ 0)
+    pnl_cvar: float = 0.0,           # S21: positive loss magnitude (USDC)
 ) -> RewardBreakdown:
     """Compute the step reward per eq (1) of §9.2 (roadmap eq (2)).
 
     R_t = F_t − G_t − S_t + ΔIL_t − λ·σ_PnL,t
+
+    S21 additive: when ``config.risk_penalty_mode == "cvar"`` and
+    ``config.risk_penalty_enabled``, ``σ_PnL`` is replaced by the
+    ``pnl_cvar`` argument (the trailing expected shortfall of per-step equity
+    losses as a **positive** magnitude), so the penalty is ``−λ·pnl_cvar``.
+    The default ``pnl_cvar=0.0`` plus the default ``"volatility"`` mode
+    leaves every returned value byte-identical to the pre-S21 function.
 
     ``ΔIL_t`` is the **signed** step change in the strategy's excess over its
     fixed initial HODL basket (ADR-029), so it is added — the older
@@ -1177,6 +1196,12 @@ class RunManifest:
     total_timesteps: int
     best_reward: float
     checkpoint_path: Path
+    # S21 additive (defaulted): which metric ranked this seed's checkpoints.
+    # "reward" is the historical learning-curve selection; the validation
+    # metrics record the selected checkpoint's value (higher = better: val_cvar
+    # is negative for losses, so the largest value is the smallest tail loss).
+    selection_metric: str = "reward"
+    selection_value: float | None = None
 
 @dataclass(frozen=True, slots=True)
 class TrainingResult:
@@ -1187,17 +1212,27 @@ class TrainingResult:
     best_checkpoint: Path
 
 def train_ppo(env_fn: callable, config: SimConfig,
-              log_dir: Path | None = None) -> TrainingResult:
+              log_dir: Path | None = None, *,
+              validation_env_fn: callable | None = None) -> TrainingResult:
     """Train PPO across config.training.seeds, returning aggregated results.
 
     env_fn is a zero-argument callable that creates a fresh environment (needed for
     multi-seed training — each seed gets its own env with its own RNG).
     Logs to log_dir with tensorboard-compatible format. Writes checkpoints at
-    config.training.checkpoint_freq_steps."""
+    config.training.checkpoint_freq_steps.
+
+    S21 additive: validation_env_fn is an optional zero-argument factory over the
+    carved validation window.  With config.training.selection_metric != "reward",
+    every periodic checkpoint plus the final one is scored on it and the winner is
+    copied over the canonical ``ppo_seed_<seed>.zip``; the cross-seed
+    ``best_checkpoint`` then ranks on ``selection_value`` instead of
+    ``best_reward``.  Omitting it preserves today's behaviour; asking for a
+    validation metric without it raises SimConfigError."""
     ...
 
 def train_single_seed(env_fn: callable, config: SimConfig, seed: int,
-                      log_dir: Path | None = None) -> RunManifest: ...
+                      log_dir: Path | None = None, *,
+                      validation_env_fn: callable | None = None) -> RunManifest: ...
 ```
 
 ---
@@ -1314,6 +1349,14 @@ def write_results(ablation: list[AblationResult],
     """Write markdown/CSV artifacts plus the policy-keyed ``summary.json`` the UI reads."""
     ...
 ```
+
+S21 additive metric: ``METRIC_NAMES`` ends with ``"cvar_95"`` (append-only; no
+relabelling/reordering of the frozen keys).  ``episode_metrics`` computes it as
+``metrics.performance.cvar_of_equity_changes(equity)`` on the same **joint**
+equity series the Sharpe/Sortino/maxDD metrics use — the mean of the worst 5 % of
+per-step equity changes, negative for losses — so both the exact-backtester and
+replay-simulator records carry it.  The per-regime table writers render a
+``CVaR`` column.
 
 ---
 

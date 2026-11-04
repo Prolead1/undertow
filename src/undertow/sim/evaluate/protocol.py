@@ -70,6 +70,7 @@ from undertow.sim.marketview import MarketView
 from undertow.sim.metrics import (
     DEFAULT_PERIODS_PER_YEAR,
     annualized_return,
+    cvar_of_equity_changes,
     max_drawdown,
     sharpe_ratio,
     sortino_ratio,
@@ -117,6 +118,9 @@ METRIC_NAMES: tuple[str, ...] = (
     "slippage_paid",
     "il_realized",
     "n_rebalances",
+    # S21 additive: the worst-tail expected shortfall of the per-step joint
+    # equity-change distribution (negative for losses; ADR-040).
+    "cvar_95",
 )
 
 
@@ -496,6 +500,9 @@ def episode_metrics(
         "slippage_paid": float(decomposition.get("total_slippage", 0.0)),
         "il_realized": float(decomposition.get("total_il", 0.0)),
         "n_rebalances": float(n_rebalances),
+        # S21: per-step CVaR of the same (joint) equity series the Sharpe /
+        # Sortino / maxDD above are computed on; negative for losses.
+        "cvar_95": cvar_of_equity_changes(equity),
     }
 
 

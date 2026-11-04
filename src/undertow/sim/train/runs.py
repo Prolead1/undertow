@@ -44,6 +44,7 @@ import numpy as np
 
 from undertow.sim.backtest.ledger import config_hash as _canonical_config_hash
 from undertow.sim.backtest.ledger import git_commit as _canonical_git_commit
+from undertow.sim.types import SimConfigError
 
 if TYPE_CHECKING:
     import gymnasium as gym
@@ -109,6 +110,35 @@ class RunManifest:
     # CONTRACTS §15 extension (PLAN.md §0.2): frozen name/version pairs so the
     # manifest stays hashable. The on-disk JSON renders this as an object.
     library_versions: tuple[tuple[str, str], ...] = ()
+    # -- S21 additive checkpoint-selection fields (ADR-040) --
+    #: Metric that ranked this seed's checkpoints.  ``"reward"`` is the
+    #: historical learning-curve selection (``best_reward``); ``"val_sharpe"``
+    #: and ``"val_cvar"`` are validation-window statistics.
+    selection_metric: str = "reward"
+    #: Value of ``selection_metric`` on the selected checkpoint (validation
+    #: metrics only; ``None`` for the default reward path).  Higher is always
+    #: better: Sharpe is maximised and ``val_cvar`` is negative-for-loss, so
+    #: the largest value is the smallest tail loss.
+    selection_value: float | None = None
+
+
+def _manifest_rank_key(manifest: RunManifest) -> float:
+    """Cross-seed ranking key used by :func:`train_ppo`.
+
+    A validation-selected manifest ranks on ``selection_value`` (higher is
+    better for both ``val_sharpe`` and ``val_cvar``: the latter is negative for
+    losses, so the largest value is the smallest tail loss).  The default
+    reward path keeps today's ``best_reward`` ordering exactly.
+    """
+    if manifest.selection_metric != "reward":
+        if manifest.selection_value is None:
+            raise SimConfigError(
+                f"run manifest for seed {manifest.seed} records "
+                f"selection_metric={manifest.selection_metric!r} without a "
+                "selection_value; the validation selection step did not run"
+            )
+        return float(manifest.selection_value)
+    return float(manifest.best_reward)
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +171,8 @@ def write_run_manifest(
         "best_reward": manifest.best_reward,
         "checkpoint_path": str(manifest.checkpoint_path),
         "library_versions": dict(manifest.library_versions),
+        "selection_metric": manifest.selection_metric,
+        "selection_value": manifest.selection_value,
         "learning_curve": [float(v) for v in learning_curve],
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -170,6 +202,8 @@ def train_ppo(
     env_fn: Callable[[], gym.Env],
     config: SimConfig,
     log_dir: Path | None = None,
+    *,
+    validation_env_fn: Callable[[], gym.Env] | None = None,
 ) -> TrainingResult:
     """Train PPO across ``config.training.seeds`` (CONTRACTS.md §15).
 
@@ -178,6 +212,13 @@ def train_ppo(
     when ``log_dir`` is ``None`` an isolated temporary directory per seed is
     used. Returns the per-seed manifests, the aggregated learning curves and the
     checkpoint of the seed with the highest best reward.
+
+    ``validation_env_fn`` (S21, ADR-040) is an optional zero-argument factory
+    over the carved validation window.  When supplied alongside
+    ``config.training.selection_metric != "reward"``, each seed's saved
+    checkpoints are scored on it and the canonical checkpoint is replaced by
+    the best one; the cross-seed winner then ranks on ``selection_value``
+    instead of ``best_reward``.  Omitting it preserves today's behaviour.
     """
     seeds = tuple(int(s) for s in config.training.seeds)
     if not seeds:
@@ -193,11 +234,13 @@ def train_ppo(
 
     for seed in seeds:
         seed_dir = (root / f"seed_{seed}") if root is not None else None
-        manifest, curve = _train_single_seed(env_fn, config, seed, seed_dir)
+        manifest, curve = _train_single_seed(
+            env_fn, config, seed, seed_dir, validation_env_fn=validation_env_fn
+        )
         manifests.append(manifest)
         curves.append(list(curve))
 
-    best = max(manifests, key=lambda m: m.best_reward)
+    best = max(manifests, key=_manifest_rank_key)
     return TrainingResult(
         seeds=seeds,
         manifests=tuple(manifests),

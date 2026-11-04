@@ -36,6 +36,9 @@ _REGIME_COLUMNS: tuple[tuple[str, str], ...] = (
     ("fee_income", "Fee Income"),
     ("gas_paid", "Gas Paid"),
     ("il_realized", "IL"),
+    # S21 additive: 95 % CVaR of the per-step joint equity changes (negative
+    # for losses; ADR-040).  Appended so existing columns keep their order.
+    ("cvar_95", "CVaR"),
 )
 
 #: Metrics mirrored into the machine-readable ``summary.json`` (the UI's

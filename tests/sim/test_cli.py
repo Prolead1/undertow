@@ -816,6 +816,29 @@ class TestCliInternals:
         with pytest.raises(CliError, match="train split"):
             _make_env_factory(eval_view, config)
 
+    def test_calibrated_env_factory_rejects_eval_view_with_prefit_params(
+        self, tiny_market_view: object
+    ) -> None:
+        """S21/ADR-040: the pre-fitted pass-through cannot bypass the guard."""
+        from undertow.sim.config import SimConfig
+        from undertow.sim.types import PriceMode
+
+        eval_view = dataclasses.replace(
+            tiny_market_view,
+            train=None,
+            eval=tiny_market_view.train,
+            is_train=False,
+            eval_start_utc=tiny_market_view.train_start_utc,
+            eval_end_utc=tiny_market_view.train_end_utc,
+        )
+        config = dataclasses.replace(SimConfig(), price_mode=PriceMode.CALIBRATED)
+        with pytest.raises(CliError, match="train split"):
+            _make_env_factory(
+                eval_view,
+                config,
+                calibrated=(object(), 3000.0),  # type: ignore[arg-type]
+            )
+
     def test_replay_env_factory_returns_replay_env(
         self, tiny_market_view: object
     ) -> None:
@@ -1251,3 +1274,242 @@ class TestEvaluateAblateDataErrors:
         )
         assert result.returncode != 0
         assert "checkpoint not found" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# S21 — validation-window carving and selection wiring (ADR-040)
+# ---------------------------------------------------------------------------
+class TestValidationWindowCarving:
+    def _config(self, *, days: int = 1) -> object:
+        from undertow.sim.config import SimConfig, TrainingConfig
+
+        return SimConfig(
+            training=TrainingConfig(
+                selection_metric="val_sharpe", validation_days=days
+            )
+        )
+
+    def test_carve_is_disjoint_and_exhaustive(self, tiny_market_view: object) -> None:
+        from undertow.sim.cli import _active_seq_bounds, _carve_validation_window
+
+        start, end = _active_seq_bounds(tiny_market_view)  # type: ignore[arg-type]
+        train_view, validation_view = _carve_validation_window(
+            tiny_market_view, self._config()  # type: ignore[arg-type]
+        )
+        train_start, train_end = _active_seq_bounds(train_view)  # type: ignore[arg-type]
+        val_start, val_end = _active_seq_bounds(validation_view)  # type: ignore[arg-type]
+
+        # Boundary seqs: the train lane stops exactly where validation begins.
+        assert (train_start, train_end) == (start, val_start)
+        assert val_end == end
+        assert train_end < val_end
+        # Disjoint and exhaustive over the active lane.
+        train_seqs = set(train_view.active_split_data()["seq"].to_list())
+        val_seqs = set(validation_view.active_split_data()["seq"].to_list())
+        assert not train_seqs & val_seqs
+        assert train_seqs | val_seqs == set(range(start, end))
+        assert train_view.is_train and validation_view.is_train
+
+    def test_carve_starts_at_the_first_row_after_the_cut(
+        self, tiny_market_view: object
+    ) -> None:
+        from datetime import timedelta
+
+        from undertow.sim.cli import _carve_validation_window
+
+        _train_view, validation_view = _carve_validation_window(
+            tiny_market_view, self._config(days=1)  # type: ignore[arg-type]
+        )
+        cut = tiny_market_view.active_end_utc - timedelta(days=1)  # type: ignore[attr-defined]
+        stamps = validation_view.active_split_data()["block_timestamp"]
+        assert stamps.min() >= cut
+        assert validation_view.active_start_utc >= cut
+        # Training excludes the validation rows: its wall is at/before the cut.
+        train_view, _ = _carve_validation_window(  # type: ignore[arg-type]
+            tiny_market_view, self._config(days=1)
+        )
+        assert train_view.active_end_utc <= validation_view.active_start_utc
+
+    def test_carve_rejects_days_covering_the_whole_train_span(
+        self, tiny_market_view: object
+    ) -> None:
+        from undertow.sim.cli import _carve_validation_window
+
+        with pytest.raises(CliError, match="covers the whole train split"):
+            _carve_validation_window(tiny_market_view, self._config(days=31))  # type: ignore[arg-type]
+
+    def test_carve_rejects_an_eval_view(self, tiny_market_view: object) -> None:
+        from undertow.sim.cli import _carve_validation_window
+
+        eval_view = dataclasses.replace(
+            tiny_market_view,
+            train=None,
+            eval=tiny_market_view.train,
+            is_train=False,
+            eval_start_utc=tiny_market_view.train_start_utc,
+            eval_end_utc=tiny_market_view.train_end_utc,
+        )
+        with pytest.raises(CliError, match="train split"):
+            _carve_validation_window(eval_view, self._config())
+
+    def test_train_env_factory_slices_both_backends(
+        self, tiny_market_view: object
+    ) -> None:
+        from types import SimpleNamespace
+
+        from undertow.sim.cli import _active_seq_bounds, _train_env_factory
+        from undertow.sim.config import SimConfig, TrainingConfig
+        from undertow.sim.train.envs import EnvFactory
+
+        start, end = _active_seq_bounds(tiny_market_view)  # type: ignore[arg-type]
+        mid = start + (end - start) // 2
+        args = SimpleNamespace(data_config="configs/eth_usdc_3000.toml", split="train")
+
+        dummy = _train_env_factory(
+            args, SimConfig(), tiny_market_view, slice_bounds=(start, mid)
+        )
+        env = dummy()
+        assert env.market_view.step_count() == mid - start
+
+        subproc = _train_env_factory(
+            args,
+            SimConfig(training=TrainingConfig(vec_env="subproc")),
+            tiny_market_view,
+            slice_bounds=(start, mid),
+        )
+        assert isinstance(subproc, EnvFactory)
+        assert (subproc.start_seq, subproc.end_seq) == (start, mid)
+        assert subproc.load_view().step_count() == mid - start
+
+    def test_cmd_train_passes_the_carved_validation_factory(
+        self,
+        tiny_market_view: object,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from datetime import timedelta
+
+        import undertow.sim.cli as cli
+
+        config_path = tmp_path / "selection.toml"
+        config_path.write_text(
+            "[episode]\nduration_days = 1\nstep_minutes = 10\n"
+            "[training]\nseeds = [0]\ntotal_timesteps = 16\n"
+            "checkpoint_freq_steps = 8\nlog_freq_steps = 8\n"
+            'selection_metric = "val_sharpe"\nvalidation_days = 1\n',
+            encoding="utf-8",
+        )
+        seen: dict[str, object] = {}
+
+        def fake_train_ppo(
+            env_fn: object,
+            config: object,
+            log_dir: Path | None = None,
+            *,
+            validation_env_fn: object = None,
+        ) -> object:
+            seen["has_validation"] = validation_env_fn is not None
+            train_env = env_fn()  # type: ignore[operator]
+            seen["train_end"] = train_env.market_view.active_end_utc
+            if validation_env_fn is not None:
+                val_env = validation_env_fn()  # type: ignore[operator]
+                seen["val_start"] = val_env.market_view.active_start_utc
+            return _fake_training_result(log_dir)
+
+        monkeypatch.setattr(cli, "train_ppo", fake_train_ppo)
+        exit_code = cli.main(
+            ["train", "--config", str(config_path), "--output", str(tmp_path)],
+            market_view=tiny_market_view,
+        )
+        assert exit_code == 0
+        assert seen["has_validation"] is True
+        cut = tiny_market_view.active_end_utc - timedelta(days=1)  # type: ignore[attr-defined]
+        assert seen["train_end"] < tiny_market_view.active_end_utc  # type: ignore[attr-defined]
+        assert seen["val_start"] >= cut  # type: ignore[operator]
+        assert seen["train_end"] <= seen["val_start"]  # type: ignore[operator]
+
+    def test_cmd_train_reuses_the_train_calibration_for_validation(
+        self,
+        tiny_market_view: object,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """S21/ADR-040: validation checkpoints are scored on the training fit.
+
+        The carve must not re-fit the MRSJD on the validation rows: the
+        process is fitted once on the train lane and reused by both factories.
+        """
+        import undertow.sim.cli as cli
+        from undertow.sim.train.envs import fit_calibrated
+
+        config_path = tmp_path / "calibrated_selection.toml"
+        config_path.write_text(
+            "[episode]\nduration_days = 1\nstep_minutes = 10\n"
+            '[price]\nmode = "calibrated"\n'
+            "[training]\nseeds = [0]\ntotal_timesteps = 16\n"
+            "checkpoint_freq_steps = 8\nlog_freq_steps = 8\n"
+            'selection_metric = "val_sharpe"\nvalidation_days = 1\n',
+            encoding="utf-8",
+        )
+        sentinel = fit_calibrated(tiny_market_view)  # type: ignore[arg-type]
+        calls: list[object] = []
+        seen: dict[str, object] = {}
+
+        def counting_params(view: object) -> tuple[object, float]:
+            calls.append(view)
+            return sentinel  # type: ignore[return-value]
+
+        def fake_train_ppo(
+            env_fn: object,
+            config: object,
+            log_dir: Path | None = None,
+            *,
+            validation_env_fn: object = None,
+        ) -> object:
+            train_env = env_fn()  # type: ignore[operator]
+            val_env = validation_env_fn()  # type: ignore[operator]
+            seen["train_params"] = train_env.price_process._params
+            seen["val_params"] = val_env.price_process._params
+            return _fake_training_result(log_dir)
+
+        monkeypatch.setattr(cli, "_calibrated_params", counting_params)
+        monkeypatch.setattr(cli, "train_ppo", fake_train_ppo)
+        exit_code = cli.main(
+            ["train", "--config", str(config_path), "--output", str(tmp_path)],
+            market_view=tiny_market_view,
+        )
+        assert exit_code == 0
+        # Exactly one fit, on the carved train lane; both envs reuse it.
+        assert len(calls) == 1
+        fit_view = calls[0]
+        assert fit_view.active_end_utc < tiny_market_view.active_end_utc  # type: ignore[attr-defined, operator]
+        expected_params, _initial_price = sentinel
+        assert seen["train_params"] is expected_params
+        assert seen["val_params"] is expected_params
+
+    def test_cmd_train_rejects_an_eval_split_for_validation_selection(
+        self,
+        tiny_market_view: object,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        config_path = tmp_path / "selection.toml"
+        config_path.write_text(
+            '[training]\nselection_metric = "val_sharpe"\nvalidation_days = 1\n',
+            encoding="utf-8",
+        )
+        exit_code = main(
+            [
+                "train",
+                "--config",
+                str(config_path),
+                "--split",
+                "eval",
+                "--output",
+                str(tmp_path),
+            ],
+            market_view=tiny_market_view,
+        )
+        captured = capsys.readouterr()
+        assert exit_code == 2
+        assert "--split train" in captured.err

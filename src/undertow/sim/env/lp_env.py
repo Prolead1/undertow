@@ -86,6 +86,7 @@ from undertow.sim.frictions.gas import GasModel
 from undertow.sim.frictions.slippage import SlippageModel
 from undertow.sim.hedge import ETH_DELTA_EPS, HedgeAccount
 from undertow.sim.marketview import MarketView
+from undertow.sim.metrics import cvar_of_equity_changes
 from undertow.sim.prices.base import PriceProcess, human_price_to_triplet
 from undertow.sim.prices.replay import ReplayPriceProcess
 from undertow.sim.types import (
@@ -233,6 +234,11 @@ class LpEnvironment(gym.Env):
         self._collected_fees_usdc: float = 0.0
         self._last_il_total: float = 0.0
         self._pnl_history: list[float] = [self._capital]
+        #: Joint (LP + hedge) equity path for the S21 CVaR risk term.  Kept
+        #: separate from ``_pnl_history`` (LP-only) so the volatility term's
+        #: historical semantics stay byte-identical while the CVaR penalty
+        #: can actually price the hedge leg (ADR-040).
+        self._joint_equity_history: list[float] = [self._capital]
         self._last_pool_result: dict[str, Any] = {}
         self._last_tape_row: dict[str, object] = {}
         self._last_at_time: datetime | None = None
@@ -739,6 +745,7 @@ class LpEnvironment(gym.Env):
         self._collected_fees_usdc = 0.0
         self._last_il_total = self._current_il_total(entry_sqrt, entry_price)
         self._pnl_history = [self._capital]
+        self._joint_equity_history = [self._capital + self._hedge_equity]
 
         self._builder.configure_episode(self._start_seq, self._episode_length)
         observation = self._observe(
@@ -907,17 +914,30 @@ class LpEnvironment(gym.Env):
             self._hedge_equity = 0.0
         hedge_fee = -(hedge_fee_magnitude + self._hedge_pending_fee)
         self._hedge_pending_fee = 0.0
+        # S21: the CVaR risk term measures the joint strategy's tail, so the
+        # equity path it diffs includes the hedge account marked above.  The
+        # LP-only ``_pnl_history`` above is untouched (volatility semantics).
+        self._joint_equity_history.append(equity + self._hedge_equity)
 
+        reward_config = self.config.reward
+        # S21: the CVaR statistic is computed only in the configured mode, so
+        # every other path keeps today's zero-cost behaviour (the volatility
+        # branch mutates nothing and ``_pnl_cvar`` is never called).
+        use_cvar = (
+            reward_config.risk_penalty_enabled
+            and reward_config.risk_penalty_mode == "cvar"
+        )
         raw_breakdown = compute_reward(
             fees_earned=fees_earned,
             gas_cost=gas_cost,
             slippage_cost=slippage_cost,
             il_change=il_change,
             pnl_volatility=self._pnl_volatility(),
-            config=self.config.reward,
+            config=reward_config,
             hedge_pnl=hedge_pnl,
             hedge_funding=hedge_funding,
             hedge_fee=hedge_fee,
+            pnl_cvar=self._pnl_cvar() if use_cvar else 0.0,
         )
         raw_breakdown = replace(raw_breakdown, equity=equity)
         # The ungated economics payload (S20): the parity harness compares the
@@ -1283,6 +1303,36 @@ class LpEnvironment(gym.Env):
         if deltas.size < 2:
             return 0.0
         return float(np.std(deltas, ddof=1))
+
+    def _pnl_cvar(self) -> float:
+        """Trailing empirical expected shortfall of per-step equity losses.
+
+        Computed on the **joint (LP + hedge) equity** path -- the same series
+        the evaluation's ``cvar_95`` and the validation selector use, up to
+        this method's gain-only clamp (ADR-040) -- so the hedge ratio moves the
+        penalty.  ``del =
+        diff(history)`` are the signed per-step equity changes over the last
+        ``risk_rolling_window_steps`` steps; a loss is ``-del > 0``.  The
+        expected shortfall of the loss
+        distribution at ``risk_cvar_alpha`` is the mean of the worst
+        ``1 - alpha`` fraction and is returned as a **positive USDC loss
+        magnitude** so :func:`compute_reward` can subtract
+        ``lambda * pnl_cvar``.  A window whose tail consists only of gains has
+        no loss to penalize and returns ``0.0`` (never a negative penalty).
+
+        Reuses :func:`~undertow.sim.metrics.performance.cvar_of_equity_changes`
+        (which delegates to ``cvar`` and is negative for losses) so the env's
+        statistic and the evaluation metric use one order statistic.
+        """
+        window = int(self.config.reward.risk_rolling_window_steps)
+        if window < 2:
+            return 0.0
+        history = np.asarray(self._joint_equity_history[-(window + 1) :], dtype=float)
+        if history.size < 2:
+            return 0.0
+        alpha = float(self.config.reward.risk_cvar_alpha)
+        loss_magnitude = -cvar_of_equity_changes(pl.Series(history), alpha)
+        return max(0.0, loss_magnitude)
 
     def _gas_row(self, tape_row: dict[str, object]) -> dict[str, object]:
         """Gas context for a step, preferring the gas feed (as the builder does)."""

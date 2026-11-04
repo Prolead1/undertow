@@ -108,6 +108,71 @@ class TestSignConventions:
 
 
 # ---------------------------------------------------------------------------
+# S21 risk-penalty modes
+# ---------------------------------------------------------------------------
+class TestRiskPenaltyMode:
+    def test_default_mode_is_byte_identical_with_pnl_cvar_present(self) -> None:
+        """The default ``volatility`` mode ignores ``pnl_cvar`` entirely.
+
+        Every field of the breakdown must match the pre-S21 call exactly (not
+        just approximately), so adding the argument cannot perturb a golden
+        run.
+        """
+        cfg = _config()
+        without = compute_reward(
+            100.0, 10.0, 5.0, -40.0, 6.0, cfg, hedge_pnl=1.5, hedge_funding=-0.25,
+            hedge_fee=-0.5,
+        )
+        zero = compute_reward(
+            100.0, 10.0, 5.0, -40.0, 6.0, cfg, hedge_pnl=1.5, hedge_funding=-0.25,
+            hedge_fee=-0.5, pnl_cvar=0.0,
+        )
+        with_cvar = compute_reward(
+            100.0, 10.0, 5.0, -40.0, 6.0, cfg, hedge_pnl=1.5, hedge_funding=-0.25,
+            hedge_fee=-0.5, pnl_cvar=123.456,
+        )
+        assert dataclasses.asdict(zero) == dataclasses.asdict(without)
+        assert dataclasses.asdict(with_cvar) == dataclasses.asdict(without)
+        # The volatility term is still the one consumed.
+        assert with_cvar.risk_penalty == pytest.approx(-0.6)
+
+    def test_cvar_mode_consumes_pnl_cvar_and_ignores_volatility(self) -> None:
+        cfg = _config(risk_penalty_mode="cvar", risk_penalty_lambda=0.1)
+        b = compute_reward(0.0, 0.0, 0.0, 0.0, 1000.0, cfg, pnl_cvar=200.0)
+        # -0.1 * 200, not -0.1 * 1000.
+        assert b.risk_penalty == pytest.approx(-20.0)
+
+    def test_cvar_mode_with_default_zero_cvar_is_unpenalized(self) -> None:
+        cfg = _config(risk_penalty_mode="cvar", risk_penalty_lambda=0.5)
+        b = compute_reward(0.0, 0.0, 0.0, 0.0, 1000.0, cfg)
+        assert b.risk_penalty == 0.0
+
+    def test_disabled_flag_gates_the_cvar_mode_to_zero(self) -> None:
+        cfg = _config(
+            risk_penalty_enabled=False,
+            risk_penalty_mode="cvar",
+            risk_penalty_lambda=0.1,
+        )
+        b = compute_reward(50.0, 7.0, 3.0, -20.0, 0.0, cfg, pnl_cvar=200.0)
+        assert b.risk_penalty == 0.0
+        assert b.reward == pytest.approx(50.0 - 7.0 - 3.0 - 20.0)
+
+    def test_pnl_cvar_does_not_leak_into_the_economic_record(self) -> None:
+        cfg = _config(risk_penalty_mode="cvar", risk_penalty_lambda=0.25)
+        b = compute_reward(
+            100.0, 10.0, 5.0, -40.0, 6.0, cfg, hedge_pnl=2.0, pnl_cvar=80.0
+        )
+        assert b.pnl_net == pytest.approx(100.0 - 10.0 - 5.0 - 40.0 + 2.0)
+        # The risk preference is not an economic cash flow.
+        assert b.pnl_net == pytest.approx(b.reward + 0.25 * 80.0)
+
+    def test_zero_lambda_makes_cvar_mode_inert(self) -> None:
+        cfg = _config(risk_penalty_mode="cvar", risk_penalty_lambda=0.0)
+        b = compute_reward(0.0, 0.0, 0.0, 0.0, 6.0, cfg, pnl_cvar=500.0)
+        assert b.risk_penalty == 0.0
+
+
+# ---------------------------------------------------------------------------
 # Ablation gating: each flag zeroes only its own term
 # ---------------------------------------------------------------------------
 class TestAblationFlags:
