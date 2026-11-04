@@ -113,6 +113,37 @@ class RewardConfig:
     #: terms in the learning reward; ``False`` is the RQ1 "hedge off" ablation
     #: (the ungated `pnl_net` still records them).
     hedge_enabled: bool = True
+    # -- S21 risk-sensitive objective (additive, appended to the frozen fields) --
+    #: Which trailing risk statistic the penalty consumes.  ``"volatility"``
+    #: is the historical ``-lambda * std(delta equity)`` term and preserves
+    #: today's behaviour exactly; ``"cvar"`` instead penalizes the trailing
+    #: empirical expected shortfall of per-step equity losses
+    #: (``compute_reward(pnl_cvar=...)``, ADR-040).  The mode is inert while
+    #: ``risk_penalty_enabled`` is ``False``.
+    risk_penalty_mode: Literal["volatility", "cvar"] = "volatility"
+    #: CVaR confidence level in ``(0, 1)``: the expected shortfall of the tail
+    #: beyond this quantile.  Only read when ``risk_penalty_mode == "cvar"``.
+    risk_cvar_alpha: float = 0.95
+
+    def __post_init__(self) -> None:
+        if self.risk_penalty_mode not in ("volatility", "cvar"):
+            raise SimConfigError(
+                "reward.risk_penalty_mode must be 'volatility' or 'cvar', "
+                f"got {self.risk_penalty_mode!r}"
+            )
+        if isinstance(self.risk_cvar_alpha, bool) or not isinstance(
+            self.risk_cvar_alpha, (int, float)
+        ):
+            raise SimConfigError(
+                "reward.risk_cvar_alpha must be a number, "
+                f"got {self.risk_cvar_alpha!r}"
+            )
+        alpha = float(self.risk_cvar_alpha)
+        if not math.isfinite(alpha) or not 0.0 < alpha < 1.0:
+            raise SimConfigError(
+                "reward.risk_cvar_alpha must be finite and in (0, 1), "
+                f"got {self.risk_cvar_alpha!r}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,8 +301,39 @@ class TrainingConfig:
     #: for PPO to discover that avoiding the per-rebalance gas dominates. ``0.0``
     #: disables the prior and preserves today's behaviour exactly.
     hold_bias: float = 0.0
+    # -- S21 validation-based checkpoint selection (additive) --
+    #: Which statistic ranks a seed's checkpoints.  ``"reward"`` keeps the
+    #: historical learning-curve selection exactly; ``"val_sharpe"`` and
+    #: ``"val_cvar"`` require a validation environment factory (the CLI carves
+    #: the last ``validation_days`` of the train split, ADR-040).
+    selection_metric: Literal["reward", "val_sharpe", "val_cvar"] = "reward"
+    #: Length in days of the train-split window reserved for checkpoint
+    #: selection.  Only read when ``selection_metric != "reward"``.
+    validation_days: int = 30
 
     def __post_init__(self) -> None:
+        if self.selection_metric not in ("reward", "val_sharpe", "val_cvar"):
+            raise SimConfigError(
+                "training.selection_metric must be 'reward', 'val_sharpe' or "
+                f"'val_cvar', got {self.selection_metric!r}"
+            )
+        if isinstance(self.validation_days, bool) or not isinstance(
+            self.validation_days, (int, float)
+        ):
+            raise SimConfigError(
+                "training.validation_days must be a number, "
+                f"got {self.validation_days!r}"
+            )
+        validation_days = float(self.validation_days)
+        if (
+            not math.isfinite(validation_days)
+            or not validation_days.is_integer()
+            or validation_days <= 0
+        ):
+            raise SimConfigError(
+                "training.validation_days must be a finite positive integer, "
+                f"got {self.validation_days!r}"
+            )
         if self.vec_env not in ("dummy", "subproc"):
             raise SimConfigError(
                 f"training.vec_env must be 'dummy' or 'subproc', got {self.vec_env!r}"

@@ -289,6 +289,62 @@ class TestSplitConfig:
 
 
 # ---------------------------------------------------------------------------
+# RewardConfig — S21 risk-sensitive objective fields
+# ---------------------------------------------------------------------------
+class TestRewardConfigRisk:
+    def test_defaults_preserve_the_volatility_path(self) -> None:
+        rc = RewardConfig()
+        assert rc.risk_penalty_mode == "volatility"
+        assert rc.risk_cvar_alpha == 0.95
+        # The default mode plus the disabled flag is exactly pre-S21 behaviour.
+        assert rc.risk_penalty_enabled is False
+
+    @pytest.mark.parametrize("mode", ["volatility", "cvar"])
+    def test_mode_accepts_the_two_supported_values(self, mode) -> None:
+        assert RewardConfig(risk_penalty_mode=mode).risk_penalty_mode == mode
+
+    def test_mode_rejects_an_unknown_value(self) -> None:
+        with pytest.raises(SimConfigError, match="risk_penalty_mode"):
+            RewardConfig(risk_penalty_mode="expected_shortfall")  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "alpha", [0.0, 1.0, -0.1, 1.5, math.nan, math.inf, -math.inf]
+    )
+    def test_alpha_outside_the_open_unit_interval_raises(self, alpha) -> None:
+        with pytest.raises(SimConfigError, match="risk_cvar_alpha"):
+            RewardConfig(risk_cvar_alpha=alpha)
+
+    def test_alpha_inside_the_interval_is_accepted(self) -> None:
+        assert RewardConfig(risk_cvar_alpha=0.01).risk_cvar_alpha == 0.01
+        assert RewardConfig(risk_cvar_alpha=0.99).risk_cvar_alpha == 0.99
+
+    @pytest.mark.parametrize("bad", [True, "0.95", None, [0.95]])
+    def test_alpha_rejects_non_numeric_types(self, bad) -> None:
+        with pytest.raises(SimConfigError, match="risk_cvar_alpha"):
+            RewardConfig(risk_cvar_alpha=bad)  # type: ignore[arg-type]
+
+    def test_risk_fields_round_trip_through_the_toml_loader(self, tmp_path) -> None:
+        path = tmp_path / "risk.toml"
+        _write_toml(
+            path,
+            "[reward]\nrisk_penalty_enabled = true\n"
+            'risk_penalty_mode = "cvar"\nrisk_cvar_alpha = 0.9\n'
+            "risk_penalty_lambda = 0.05\n",
+        )
+        cfg = load_sim_config(str(path))
+        assert cfg.reward.risk_penalty_enabled is True
+        assert cfg.reward.risk_penalty_mode == "cvar"
+        assert cfg.reward.risk_cvar_alpha == 0.9
+        assert cfg.reward.risk_penalty_lambda == 0.05
+
+    def test_loader_applies_alpha_validation(self, tmp_path) -> None:
+        path = tmp_path / "bad_risk.toml"
+        _write_toml(path, '[reward]\nrisk_penalty_mode = "cvar"\nrisk_cvar_alpha = 1.5\n')
+        with pytest.raises(SimConfigError, match="risk_cvar_alpha"):
+            load_sim_config(str(path))
+
+
+# ---------------------------------------------------------------------------
 # TrainingConfig
 # ---------------------------------------------------------------------------
 class TestTrainingConfig:
@@ -396,6 +452,45 @@ class TestTrainingConfig:
     def test_hold_bias_must_be_finite_and_non_negative(self, hold_bias) -> None:
         with pytest.raises(SimConfigError, match="hold_bias"):
             TrainingConfig(hold_bias=hold_bias)
+
+    # -- S21 validation-based selection fields --
+    def test_selection_defaults_are_the_historical_reward_path(self) -> None:
+        tc = TrainingConfig()
+        assert tc.selection_metric == "reward"
+        assert tc.validation_days == 30
+
+    @pytest.mark.parametrize("metric", ["reward", "val_sharpe", "val_cvar"])
+    def test_selection_metric_accepts_the_supported_values(self, metric) -> None:
+        assert TrainingConfig(selection_metric=metric).selection_metric == metric
+
+    def test_selection_metric_rejects_an_unknown_value(self) -> None:
+        with pytest.raises(SimConfigError, match="selection_metric"):
+            TrainingConfig(selection_metric="val_sortino")  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "days", [0, -1, 1.5, 0.0, math.nan, math.inf, -math.inf]
+    )
+    def test_validation_days_must_be_a_positive_integer(self, days) -> None:
+        with pytest.raises(SimConfigError, match="validation_days"):
+            TrainingConfig(validation_days=days)
+
+    def test_validation_days_accepts_a_positive_integer(self) -> None:
+        assert TrainingConfig(validation_days=7).validation_days == 7
+
+    @pytest.mark.parametrize("bad", [True, "30", None, [30]])
+    def test_validation_days_rejects_non_numeric_types(self, bad) -> None:
+        with pytest.raises(SimConfigError, match="validation_days"):
+            TrainingConfig(validation_days=bad)  # type: ignore[arg-type]
+
+    def test_selection_fields_round_trip_through_the_toml_loader(self, tmp_path) -> None:
+        path = tmp_path / "selection.toml"
+        _write_toml(
+            path,
+            '[training]\nselection_metric = "val_sharpe"\nvalidation_days = 45\n',
+        )
+        cfg = load_sim_config(str(path))
+        assert cfg.training.selection_metric == "val_sharpe"
+        assert cfg.training.validation_days == 45
 
 
 # ---------------------------------------------------------------------------
@@ -629,6 +724,8 @@ def test_shipped_sim_configs_pair_with_their_data_pools() -> None:
         ("sim_default.toml", "eth_usdc_500.toml"),
         ("sim_eth_usdc_500.toml", "eth_usdc_500.toml"),
         ("sim_eth_usdc_500_rl.toml", "eth_usdc_500.toml"),
+        ("sim_eth_usdc_500_hedged.toml", "eth_usdc_500.toml"),
+        ("sim_eth_usdc_500_hedged_risk.toml", "eth_usdc_500.toml"),
         ("sim_eth_usdc_3000.toml", "eth_usdc_3000.toml"),
     ):
         sim = load_sim_config(repo_root / "configs" / sim_name)
@@ -658,6 +755,32 @@ def test_primary_pool_config_carries_the_stabilized_recipe() -> None:
     assert training.ent_coef == pytest.approx(0.001)
     assert training.target_kl == pytest.approx(0.01)
     assert training.hold_bias == pytest.approx(4.0)
+
+
+def test_shipped_risk_config_carries_the_risk_sensitive_recipe() -> None:
+    """`configs/sim_eth_usdc_500_hedged_risk.toml` lands S21's recipe (ADR-040)."""
+    repo_root = Path(__file__).resolve().parents[2]
+    cfg = load_sim_config(
+        repo_root / "configs" / "sim_eth_usdc_500_hedged_risk.toml"
+    )
+    hedged = load_sim_config(repo_root / "configs" / "sim_eth_usdc_500_hedged.toml")
+
+    # The hedge head is inherited unchanged from the S20b config.
+    assert cfg.hedge == hedged.hedge
+    assert cfg.reward.risk_penalty_enabled is True
+    assert cfg.reward.risk_penalty_mode == "cvar"
+    assert cfg.reward.risk_cvar_alpha == pytest.approx(0.95)
+    assert cfg.reward.risk_penalty_lambda == pytest.approx(0.05)
+    assert cfg.reward.risk_rolling_window_steps == 144
+    assert cfg.training.selection_metric == "val_sharpe"
+    assert cfg.training.validation_days == 30
+    # Everything else is the hedged config (same budget/recipe/grid).
+    assert cfg.training.seeds == hedged.training.seeds
+    assert cfg.training.total_timesteps == hedged.training.total_timesteps
+    assert cfg.training.checkpoint_freq_steps == hedged.training.checkpoint_freq_steps
+    assert cfg.action_grid == hedged.action_grid
+    assert cfg.episode == hedged.episode
+    assert cfg.split == hedged.split
 
 
 def test_shipped_rl_config_carries_the_band_selection_recipe() -> None:

@@ -48,8 +48,9 @@ from undertow.sim.evaluate import (
     walk_forward_windows,
     write_results,
 )
-from undertow.sim.evaluate.protocol import action_to_index
+from undertow.sim.evaluate.protocol import action_to_index, episode_metrics
 from undertow.sim.marketview import MarketView
+from undertow.sim.metrics import cvar_of_equity_changes
 from undertow.sim.policies import HODLPolicy, HOLDAction, PassiveNarrowPolicy, TauResetPolicy
 from undertow.sim.types import Action, LookAheadError
 
@@ -493,6 +494,47 @@ class TestActionToIndex:
 
 
 class TestJointEquity:
+    def test_cvar_95_is_appended_and_exact_on_a_small_series(self) -> None:
+        """S21: the new metric is appended and the old ones are untouched.
+
+        changes = [10, -5, 10, -15]; the 5 % quantile interpolates to -13.5 so
+        the only tail observation is -15, exactly as
+        :func:`cvar_of_equity_changes` documents.
+        """
+        assert METRIC_NAMES[-1] == "cvar_95"
+        assert METRIC_NAMES[:10] == (
+            "total_pnl",
+            "annualized_return",
+            "sharpe",
+            "sortino",
+            "max_drawdown",
+            "fee_income",
+            "gas_paid",
+            "slippage_paid",
+            "il_realized",
+            "n_rebalances",
+        )
+        equity = pl.Series("equity", [100.0, 110.0, 105.0, 115.0, 100.0])
+        metrics = episode_metrics(equity, 100.0, {}, 144, 0)
+        assert metrics["cvar_95"] == pytest.approx(-15.0)
+        # The LP-only metrics still come from the same equity series.
+        assert metrics["total_pnl"] == pytest.approx(0.0)
+        assert metrics["max_drawdown"] == pytest.approx(100.0 / 115.0 - 1.0)
+
+    def test_cvar_95_is_present_in_both_backends(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        config = _config(duration_days=4)
+        backtest = evaluate_episodes(HODLPolicy(), tiny_market_view, config)
+        replay = evaluate_episodes(
+            HODLPolicy(), tiny_market_view, config, backend="replay_sim"
+        )
+        assert backtest and replay
+        for record in [*backtest, *replay]:
+            assert "cvar_95" in record.metrics
+            expected = cvar_of_equity_changes(record.equity_curve["equity"])
+            assert record.metrics["cvar_95"] == pytest.approx(expected)
+
     def test_backtest_metrics_include_the_hedge_leg(
         self, tiny_market_view: MarketView
     ) -> None:
@@ -788,6 +830,13 @@ class TestWriteResults:
             "summary.json",
         }
         assert {path.name for path in tmp_path.iterdir()} == expected
+
+    def test_regime_report_has_the_cvar_column(self, tmp_path: Path) -> None:
+        """S21: the per-regime table appends the CVaR column (ADR-040)."""
+        ablations, matrices, gap = self._artifacts()
+        write_results(ablations, matrices, gap, tmp_path)
+        matrix = (tmp_path / "regime_matrix_hodl.md").read_text()
+        assert "| CVaR |" in matrix
 
     def test_writes_policy_keyed_summary_json(self, tmp_path: Path) -> None:
         frame = pl.DataFrame(

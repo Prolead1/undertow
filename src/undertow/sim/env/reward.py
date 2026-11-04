@@ -94,6 +94,7 @@ def compute_reward(
     hedge_pnl: float = 0.0,
     hedge_funding: float = 0.0,
     hedge_fee: float = 0.0,
+    pnl_cvar: float = 0.0,
 ) -> RewardBreakdown:
     """Compute the step reward per eq (1) of §9.2.
 
@@ -110,6 +111,14 @@ def compute_reward(
     entered directly; the hedge terms are gated by ``config.hedge_enabled``
     for the RQ1 ablation.
 
+    ``pnl_cvar`` (S21) is the trailing empirical expected shortfall of the
+    per-step equity **losses** as a **positive USDC magnitude** (a loss enters
+    negative), so the penalty is ``-lambda * pnl_cvar``, mirroring the
+    ``-lambda * pnl_volatility`` volatility term.  It is read only when
+    ``config.risk_penalty_enabled`` and ``config.risk_penalty_mode == "cvar"``;
+    the default ``pnl_cvar=0.0`` and the default ``"volatility"`` mode make
+    every returned value byte-identical to the pre-S21 function.
+
     ``equity`` is left at ``0.0``; the caller (S12/S11) fills it with the
     current equity after this step. Normalization by initial capital is applied
     at the environment boundary via :func:`normalize_reward`.
@@ -118,11 +127,13 @@ def compute_reward(
     gas = -gas_cost if config.gas_enabled else 0.0
     slippage = -slippage_cost if config.slippage_enabled else 0.0
     il = il_change if config.il_enabled else 0.0
-    risk = (
-        -config.risk_penalty_lambda * pnl_volatility
-        if config.risk_penalty_enabled
-        else 0.0
-    )
+    if config.risk_penalty_enabled:
+        risk_magnitude = (
+            pnl_cvar if config.risk_penalty_mode == "cvar" else pnl_volatility
+        )
+        risk = -config.risk_penalty_lambda * risk_magnitude
+    else:
+        risk = 0.0
 
     hedge_pnl_gated = hedge_pnl if config.hedge_enabled else 0.0
     hedge_funding_gated = hedge_funding if config.hedge_enabled else 0.0

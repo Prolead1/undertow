@@ -29,7 +29,9 @@ import shutil
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import polars as pl
@@ -500,11 +502,13 @@ def _load_checkpoint(checkpoint: Path) -> object:
 # ---------------------------------------------------------------------------
 # Environment factory (training)
 # ---------------------------------------------------------------------------
-def _calibrated_params(market_view: MarketView) -> tuple[MRSJDParams, float]:
-    """Fit the calibrated MRSJD on the train view, rejecting an eval view.
+def _require_train_view_for_calibration(market_view: MarketView) -> None:
+    """Reject an eval view before its data can enter a calibrated fit.
 
     Fitting on eval data would be look-ahead, so this is reported as a user
-    config error rather than an internal failure.
+    config error rather than an internal failure.  Used both by the fitter and
+    by the pre-fitted ``calibrated=`` pass-through (S21, ADR-040), so the guard
+    cannot be bypassed by reusing parameters that were fitted elsewhere.
     """
     if not market_view.is_train:
         raise CliError(
@@ -512,11 +516,19 @@ def _calibrated_params(market_view: MarketView) -> tuple[MRSJDParams, float]:
             "(fitting on eval data would be look-ahead).",
             EXIT_CONFIG,
         )
+
+
+def _calibrated_params(market_view: MarketView) -> tuple[MRSJDParams, float]:
+    """Fit the calibrated MRSJD on the train view, rejecting an eval view."""
+    _require_train_view_for_calibration(market_view)
     return fit_calibrated(market_view)
 
 
 def _make_env_factory(
-    market_view: MarketView, config: SimConfig
+    market_view: MarketView,
+    config: SimConfig,
+    *,
+    calibrated: tuple[MRSJDParams, float] | None = None,
 ) -> Callable[[], LpEnvironment]:
     """Return a zero-argument environment factory for ``train_ppo``.
 
@@ -524,9 +536,18 @@ def _make_env_factory(
     the MRSJD on the train split and builds a fresh pool + process per call.  A
     fresh object per call is required by ``train_ppo`` (one env per seed/parallel
     slot).
+
+    ``calibrated`` is an optional pre-fitted ``(params, initial_price)`` pair
+    (S21, ADR-040): the CLI fits once on the carved **training** lane and reuses
+    it for the validation factory so the validation checkpoints are scored on
+    the training-time price process, not one re-fitted on the validation rows.
     """
     if config.price_mode is PriceMode.CALIBRATED:
-        params, initial_price = _calibrated_params(market_view)
+        if calibrated is not None:
+            _require_train_view_for_calibration(market_view)
+            params, initial_price = calibrated
+        else:
+            params, initial_price = _calibrated_params(market_view)
 
         def calibrated_factory() -> LpEnvironment:
             process = CalibratedPriceProcess(params, initial_price=initial_price)
@@ -715,32 +736,141 @@ def _cmd_backtest(
 
 
 def _train_env_factory(
-    args: argparse.Namespace, config: SimConfig, view: MarketView
+    args: argparse.Namespace,
+    config: SimConfig,
+    view: MarketView,
+    *,
+    slice_bounds: tuple[int, int] | None = None,
+    calibrated: tuple[MRSJDParams, float] | None = None,
 ) -> Callable[[], LpEnvironment]:
     """Pick the environment factory for the configured vector-env backend.
 
     ``subproc`` returns a picklable :class:`EnvFactory` that rebuilds the view in
     each worker process; ``dummy`` keeps the in-process closure over ``view``.
     Calibrated params are fitted once here, in the parent.
+
+    ``slice_bounds`` (S21, ADR-040) restricts training to the carved train lane
+    ``[start_seq, end_seq)``: the in-process factory slices directly, while the
+    subprocess factory carries the bounds so every worker slices after
+    rebuilding/mapping the full view (the shared IPC frames stay unbounded).
     """
     if config.training.vec_env != "subproc":
-        return _make_env_factory(view, config)
+        train_view = view.slice(*slice_bounds) if slice_bounds is not None else view
+        return _make_env_factory(train_view, config, calibrated=calibrated)
     params = initial_price = None
     if config.price_mode is PriceMode.CALIBRATED:
-        params, initial_price = _calibrated_params(view)
+        # Fit on the train lane only: the validation window must not influence
+        # the price process the training envs sample (ADR-040).  ``calibrated``
+        # is the pre-fitted pair the validation factory also uses.
+        if calibrated is not None:
+            _require_train_view_for_calibration(view)
+            params, initial_price = calibrated
+        else:
+            fit_view = view.slice(*slice_bounds) if slice_bounds is not None else view
+            params, initial_price = _calibrated_params(fit_view)
     return EnvFactory(
         data_config_path=Path(args.data_config),
         split=args.split,
         config=config,
         mrsjd_params=params,
         initial_price=initial_price,
+        start_seq=slice_bounds[0] if slice_bounds is not None else None,
+        end_seq=slice_bounds[1] if slice_bounds is not None else None,
         _view=view,
     )
 
 
+def _active_seq_bounds(view: MarketView) -> tuple[int, int]:
+    """Inclusive min seq / exclusive end seq of the view's active tape."""
+    seqs = view.active_split_data()["seq"]
+    return cast(int, seqs.min()), cast(int, seqs.max()) + 1
+
+
+def _carve_validation_window(
+    view: MarketView, config: SimConfig
+) -> tuple[MarketView, MarketView]:
+    """Carve the last ``validation_days`` of the train split (S21, ADR-040).
+
+    Returns ``(train_view, validation_view)``: the training lane ends at the
+    first active row at or after ``active_end_utc - validation_days`` and the
+    validation view covers the remainder through the split wall, so the two are
+    disjoint and exhaustive.  Checkpoint selection may score the validation
+    view, but training never sees it.
+
+    Raises :class:`CliError` for an eval view (selection on the eval split is
+    look-ahead), a ``validation_days`` at least the train span, or a carve that
+    would leave either side empty.
+    """
+    if not view.is_train:
+        raise CliError(
+            "validation-based checkpoint selection requires the train split "
+            "(the eval split is reserved for final results; selecting on it "
+            "would be look-ahead)",
+            EXIT_CONFIG,
+        )
+    days = int(config.training.validation_days)
+    validation_start = view.active_end_utc - timedelta(days=days)
+    if validation_start <= view.active_start_utc:
+        raise CliError(
+            f"training.validation_days={days} covers the whole train split "
+            f"[{view.active_start_utc}, {view.active_end_utc}]; reduce it so a "
+            "training window remains",
+            EXIT_CONFIG,
+        )
+    tape = view.active_split_data()
+    after = tape.filter(pl.col("block_timestamp") >= validation_start)
+    if after.height == 0:
+        raise CliError(
+            f"no tape row at or after the validation start {validation_start}; "
+            "the validation window would be empty",
+            EXIT_CONFIG,
+        )
+    start_seq, end_seq = _active_seq_bounds(view)
+    validation_start_seq = cast(int, after["seq"].min())
+    if validation_start_seq <= start_seq:
+        raise CliError(
+            "the carved training window would be empty; reduce "
+            "training.validation_days",
+            EXIT_CONFIG,
+        )
+    train_view = view.slice(start_seq, validation_start_seq)
+    validation_view = view.slice(validation_start_seq, end_seq)
+    return train_view, validation_view
+
+
 def _cmd_train(args: argparse.Namespace, config: SimConfig, view: MarketView, output: Path) -> int:
     """Train PPO across the configured seeds and write checkpoints + manifests."""
-    env_factory = _train_env_factory(args, config, view)
+    training = config.training
+    validation_env_fn: Callable[[], LpEnvironment] | None = None
+    slice_bounds: tuple[int, int] | None = None
+    if training.selection_metric != "reward":
+        if args.split != "train":
+            raise CliError(
+                "training.selection_metric != 'reward' carves a validation "
+                f"window from the train split, but --split is {args.split!r}; "
+                "rerun with --split train",
+                EXIT_CONFIG,
+            )
+        train_view, validation_view = _carve_validation_window(view, config)
+        slice_bounds = _active_seq_bounds(train_view)
+        # Fit the calibrated price process once on the training lane and reuse
+        # it for the validation env, so checkpoints are scored on the same
+        # process the training envs sampled (ADR-040).
+        calibrated = (
+            _calibrated_params(train_view)
+            if config.price_mode is PriceMode.CALIBRATED
+            else None
+        )
+        # The validation env is always in-process: it is a small, deterministic
+        # scoring pass, so it must not pay for (or race with) worker processes.
+        validation_env_fn = _make_env_factory(
+            validation_view, config, calibrated=calibrated
+        )
+    else:
+        calibrated = None
+    env_factory = _train_env_factory(
+        args, config, view, slice_bounds=slice_bounds, calibrated=calibrated
+    )
     # Process-parallel workers must not each rebuild the multi-GB view: publish
     # it once as memory-mappable IPC frames and point the pickled factories at
     # them. A single-slot subproc run uses DummyVecEnv and shares ``view``, and
@@ -749,7 +879,17 @@ def _cmd_train(args: argparse.Namespace, config: SimConfig, view: MarketView, ou
     if isinstance(env_factory, EnvFactory) and int(config.training.parallel_envs) > 1:
         shared_view_dir = env_factory.publish_shared_view(output / "_shared_view")
     try:
-        result = train_ppo(env_factory, config, log_dir=output)
+        if validation_env_fn is None:
+            # Default path: keep the historical call signature so existing
+            # fakes/callers see exactly today's invocation.
+            result = train_ppo(env_factory, config, log_dir=output)
+        else:
+            result = train_ppo(
+                env_factory,
+                config,
+                log_dir=output,
+                validation_env_fn=validation_env_fn,
+            )
     finally:
         if shared_view_dir is not None:
             shutil.rmtree(shared_view_dir, ignore_errors=True)
@@ -766,6 +906,8 @@ def _cmd_train(args: argparse.Namespace, config: SimConfig, view: MarketView, ou
                 "total_timesteps": manifest.total_timesteps,
                 "best_reward": manifest.best_reward,
                 "checkpoint_path": str(manifest.checkpoint_path),
+                "selection_metric": manifest.selection_metric,
+                "selection_value": manifest.selection_value,
             }
             for manifest in result.manifests
         ],

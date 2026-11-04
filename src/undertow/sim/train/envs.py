@@ -166,40 +166,61 @@ class EnvFactory:
     config: SimConfig
     mrsjd_params: MRSJDParams | None = None
     initial_price: float | None = None
+    #: S21 active-lane slice bounds ``[start_seq, end_seq)`` applied by
+    #: :meth:`load_view`; ``None``/``None`` is the whole active split.  The
+    #: validation carve-out (ADR-040) sets these so a worker rebuilding the
+    #: view from disk trains only on the train lane.
+    start_seq: int | None = None
+    end_seq: int | None = None
     _view: MarketView | None = field(default=None, repr=False)
     #: Directory of frames written by :meth:`publish_shared_view`.  Workers (whose
     #: pickled copy has ``_view`` dropped) memory-map it instead of rebuilding;
     #: ``None`` keeps the previous rebuild-from-disk behaviour.
     _shared_dir: Path | None = field(default=None, repr=False)
 
+    def _base_view(self) -> MarketView:
+        """The unbounded view: in-process cache, shared IPC map, or disk rebuild."""
+        if self._view is None:
+            if self._shared_dir is not None:
+                self._view = load_shared_view(self._shared_dir)
+            else:
+                self._view = load_market_view(
+                    self.data_config_path,
+                    self.config.split,
+                    split=self.split,
+                    episode_config=self.config.episode,
+                )
+        assert self._view is not None
+        return self._view
+
     def load_view(self) -> MarketView:
-        """Return the process-local view, loading it on first use.
+        """Return the process-local view, loading it and applying slice bounds.
 
         Precedence: an in-process frame (the parent), then the shared IPC
         directory (workers), then a rebuild from the parquet dataset (the
-        fallback).
+        fallback).  ``start_seq``/``end_seq`` are applied on top so a worker
+        that rebuilt the full split cannot train on a carved validation window.
         """
-        if self._view is not None:
-            return self._view
-        if self._shared_dir is not None:
-            self._view = load_shared_view(self._shared_dir)
-        else:
-            self._view = load_market_view(
-                self.data_config_path,
-                self.config.split,
-                split=self.split,
-                episode_config=self.config.episode,
+        view = self._base_view()
+        if self.start_seq is None and self.end_seq is None:
+            return view
+        if self.start_seq is None or self.end_seq is None:
+            raise SimConfigError(
+                "EnvFactory slice bounds must be set together "
+                f"(start_seq={self.start_seq!r}, end_seq={self.end_seq!r})"
             )
-        return self._view
+        return view.slice(self.start_seq, self.end_seq)
 
     def publish_shared_view(self, directory: Path) -> Path:
-        """Write the in-process view once for every subprocess worker to map.
+        """Write the *unbounded* base view once for every subprocess worker.
 
-        Called by the training CLI before ``SubprocVecEnv`` starts.  Returns the
-        directory so the caller can delete it after training; deleting early
-        would break workers mid-run.
+        Called by the training CLI before ``SubprocVecEnv`` starts.  Each
+        worker's :meth:`load_view` applies its own ``start_seq``/``end_seq``,
+        so the mapped pages are shared even when only a slice is trained on.
+        Returns the directory so the caller can delete it after training;
+        deleting early would break workers mid-run.
         """
-        view = self.load_view()
+        view = self._base_view()
         self._shared_dir = share_view(view, directory)
         return self._shared_dir
 

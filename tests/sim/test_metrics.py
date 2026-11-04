@@ -16,6 +16,7 @@ from undertow.sim.metrics import (
     all_metrics,
     annualized_return,
     cvar,
+    cvar_of_equity_changes,
     max_drawdown,
     per_regime_metrics,
     periods_per_year_from_step_minutes,
@@ -441,3 +442,36 @@ def test_single_row_equity_edge_cases() -> None:
     assert value_at_risk(returns) == 0.0
     assert cvar(returns) == 0.0
     assert annualized_return(equity) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# S21 equity-change CVaR
+# ---------------------------------------------------------------------------
+
+
+def test_cvar_of_equity_changes_exact_tiny_series() -> None:
+    # changes = [10, -5, 10, -15]; the 5 % quantile interpolates to -13.5 and
+    # the only observation at/below it is -15, so the expected shortfall is -15.
+    equity = _series([100.0, 110.0, 105.0, 115.0, 100.0])
+    assert cvar_of_equity_changes(equity) == pytest.approx(-15.0)
+
+
+def test_cvar_of_equity_changes_matches_cvar_on_the_diff() -> None:
+    equity = _series([100.0, 103.0, 99.0, 101.0, 95.0, 97.0, 96.0])
+    expected = cvar(equity.diff().drop_nulls(), 0.9)
+    assert cvar_of_equity_changes(equity, 0.9) == pytest.approx(expected)
+
+
+def test_cvar_of_equity_changes_positive_tail_is_positive() -> None:
+    # A monotone-up path has only gains, so the "worst" tail is still a gain.
+    equity = _series([100.0, 101.0, 102.0, 103.0, 104.0, 105.0])
+    assert cvar_of_equity_changes(equity) > 0.0
+
+
+def test_cvar_of_equity_changes_edge_and_bad_confidence() -> None:
+    assert cvar_of_equity_changes(_series([])) == 0.0
+    assert cvar_of_equity_changes(_series([100.0])) == 0.0
+    with pytest.raises(ValueError, match="confidence"):
+        cvar_of_equity_changes(_series([100.0, 99.0]), 1.0)
+    with pytest.raises(ValueError, match="confidence"):
+        cvar_of_equity_changes(_series([100.0, 99.0]), 0.0)

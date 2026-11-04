@@ -184,6 +184,31 @@ def cvar(returns: pl.Series, confidence: float = 0.95) -> float:
     return float(np.mean(tail))
 
 
+def cvar_of_equity_changes(
+    equity_curve: pl.Series,
+    confidence: float = 0.95,
+) -> float:
+    """CVaR of the per-step **equity-change** distribution, ``<= 0`` for losses.
+
+    The S21 evaluation metric (``episode_metrics["cvar_95"]``) and the
+    validation-selection input (ADR-040).  Per-step changes are
+    ``equity_curve.diff()`` in the curve's own units (USDC for the simulator's
+    equity paths, but any additive path works); their empirical expected
+    shortfall at ``confidence`` is delegated to :func:`cvar`, so the sign
+    convention is identical: a value of ``-0.25`` still means the worst 5 % of
+    steps moved the path down by 0.25 on average.  A gain-only tail yields a
+    positive value, and an empty/single-observation curve returns ``0.0``.
+
+    The environment's reward penalty consumes the same statistic with the
+    opposite sign (a positive loss magnitude); see ``LpEnvironment._pnl_cvar``.
+    """
+    if not 0.0 < confidence < 1.0:
+        raise ValueError("confidence must be in (0, 1)")
+    if equity_curve.len() < 2:
+        return 0.0
+    return cvar(equity_curve.diff().drop_nulls(), confidence)
+
+
 def _finite_returns(returns: pl.Series) -> np.ndarray:
     arr = returns.drop_nulls().to_numpy().astype(np.float64)
     return arr[np.isfinite(arr)]
@@ -252,6 +277,7 @@ __all__ = [
     "all_metrics",
     "annualized_return",
     "cvar",
+    "cvar_of_equity_changes",
     "max_drawdown",
     "periods_per_year_from_step_minutes",
     "sharpe_ratio",
