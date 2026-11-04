@@ -77,17 +77,27 @@ At each decision the agent selects a factored action
 a_t = (\kappa_t,\, c_t,\, w_t,\, h_t),
 \label{eq:action}
 \end{equation}
-whose four heads are described in Table~\ref{tab:action}. On the $0.05\,\%$
-primary pool the liquidity head alone has $1+9\times10=91$ options. The
-shipped configuration learns the liquidity head with the hedge overlay
-disabled; when the overlay is enabled its ratio is set by configuration.
-Promoting $h_t$ to a learned head, and the hedge-leg benchmarks, are planned
-for the last two questions and their results remain pending.
+whose four heads are described in Table~\ref{tab:action}. The study learns
+the width and hedge heads; the timing head is exercised once, at deployment,
+and the centre stays at the current tick. That restriction follows from the
+economics the first experiments measured: on this pool the cost of moving a
+band exceeds the fee a move can recover, so the timing decision collapses to
+the choice of whether to deploy at all. Section~\ref{sec:system} reports the
+diagnostic runs that established this, and Section~\ref{sec:results} reports
+the learned policy under the restriction.
+
+The width ladder used for the study holds three arms, one near the typical
+daily move, one just wider than the widest hand-written band, and one close to
+the full range. Together with the hold option they give the LP head four
+actions, and the hedge head adds the five ratios; a full action is therefore
+one of $4\times5$ pairs. The same interface admits the wider timing and centre
+grids, which remain available for the workstream on active timing.
 
 \begin{table}[tbp]
 \caption{The four action heads. Widths are given as half the band width, in
-tick spacings. The primary pool's spacing of $10$ uses all ten widths; the
-contrast pool's spacing of $60$ uses the six-width ladder.}
+tick spacings. The general grid holds ten widths; the study's configuration
+restricts the width head to three arms and the timing head to a single
+deployment.}
 \label{tab:action}
 \centering
 \small
@@ -98,7 +108,7 @@ contrast pool's spacing of $60$ uses the six-width ladder.}
 Rebalance & $\kappa_t$ & hold, act & spend gas and slippage to move the band, or leave it \\
 Centre & $c_t$ & $-4,\dots,4$ spacings & shift the centre of the new band around the current tick \\
 Width & $w_t$ & $\{1,2,5,10,25,50,$\newline $100,250,500,1000\}$ spacings & half of the new band's width \\
-Hedge & $h_t$ & $\{0,0.25,0.5,0.75,1.0\}$ & fraction of the LP's ETH delta carried by the short \\
+Hedge & $h_t$ & $\{0,0.25,0.5,0.75,1.0\}$ & share of the LP's ETH delta that the short offsets \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -113,7 +123,7 @@ perp cost $\tau_t\le 0$, the reward is
 r_t = \frac{1}{W_0}\Big(
   & \mathrm{fees}_t - \mathrm{gas}_t - \mathrm{slip}_t
     + \Delta(V_t - H_t) \notag \\
-  & + \pi_t + \phi_t + \tau_t - \lambda\,\hat\sigma_t \Big),
+  & + \pi_t + \phi_t + \tau_t - \lambda\,\hat{c}_t \Big),
 \label{eq:reward}
 \end{align}
 whose terms are defined in Table~\ref{tab:reward}. Dividing by the initial
@@ -140,19 +150,24 @@ $\Delta(V_t-H_t)$ & change in position value against the fixed opening basket & 
 $\pi_t$ & mark PnL of the short perpetual & $\pm$ \\
 $\phi_t$ & funding paid or received on the short & $\pm$ \\
 $\tau_t$ & perp taker cost of adjusting the short & $\le 0$ \\
-$\lambda\,\hat\sigma_t$ & penalty on recent reward volatility, $\lambda=0$ by default & $-$ \\
+$\lambda\,\hat{c}_t$ & penalty on the trailing expected shortfall of per-step losses, $\lambda=0.05$ in the study & $-$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \subsection{Risk and benchmarks}
 
-The learning objective is the discounted return with a penalty on recent
-reward volatility: the risk term in Eq.~\eqref{eq:reward} subtracts a multiple
-of the trailing standard deviation of per-step equity changes, with $\lambda=0$
-by default. Tail risk is measured in the evaluation instead. With losses $L=-G$
-defined on the episode return $G$, the conditional value-at-risk at level
-$\alpha$ is
+The learning objective is the discounted return with a penalty on the recent
+tail of per-step losses. The risk term in Eq.~\eqref{eq:reward} subtracts
+$\lambda$ times the recent $5\,\%$ expected shortfall of per-step equity
+changes, measured over the last trading day, so deeper tail losses cost more
+reward. The penalty is computed on the
+joint equity of the liquidity and hedge legs, which is what lets the hedge
+ratio move it. The default configuration disables the term ($\lambda=0$); the
+study's configuration sets $\lambda=0.05$, small next to a full tail loss.
+The evaluation reports the same quantity the penalty controls. With losses
+$L=-G$ defined on the episode return $G$, the conditional value-at-risk at
+level $\alpha$ is
 \begin{equation}
 \mathrm{CVaR}_\alpha(L) = \min_{\nu\in\mathbb{R}}
 \left\{\nu+\frac{1}{1-\alpha}\mathbb{E}\big[(L-\nu)^+\big]\right\},
@@ -164,13 +179,12 @@ ratio and CVaR at $5\,\%$ as primary statistics, with raw PnL and excess over
 HODL as secondary ones. Comparisons use paired per-window differences and
 confidence intervals across seeds.
 
-The hedge is a short perpetual position sized as a fraction of the LP's delta.
+The hedge is a short perpetual position sized against the LP's ETH exposure.
 Its mark PnL over a step is the negative product of the short notional and the
 price change, plus funding and the taker cost of adjusting the position. Three
-reference points make the hedge leg interpretable: the unhedged LP, the
-deterministic overlay, and a hedged HODL portfolio with matched beta. The last
-is the benchmark that prevents us from declaring success against a weaker
+reference points make the hedge leg interpretable: the unhedged LP, the policy
+that chooses the ratio, and a hedged HODL portfolio with a delta-matched
+short. The last is the benchmark that prevents us from declaring success against a weaker
 opponent: a policy that merely removes directional risk must still beat a
-passive portfolio with the same risk profile. The overlay is disabled in the
-shipped configuration, so the hedged benchmark of
-Table~\ref{tab:benchmarks} remains pending.
+passive portfolio with the same risk profile. The overlay is enabled in the
+study's configuration and its ratio is a learned decision at every step.

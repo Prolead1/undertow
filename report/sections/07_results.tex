@@ -1,37 +1,345 @@
 \section{Results}
 \label{sec:results}
 
-\pending{This section is deliberately a stub while the multi-seed experiments
-run. Each subsection states the question and the shape of the evidence that will
-answer it; no number is written until the locked runs exist.}
+The four questions are answered in the order they were posed, on the
+$0.05\,\%$ (500 pips) ETH/USDC pool, over the thirteen windows of 2024 that
+no policy saw during training, and across five seeds where a learned policy
+is involved. Every number is measured on the exact backtester, with the
+frictions of the testbed charged on whichever leg is active. The tables
+name the window count and the units; where a mean is quoted in the prose, it
+is the mean over those thirteen windows.
 
-\subsection{Where do fees fail?}
+\subsection{Where the fees fail}
 
-The first question is economic. We decompose the passive benchmarks into fee
-income, impermanent loss, gas and slippage, and locate the conditions under
-which the losses exceed the fees. \pending{Report the decomposition on both fee
-tiers, the cost of greedy against lazy rebalancing, and where the sign of
-excess over a passive holding flips across regimes.}
+A passive position earns fees and pays for the price travel it cannot
+follow. Table~\ref{tab:decomposition} separates the two. The pattern is the
+same at every width: fees are positive and shrink as the band widens,
+impermanent loss is negative and shrinks faster, and the liquidity leg ends
+in deficit for every passive rule. The band held at the opening width nets
+\usdc{-1553} against the pure buy-and-hold basket; the narrow band nets
+\usdc{-1206}, the wide band \usdc{-665}, and the full range \usdc{-106}.
 
-\subsection{Why does naive learning fail?}
+Concentration does exactly what the bargain advertises and no more. A
+half-width of 50 tick spacings collects \usdc{4266} in fees against
+\usdc{-5435} of impermanent loss; the full range collects \usdc{362}
+against \usdc{-430}. The ratio of fees to losses moves only from 0.78 to
+0.84 across that span. Concentrating capital raises both terms together and
+leaves the shortfall in place; what changes is the variance of the
+outcome, not its sign.
 
-The second question is methodological. A standard policy, trained on the
-original interface, collapsed to a single action on every seed. We trace that
-collapse to what the agent could see, what it was rewarded for, and the windows
-it trained on, and we measure what each repair contributes. \pending{Report the
-pre-fix collapse and the per-fix ablations, with the evidence for each
-diagnosis.}
+The windows agree with the average. The opening band's liquidity leg is in
+deficit in six of the thirteen windows, the narrow band in five, the wide
+band in four and the full range in three. The losses cluster where the
+price trends or jumps. Across the five bull windows the opening band
+collects \usdc{6057} of fees and pays \usdc{-9481} of impermanent loss; in
+the single high-volatility window fees of \usdc{1593} meet a loss of
+\usdc{-12530}. In the range-bound windows the sign flips and fees cover the
+shortfall with room to spare.
 
-\subsection{Can one policy do better?}
+Acting does not repair the arithmetic; it deepens it. The two rebalancing
+rules buy more fee income than any one-shot rule by keeping the band close
+to the price, and they pay more for it in realised losses and execution
+costs. \textsf{tau\_reset} recentres 122.8 times per episode, collects
+\usdc{43029} of fees, pays \usdc{-48904} of impermanent loss and
+\usdc{-14093} of gas and slippage, and ends \usdc{-19968} behind the
+basket. The cost-aware rule trades 22.0 times per episode and still ends
+\usdc{-4280} behind it. \textsf{tau\_reset} loses in every regime; the
+cost-aware rule earns only in the bull windows. On this pool in this year,
+fee income does not pay for the price risk a position carries, and frequent
+action adds cost without changing the sign. Whether a policy can exploit any
+of it is the next question.
 
-The third question is the central one. \pending{Report out-of-sample Sharpe and
-CVaR for the learned policy against every benchmark, paired per window and
-across seeds, together with the action distribution and the decision boundaries
-it recovers.}
+\begin{table}[tbp]
+\caption{Fee income against impermanent loss on the thirteen evaluation
+windows, mean per window in USDC. Fees, impermanent loss, gas and slippage
+are measured against the pure buy-and-hold basket, so the liquidity net
+excludes the basket's own \usdc{2288} and the hedge column is zero for the
+unhedged rules. The last column counts windows in which the liquidity net is
+negative.}
+\label{tab:decomposition}
+\centering
+\small
+\begin{tabular}{@{}L{0.17\linewidth}rrrrrr@{}}
+\toprule
+\textbf{Policy} & \textbf{Fees} & \textbf{IL} & \textbf{Costs} & \textbf{LP net} & \textbf{Hedge} & \textbf{Net<0} \\
+\midrule
+\textsf{hodl} & $+4\,734$ & $-6\,287$ & $0$ & $-1\,553$ & $0$ & 6/13 \\
+\textsf{passive\_narrow} & $+4\,266$ & $-5\,435$ & $-37$ & $-1\,206$ & $0$ & 5/13 \\
+\textsf{passive\_wide} & $+2\,921$ & $-3\,549$ & $-37$ & $-665$ & $0$ & 4/13 \\
+\textsf{full\_range\_v2} & $+362$ & $-430$ & $-37$ & $-106$ & $0$ & 3/13 \\
+\textsf{tau\_reset} & $+43\,029$ & $-48\,904$ & $-14\,093$ & $-19\,969$ & $0$ & 13/13 \\
+\textsf{cost\_aware} & $+19\,833$ & $-22\,038$ & $-2\,075$ & $-4\,280$ & $0$ & 10/13 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\subsection{Where is active management worth it?}
+\subsection{Why the first policies failed}
 
-The fourth question turns the result into a map. \pending{Report the boundary
-along which active and passive provision achieve equal performance under
-risk, as a function of volatility, volume relative to liquidity, fee
-tier, gas and capital, with the analytical LVR threshold overlaid.}
+The first question asked of the learner was whether it could act at all, and
+on the original interface it could not. With the timing, centre and width
+decisions encoded as 91 actions and the reward measured against a basket
+that moved with each rebalance, every trained policy churned: it shifted
+the band every few steps, paid gas and slippage on each move, and lost
+\usdc{-86889} across the evaluation windows. Shrinking the grid to 28 actions
+changed the magnitude, not the behaviour; that pilot lost \usdc{-80642}.
+The collapse was not an optimisation accident. The reward gradient was
+dominated by the decision to act or hold, and the observation gave the policy
+no way to see where the price sat inside its band.
+
+The repairs were applied in sequence rather than as a factorial ablation,
+so the progression below measures the sequence of repairs, not the marginal
+effect of any single change. Three interface defects were fixed first: the
+observation gained the distance to each band edge and the band width; the
+reward was measured against the fixed opening basket instead of a basket
+that moved at each rebalance; and training windows were resampled from
+2022--2023 instead of replaying one fixed month. Two further defects
+surfaced while making those repairs. Slippage was charged on the whole
+position value rather than the inventory actually swapped, and fee credit
+was taken from global fee growth rather than the position's exact share of
+each liquidity segment. Both were corrected before any result reported
+here.
+
+Three changes to the learning setup followed. Stabilising the update targets made
+every seed hold for the whole episode with zero rebalances and a
+mean episode return between $-0.17$ and $-0.29$, against $-0.95$ to $-0.97$
+in the churning runs; the update stayed inside its trust region, with the
+KL divergence between 0.001 and 0.002 and the clip fraction near 0.02. The
+policy had learned to do nothing, which tied \textsf{hodl} at
+\usdc{735.2}. Reducing the action space to a
+one-shot band choice and lengthening the effective horizon gave the width
+decision a signal at last. The first pilot that genuinely chose a band
+scored \usdc{2146.6} with a Sharpe of 0.942 and a maximum drawdown of
+$9.7\,\%$, matching the full-range rule's PnL with a higher Sharpe ratio
+and beating \textsf{hodl} by roughly a factor of three.
+
+The hedge head failed in its first joint run. Every seed held the liquidity
+position for the whole episode and collapsed the hedge ratio to a
+constant that differed by seed, between 0.25 and 0.75. The seed selected on the
+training curve, which had settled at 0.75, lost \usdc{1313} with a Sharpe
+of $-1.294$ out of sample. The objective had never asked for tail
+protection, and selection had used the training return rather than a
+validation statistic. Adding a penalty on the conditional tail of joint
+equity and selecting checkpoints by validation Sharpe produced the final
+policy whose results fill the rest of this section.
+
+\subsection{Whether one policy does better}
+
+The pre-registered comparison runs against the strongest hand-written
+rules, the best static width chosen on the training split, and a hedged
+benchmark with a matched delta. Table~\ref{tab:aggregate} sets out the
+levels and Table~\ref{tab:paired} the paired per-window differences that
+the decision rule turns on.
+
+Start with the frozen comparator. Training Sharpes for half-widths of 50,
+250 and 1000 tick spacings were 2.20, 1.45 and 0.80, so the protocol froze
+the narrowest band. On the evaluation windows that choice scores a Sharpe of
+1.296, while the width of 250 would have scored 1.591. The frozen width is
+the pre-registered comparator, and the learned mean loses to it: the paired
+Sharpe difference is $-0.733$ with an interval of $[-1.355,-0.041]$ that
+excludes zero. The mean also loses to the wide band by $0.963$, again with
+an interval excluding zero. The Sharpe clause of the pre-registered rule
+fails.
+
+The tail clause holds against every unhedged benchmark. The learned mean's
+CVaR is \usdc{-27.63}. \textsf{hodl} sits at \usdc{-59.65},
+the frozen width at \usdc{-56.95}, the wide band at \usdc{-51.31} and the
+full range at \usdc{-53.18}. Every paired CVaR difference against an unhedged
+benchmark in Table~\ref{tab:paired} is positive with an interval that excludes
+zero. Against the delta-matched hedge the clause fails: the hedge
+reaches a CVaR of \usdc{-3.15}, and the learned mean is \usdc{-24.48}
+worse, with a paired interval from $-30.42$ to $-18.95$. Both clauses of the
+rule must
+hold for a positive verdict, so the study reports none. The evidence
+supports a reduction in tail risk, not a superior return.
+
+The mean hides the best seed. The seed with the highest validation Sharpe
+during training, seed three, deployed a half-width of 250 tick spacings for
+every window and held it. It returns \usdc{175.13}, a Sharpe of 1.425 and
+a CVaR of \usdc{-17.04}. Its Sharpe is indistinguishable from the frozen
+width (difference $+0.129$, interval $[-0.880,+1.232]$) and its CVaR is
+better by \usdc{39.91} with an interval of $[+27.76,+51.43]$. The same
+seed beats the delta-matched hedge on Sharpe by $6.19$ with an interval
+that excludes zero, and loses to it on CVaR by \usdc{-13.89}. A single
+seed is not the pre-registered unit, and a seed chosen after seeing the
+evaluation windows could not carry the verdict. That seed did have the
+best validation Sharpe of the five on the training split, so at least its
+selection did not use the evaluation year.
+
+The seeds agree on the timing decision and disagree on width and hedge.
+Every seed deploys once, at the start of the episode, and holds. The action
+distribution in Table~\ref{tab:actions} records one rebalance per episode
+for all five seeds: three choose the half-width of 250 tick spacings in every
+window, one splits between 250 and 50 across the tiling, and one chooses 50
+throughout. The hedge ratios are partial and
+differ by seed, mostly between 0.25 and 0.75. Seed three holds 0.75 for
+73.8\,\% of its steps, seed two splits between 0.25 and 0.75, and seed zero
+holds 0.50 or 1.00. The learned policy sets a band and a hedge ratio; it is
+not a timing policy, and its preferred width of 250 is the static band with the
+best Sharpe on the evaluation windows, though it was not the frozen
+comparator.
+
+The worst window for the one-shot rules and the learned mean is the single
+high-volatility window. \textsf{hodl}
+loses \usdc{22999.6} there and the frozen width \usdc{22542.2}.
+The wide band loses \usdc{19123.1} and the full range \usdc{12641.5}. The
+learned mean loses \usdc{10039} with a CVaR of \usdc{-46.5}. Raw PnL tells
+the same story as the tail across the year:
+the best unhedged benchmark, the full range, finishes \usdc{105.6} below
+the pure basket, and the learned mean finishes \usdc{2599} below it. No
+paired PnL difference against the ladder excludes zero except the
+comparison with \textsf{tau\_reset}, so the return evidence is
+inconclusive at this sample size.
+
+\begin{table}[tbp]
+\caption{Performance in the 2024 evaluation on the $0.05\,\%$ (500 pips) ETH/USDC
+pool, mean over the thirteen windows of the 2024 tiling. PnL and excess are
+USDC per episode; excess is measured against the pure buy-and-hold basket,
+the study's HODL numeraire. The row for the learned mean averages the five
+seeds; the row for the best seed reports the seed with the highest validation
+Sharpe on the training split. Rebalances counts executed moves per episode. The frozen
+comparator selected on the training split is the half-width of 50 tick
+spacings, the \textsf{passive\_narrow} row.}
+\label{tab:aggregate}
+\centering
+\small
+\begin{tabular}{@{}L{0.19\linewidth}rrrrrr@{}}
+\toprule
+\textbf{Policy} & \textbf{PnL} & \textbf{Excess} & \textbf{Sharpe} & \textbf{CVaR} & \textbf{maxDD} & \textbf{Reb.} \\
+\midrule
+Basket & $+2\,288$ & $0$ & $0.441$ & $-53.81$ & $-9.6\,\%$ & $0$ \\
+\textsf{hodl} & $+735$ & $-1\,553$ & $0.654$ & $-59.65$ & $-12.2\,\%$ & $0$ \\
+\textsf{passive\_narrow} & $+1\,082$ & $-1\,206$ & $1.296$ & $-56.95$ & $-11.3\,\%$ & $1$ \\
+\textsf{passive\_wide} & $+1\,623$ & $-665$ & $1.526$ & $-51.31$ & $-10.1\,\%$ & $1$ \\
+\textsf{full\_range\_v2} & $+2\,183$ & $-106$ & $0.639$ & $-53.18$ & $-9.7\,\%$ & $1$ \\
+\textsf{tau\_reset} & $-17\,680$ & $-19\,968$ & $-5.810$ & $-56.10$ & $-21.9\,\%$ & $122.8$ \\
+\textsf{cost\_aware} & $-1\,992$ & $-4\,280$ & $-0.241$ & $-61.84$ & $-14.0\,\%$ & $22.0$ \\
+Hedged \textsf{hodl} & $-1\,996$ & $-4\,284$ & $-4.766$ & $-3.15$ & $-2.7\,\%$ & $0$ \\
+Learned mean & $-310$ & $-2\,599$ & $0.563$ & $-27.63$ & $-6.0\,\%$ & $1$ \\
+Best seed & $+175$ & $-2\,113$ & $1.425$ & $-17.04$ & $-3.2\,\%$ & $1$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[tbp]
+\caption{Paired per-window differences, learned mean minus benchmark, with
+bootstrap $95\,\%$ intervals over the thirteen windows; a star marks an
+interval that excludes zero. A positive Sharpe difference favours the
+learned policy; a positive CVaR difference means a smaller tail loss than
+the benchmark. Units are USDC for the CVaR column.}
+\label{tab:paired}
+\centering
+\small
+\begin{tabular}{@{}L{0.30\linewidth}L{0.30\linewidth}L{0.30\linewidth}@{}}
+\toprule
+\textbf{Benchmark} & \textbf{Sharpe} & \textbf{CVaR} \\
+\midrule
+\textsf{hodl} & $-0.091\ [-0.808,+0.750]$ & $+32.019\ [+21.319,+42.230]^{*}$ \\
+\textsf{passive\_narrow} & $-0.733\ [-1.355,-0.041]^{*}$ & $+29.320\ [+19.365,+38.765]^{*}$ \\
+\textsf{passive\_wide} & $-0.963\ [-1.472,-0.509]^{*}$ & $+23.677\ [+18.298,+29.475]^{*}$ \\
+\textsf{full\_range\_v2} & $-0.076\ [-0.930,+0.693]$ & $+25.549\ [+17.841,+33.977]^{*}$ \\
+\textsf{tau\_reset} & $+6.373\ [+4.702,+8.278]^{*}$ & $+28.471\ [+21.456,+36.160]^{*}$ \\
+\textsf{cost\_aware} & $+0.804\ [-0.222,+1.656]$ & $+34.207\ [+26.501,+42.092]^{*}$ \\
+Hedged \textsf{hodl} & $+5.329\ [+2.550,+7.437]^{*}$ & $-24.481\ [-30.423,-18.945]^{*}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[tbp]
+\caption{Deployment of each seed on the thirteen evaluation windows. Bands are half-widths
+in tick spacings, with the number of windows in which the seed chose that
+band; hedge ratios are shares of decision steps at each short fraction.
+Every seed rebalanced exactly once per episode.}
+\label{tab:actions}
+\centering
+\small
+\begin{tabular}{@{}lL{0.24\linewidth}L{0.44\linewidth}@{}}
+\toprule
+\textbf{Seed} & \textbf{Band (windows)} & \textbf{Hedge ratio (share of steps)} \\
+\midrule
+0 & 50 (13) & 0.50: 69.5\,\%, 1.00: 30.5\,\% \\
+1 & 250 (12), 50 (1) & 0.50: 51.0\,\%, 0.25: 27.9\,\%, 0.75: 14.6\,\%, 1.00: 6.5\,\% \\
+2 & 250 (13) & 0.25: 58.2\,\%, 0.75: 41.8\,\% \\
+3 & 250 (13) & 0.75: 73.8\,\%, 0.50: 22.1\,\%, 1.00: 3.4\,\%, others: 0.7\,\% \\
+4 & 250 (13) & 0.25: 59.5\,\%, 0.75: 18.8\,\%, 1.00: 12.9\,\%, 0.00: 8.7\,\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Where active management pays}
+
+The regime map is the last answer, and it maps insurance rather than
+outperformance. Table~\ref{tab:regimes} splits the evaluation windows by
+their dominant label. The counts are uneven by construction, with five
+bear and five bull windows, two sideways windows and a single
+high-volatility window, so the high-volatility row of the table is a case
+study rather than a distribution.
+
+The quiet windows pay for feet that stay still. In the two sideways windows
+\textsf{hodl} earns \usdc{4648} with a Sharpe of 1.73, the
+narrow band \usdc{3558} with 1.79, and the delta-matched hedge subtracts
+\usdc{3145}; the learned seed finishes at \usdc{74} with a Sharpe of 0.41.
+Fee income is at its most reliable when the price does not travel, and in
+those windows every unit of hedge costs more than it protects.
+
+The trending windows split by direction. In the five bull windows the full
+range earns \usdc{7379} and \textsf{hodl} \usdc{4335}, while
+the learned seed earns \usdc{1093} with a Sharpe of 3.13: the hedge gives
+up part of the rally, and that is what a short does. In the five bear
+windows the ordering changes. The wide band earns \usdc{2589} by holding
+USDC through the fall and the frozen width \usdc{1772}, while the learned
+seed earns \usdc{527} with the best risk-adjusted profile on the panel, a
+Sharpe of 1.09 against $-0.51$ for \textsf{hodl} and $-0.53$
+for the full range. The learned seed's bear CVaR is \usdc{-19.6} against
+\usdc{-78.3} for \textsf{hodl}.
+
+The single high-volatility window is where active management earns its
+premium. Every unhedged rule loses between \usdc{12642} and
+\usdc{22999.6}; the learned seed loses \usdc{5969}, about a quarter of the
+\textsf{hodl} loss, and its CVaR is \usdc{-27.8} against \usdc{-94.5}. No
+policy's Sharpe is positive in that window, including the learned one at
+$-3.40$. The delta-matched hedge loses \usdc{1330} with a CVaR of
+\usdc{-1.4}, the smallest loss and the largest hedge cost over the year.
+Widening the band or hedging the delta makes the stressed quarter hurt
+less; neither choice pays for itself in the quiet ones.
+
+The evidence stops at the realised windows. The controlled sweep across
+volatility, volume relative to liquidity, fee tier, gas and capital that
+the protocol set out for this question was not run, and the evaluation year
+contains only one high-volatility window. The map above is therefore the
+part of the boundary the data can draw: passive breadth wins the level,
+insurance wins the tail, and the learning result sits between them.
+\pending{the boundary sweep across volatility, volume relative to
+liquidity, fee tier, gas and capital}
+
+\begin{table}[tbp]
+\caption{Mean PnL (top panel) and mean CVaR at $5\,\%$ (bottom panel) in
+USDC by dominant regime label over the 2024 evaluation windows: five bear,
+five bull, two sideways and one high-volatility window. The Width 50 and
+Width 202 columns are the narrow ($\pm5\,\%$) and wide ($\pm20\,\%$) one-shot
+bands, whose mean half-widths are 50 and 202 tick spacings. The column for the
+best seed reports the seed with the highest validation Sharpe on the training
+split. The
+single high-volatility window is a case study, not a distribution.}
+\label{tab:regimes}
+\centering
+\small
+\begin{tabular}{@{}L{0.19\linewidth}rrrrrr@{}}
+\toprule
+ & \multicolumn{6}{c}{\textbf{Mean PnL (USDC)}} \\
+\cmidrule(lr){2-7}
+\textbf{Regime (windows)} & \textsf{hodl} & Width 50 & Width 202 & Full range & Delta hedge & Best seed \\
+\midrule
+Bear (5) & $+317$ & $+1\,772$ & $+2\,589$ & $+1\,044$ & $-1\,707$ & $+527$ \\
+Bull (5) & $+4\,335$ & $+4\,127$ & $+4\,779$ & $+7\,379$ & $-1\,958$ & $+1\,093$ \\
+Sideways (2) & $+4\,648$ & $+3\,558$ & $+1\,693$ & $-550$ & $-3\,145$ & $+74$ \\
+High volatility (1) & $-23\,000$ & $-22\,542$ & $-19\,123$ & $-12\,642$ & $-1\,330$ & $-5\,969$ \\
+\midrule
+ & \multicolumn{6}{c}{\textbf{Mean CVaR at $5\,\%$ (USDC)}} \\
+\cmidrule(lr){2-7}
+Bear (5) & $-78.3$ & $-74.3$ & $-57.3$ & $-49.2$ & $-2.0$ & $-19.6$ \\
+Bull (5) & $-31.9$ & $-31.2$ & $-37.0$ & $-58.3$ & $-4.1$ & $-12.8$ \\
+Sideways (2) & $-65.0$ & $-59.3$ & $-50.8$ & $-49.6$ & $-4.4$ & $-15.8$ \\
+High volatility (1) & $-94.5$ & $-94.4$ & $-93.9$ & $-54.5$ & $-1.4$ & $-27.8$ \\
+\bottomrule
+\end{tabular}
+\end{table}
