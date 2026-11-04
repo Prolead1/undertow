@@ -466,6 +466,17 @@ class TestQueries:
         assert sub.active_start_utc == sub.train["block_timestamp"].min()
         assert sub.active_end_utc == sub.train["block_timestamp"].max()
 
+    def test_prefix_slice_head_path_matches_the_filter(
+        self, tiny_market_view: MarketView
+    ) -> None:
+        """S21/ADR-040: the prefix fast path returns exactly the filtered rows."""
+        active = tiny_market_view.active_split_data()
+        min_seq = int(active["seq"].min())
+        end = min_seq + 50
+        sub = tiny_market_view.slice(min_seq, end)
+        expected = active.filter((pl.col("seq") >= min_seq) & (pl.col("seq") < end))
+        assert sub.active_split_data().equals(expected)
+
     def test_slice_invalid_range_raises(self, tiny_market_view: MarketView) -> None:
         with pytest.raises(MarketViewError, match="start_seq"):
             tiny_market_view.slice(10, 10)

@@ -31,17 +31,25 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import shutil
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+import polars as pl
 import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv, VecMonitor
 
+from undertow.sim.metrics import (
+    cvar_of_equity_changes,
+    periods_per_year_from_step_minutes,
+    sharpe_ratio,
+)
 from undertow.sim.train.rollouts import RolloutRecorder, rows_from_env
 from undertow.sim.train.runs import (
     RunManifest,
@@ -159,6 +167,128 @@ def _derive_rollout(training: TrainingConfig) -> tuple[int, int, int]:
         rollout = n_steps * parallel
     batch_size = _snap_batch_size(rollout, int(training.batch_size))
     return n_steps, batch_size, int(training.n_epochs)
+
+
+def _run_validation_episode(
+    model: PPO,
+    env: gym.Env,
+    config: SimConfig,
+    seed: int,
+) -> pl.Series:
+    """Run one deterministic episode on ``env`` and return its joint equity.
+
+    ``model.predict`` is greedy and the episode is reset with an explicit seed,
+    so scoring a checkpoint is reproducible and never advances a training RNG.
+    Joint equity is ``info["equity"] + info["hedge_equity"]``, the same
+    accounting the S20b evaluation runner uses; an env whose ``info`` lacks
+    ``equity`` is a hard error rather than a silently different score.
+
+    The caller owns ``env``: the selection pass builds one validation env and
+    reuses it for every checkpoint so the per-instance pool warmup is paid once
+    (the seeded reset makes the reuse deterministic).
+    """
+    equities = [float(config.episode.agent_capital_usdc)]
+    observation, _info = env.reset(seed=int(seed))
+    done = False
+    for _ in range(_MAX_ROLLOUT_STEPS):
+        action, _state = model.predict(observation, deterministic=True)
+        raw = np.asarray(action).reshape(-1)
+        action_input: int | np.ndarray = int(raw[0]) if raw.size == 1 else raw
+        observation, _reward, terminated, truncated, info = env.step(action_input)
+        if "equity" not in info:
+            raise SimConfigError(
+                "validation checkpoint selection requires step info to "
+                "carry 'equity' (plus optional 'hedge_equity') so it can "
+                "score the joint equity path; this environment does not"
+            )
+        equities.append(float(info["equity"]) + float(info.get("hedge_equity", 0.0)))
+        done = bool(terminated or truncated)
+        if done:
+            break
+    if not done:
+        raise SimConfigError(
+            "validation episode did not terminate within "
+            f"{_MAX_ROLLOUT_STEPS} decisions"
+        )
+    return pl.Series("equity", equities)
+
+
+def _validation_score(
+    model: PPO,
+    env: gym.Env,
+    config: SimConfig,
+) -> float:
+    """Mean validation statistic of one checkpoint on a reusable env.
+
+    Runs ``validation_days // duration_days`` deterministic episodes (at least
+    one; the default 30-day window over a 30-day episode is the whole validation
+    slice) and averages the per-episode metric.  ``val_sharpe`` is the
+    annualised Sharpe of the joint equity path; ``val_cvar`` is the S21
+    evaluation metric (:func:`~undertow.sim.metrics.cvar_of_equity_changes`,
+    negative for losses).  Both rank higher-is-better.
+    """
+    training = config.training
+    if training.selection_metric not in ("val_sharpe", "val_cvar"):
+        raise SimConfigError(
+            "validation scoring requires selection_metric 'val_sharpe' or "
+            f"'val_cvar', got {training.selection_metric!r}"
+        )
+    periods_per_year = periods_per_year_from_step_minutes(
+        int(config.episode.step_minutes)
+    )
+    duration_days = max(1, int(config.episode.duration_days))
+    episodes = max(1, int(training.validation_days) // duration_days)
+    # Fixed reset seeds independent of the training seed: every checkpoint and
+    # every seed is scored on the same validation windows, so cross-seed
+    # selection compares like with like.
+    window_seeds = [int(config.seed) + index for index in range(episodes)]
+    values: list[float] = []
+    for window_seed in window_seeds:
+        equity = _run_validation_episode(model, env, config, window_seed)
+        if training.selection_metric == "val_sharpe":
+            values.append(sharpe_ratio(equity, periods_per_year=periods_per_year))
+        else:
+            values.append(cvar_of_equity_changes(equity))
+    return float(np.mean(values))
+
+
+#: ``CheckpointCallback`` writes ``<name>_<steps>_steps.zip``; the trailing
+#: step number is the tie-break order, not the filename's lexicographic order.
+_CHECKPOINT_STEP_RE = re.compile(r"_(\d+)_steps$")
+
+
+def _checkpoint_step_key(path: Path) -> tuple[int, str]:
+    """Deterministic checkpoint order key: parsed step number, then name."""
+    match = _CHECKPOINT_STEP_RE.search(path.stem)
+    step = int(match.group(1)) if match else -1
+    return (step, path.name)
+
+
+def _select_validation_checkpoint(
+    candidates: Sequence[Path],
+    scores: Sequence[float],
+) -> tuple[Path, float]:
+    """Pick the highest-scoring checkpoint; ties keep the first candidate.
+
+    Every supported validation metric ranks higher-is-better: Sharpe is
+    maximised and ``val_cvar`` is negative for losses, so the largest value is
+    the smallest tail loss.  The caller passes ``candidates`` in a deterministic
+    order (sorted checkpoint names, then the canonical final checkpoint), so
+    ties cannot depend on glob ordering.
+    """
+    if not candidates:
+        raise SimConfigError("no validation checkpoint candidates were found")
+    if len(candidates) != len(scores):
+        raise SimConfigError(
+            f"{len(candidates)} checkpoint candidates but {len(scores)} scores"
+        )
+    best_path = Path(candidates[0])
+    best_value = float(scores[0])
+    for path, score in zip(candidates[1:], scores[1:], strict=True):
+        value = float(score)
+        if value > best_value:
+            best_path, best_value = Path(path), value
+    return best_path, best_value
 
 
 class _LearningCurveCallback(BaseCallback):
@@ -362,12 +492,26 @@ def _train_single_seed(
     config: SimConfig,
     seed: int,
     log_dir: Path | None = None,
+    *,
+    validation_env_fn: Callable[[], gym.Env] | None = None,
 ) -> tuple[RunManifest, list[float]]:
     """Internal single-seed trainer returning ``(manifest, learning_curve)``."""
     seed = int(seed)
     training = config.training
+    if training.selection_metric != "reward" and validation_env_fn is None:
+        raise SimConfigError(
+            f"training.selection_metric={training.selection_metric!r} requires "
+            "validation_env_fn (the CLI carves the validation window from the "
+            "train split); refusing to silently fall back to reward selection"
+        )
     seed_dir = _resolve_log_dir(seed, log_dir)
     seed_dir.mkdir(parents=True, exist_ok=True)
+    checkpoints_dir = seed_dir / "checkpoints"
+    if training.selection_metric != "reward" and checkpoints_dir.is_dir():
+        # Selection scores every file in this directory; a stale checkpoint from
+        # an earlier run in the same output directory must not compete.
+        for stale in checkpoints_dir.glob("*.zip"):
+            stale.unlink()
 
     config_hash = compute_config_hash(config)
     run_id = f"ppo_s{seed}_{config_hash}"
@@ -404,7 +548,7 @@ def _train_single_seed(
         callbacks.append(
             CheckpointCallback(
                 save_freq=max(checkpoint_freq // parallel, 1),
-                save_path=str(seed_dir / "checkpoints"),
+                save_path=str(checkpoints_dir),
                 name_prefix=f"ppo_seed_{seed}",
                 verbose=0,
             )
@@ -434,13 +578,60 @@ def _train_single_seed(
         checkpoint_path = seed_dir / f"ppo_seed_{seed}.zip"
         model.save(str(checkpoint_path))
 
+        # S21 validation-based checkpoint selection (ADR-040).  The candidate
+        # set is every periodic checkpoint written by this run plus the final
+        # canonical file; scoring is deterministic and never steps a training
+        # vector env.  When the selected file is not the final one it replaces
+        # the canonical path, so every downstream consumer loads the winner and
+        # ``manifest.checkpoint_path`` stays stable.
+        selected_model = model
+        selection_metric = "reward"
+        selection_value: float | None = None
+        if validation_env_fn is not None and training.selection_metric != "reward":
+            candidate_paths = sorted(
+                checkpoints_dir.glob("*.zip"), key=_checkpoint_step_key
+            )
+            candidate_paths.append(checkpoint_path)
+            loaded_models = [
+                PPO.load(str(path), device=PPO_DEVICE) for path in candidate_paths
+            ]
+            # One reusable validation env for the whole candidate set: each
+            # fresh instance re-pays the pool warmup replay, which is minutes
+            # on the real lane.  A seeded reset is reproducible regardless of
+            # prior resets, so this is still per-checkpoint deterministic.
+            validation_env = validation_env_fn()
+            try:
+                scores = [
+                    _validation_score(candidate, validation_env, config)
+                    for candidate in loaded_models
+                ]
+            finally:
+                validation_env.close()
+            selected_path, selection_value = _select_validation_checkpoint(
+                candidate_paths, scores
+            )
+            selection_metric = training.selection_metric
+            selected_model = loaded_models[candidate_paths.index(selected_path)]
+            if selected_path != checkpoint_path:
+                shutil.copyfile(selected_path, checkpoint_path)
+            logger.info(
+                "seed %d selected %s by %s=%.6f from %d checkpoints",
+                seed,
+                selected_path.name,
+                selection_metric,
+                selection_value,
+                len(candidate_paths),
+            )
+
         # U06: a deterministic, offline evaluation pass over a fresh env. The
         # pass is best-effort: a recording failure is logged and training
-        # continues with the checkpoint/manifest untouched.
+        # continues with the checkpoint/manifest untouched.  With selection on,
+        # the pass records the *selected* checkpoint's policy, not the final
+        # (possibly discarded) one.
         if training.record_rollouts:
             try:
                 _record_rollouts_pass(
-                    env_fn, model, training, run_id, seed, seed_dir
+                    env_fn, selected_model, training, run_id, seed, seed_dir
                 )
             except Exception:
                 logger.exception(
@@ -461,6 +652,8 @@ def _train_single_seed(
             best_reward=best_reward,
             checkpoint_path=checkpoint_path,
             library_versions=tuple(sorted(library_versions().items())),
+            selection_metric=selection_metric,
+            selection_value=selection_value,
         )
         # The manifest/checkpoint bookkeeping stays inside the ``try`` so that a
         # failure here flips the status to ``failed``: the invariant
@@ -499,6 +692,8 @@ def train_single_seed(
     config: SimConfig,
     seed: int,
     log_dir: Path | None = None,
+    *,
+    validation_env_fn: Callable[[], gym.Env] | None = None,
 ) -> RunManifest:
     """Train PPO for one seed (CONTRACTS.md §15).
 
@@ -507,6 +702,13 @@ def train_single_seed(
     ``config.training.checkpoint_freq_steps`` and a final checkpoint plus
     ``manifest.json`` is always written under ``log_dir`` (a temp directory when
     ``log_dir`` is ``None``).
+
+    ``validation_env_fn`` (S21, ADR-040) is the optional zero-argument factory
+    used to score saved checkpoints when
+    ``config.training.selection_metric != "reward"``; see
+    :func:`_train_single_seed`.
     """
-    manifest, _ = _train_single_seed(env_fn, config, seed, log_dir)
+    manifest, _ = _train_single_seed(
+        env_fn, config, seed, log_dir, validation_env_fn=validation_env_fn
+    )
     return manifest

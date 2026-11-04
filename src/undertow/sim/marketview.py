@@ -335,6 +335,13 @@ class MarketView:
             # slices the full lane at construction, so this was a multi-GB
             # duplicate per environment process.
             sub = active
+        elif start_seq == min_seq:
+            # A prefix slice is exactly the first ``end_seq - min_seq`` rows:
+            # the frame is seq-sorted and ``seq`` is the dense canonical tape
+            # index (EVENT_TAPE_SCHEMA), so there are no gaps.  ``head`` avoids
+            # materialising a second copy of the multi-GB lane, which matters
+            # for the S21 training carve (a near-full prefix, ADR-040).
+            sub = active.head(end_seq - min_seq)
         else:
             sub = active.filter(
                 (pl.col("seq") >= start_seq) & (pl.col("seq") < end_seq)

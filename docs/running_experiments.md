@@ -132,6 +132,48 @@ A checkpoint's action space is part of its contract: a `Discrete` LP-only
 checkpoint cannot be evaluated under the joint config (and vice versa), so
 retrain when flipping `hedge.agent_ratio`.
 
+### Risk-sensitive objective + validation-based selection (S21, ADR-040)
+
+`configs/sim_eth_usdc_500_hedged_risk.toml` is the hedged config plus the
+risk-sensitive objective: the reward penalises the trailing 95 % CVaR of
+per-step equity losses (`reward.risk_penalty_enabled = true`,
+`reward.risk_penalty_mode = "cvar"`, `reward.risk_penalty_lambda = 0.05`)
+instead of the trailing volatility, and checkpoints are ranked on a carved
+validation window (`training.selection_metric = "val_sharpe"`,
+`training.validation_days = 30`) rather than on the noisy train reward that
+over-selected an over-hedged seed in the ADR-039 run:
+
+```bash
+uv run undertow-sim train \
+    --config configs/sim_eth_usdc_500_hedged_risk.toml \
+    --output results/eth_usdc_500_hedged_risk/ \
+    --data-config configs/eth_usdc_500.toml
+```
+
+Training still uses only the train split: the last `validation_days` of it are
+held out for checkpoint scoring, and `selection_metric != "reward"` requires
+`--split train` (the eval split is reserved for the final walk-forward
+report). Every periodic checkpoint plus the final one is scored
+deterministically on the validation window; the winner is copied over
+`seed_<n>/ppo_seed_<n>.zip` and the manifest records `selection_metric` /
+`selection_value`. Subprocess workers carry the slice bounds, so they cannot
+train on the validation data either. Evaluation is unchanged (the S20b
+commands above), and every record now includes `cvar_95` alongside the other
+metrics:
+
+```bash
+uv run undertow-sim evaluate \
+    --config configs/sim_eth_usdc_500_hedged_risk.toml \
+    --checkpoint results/eth_usdc_500_hedged_risk/seed_0/ppo_seed_0.zip \
+    --output results/eth_usdc_500_hedged_risk/ \
+    --data-config configs/eth_usdc_500.toml
+```
+
+`training.selection_metric` accepts `reward` (the historical default),
+`val_sharpe` and `val_cvar` (the `cvar_95` statistic, negative for losses;
+higher is better for both). `lambda` and `validation_days` are sweepable — the
+shipped 0.05 / 30 are a stated calibration, not an optimum.
+
 ## 4. Evaluate
 
 Evaluate a trained checkpoint together with every baseline over the walk-forward

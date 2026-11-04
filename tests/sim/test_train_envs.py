@@ -241,3 +241,50 @@ def test_publish_shared_view_loads_the_view_when_not_preloaded(
     directory = factory.publish_shared_view(tmp_path / "published")
 
     assert envs.load_shared_view(directory).train.equals(tiny_market_view.train)
+
+
+# ---------------------------------------------------------------------------
+# S21 — slice-bounded factories (validation carve-out, ADR-040)
+# ---------------------------------------------------------------------------
+
+
+def test_env_factory_slice_bounds_apply_to_preloaded_and_shared_views(
+    tiny_market_view: MarketView, tmp_path: Path
+) -> None:
+    seqs = tiny_market_view.active_split_data()["seq"]
+    start = int(seqs.min())
+    end = int(seqs.max()) + 1
+    mid = start + (end - start) // 2
+
+    factory = envs.EnvFactory(
+        Path("data.toml"),
+        "train",
+        SimConfig(),
+        start_seq=start,
+        end_seq=mid,
+        _view=tiny_market_view,
+    )
+    assert factory.load_view().step_count() == mid - start
+    assert factory.load_view().active_start_utc == tiny_market_view.active_start_utc
+
+    # The published IPC frames stay unbounded; each worker applies its bounds.
+    shared_dir = factory.publish_shared_view(tmp_path / "shared")
+    base = envs.load_shared_view(shared_dir)
+    assert base.step_count() == end - start
+    worker = envs.EnvFactory(
+        Path("data.toml"),
+        "train",
+        SimConfig(),
+        start_seq=start,
+        end_seq=mid,
+        _shared_dir=shared_dir,
+    )
+    assert worker.load_view().step_count() == mid - start
+
+
+def test_env_factory_requires_both_slice_bounds(tiny_market_view: MarketView) -> None:
+    factory = envs.EnvFactory(
+        Path("data.toml"), "train", SimConfig(), start_seq=0, _view=tiny_market_view
+    )
+    with pytest.raises(SimConfigError, match="set together"):
+        factory.load_view()
