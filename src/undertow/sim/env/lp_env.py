@@ -816,7 +816,17 @@ class LpEnvironment(gym.Env):
         min_interval = int(self.config.episode.min_rebalance_interval_steps)
         if action.action_type == "rebalance" and min_interval > 0:
             if self._step_count - self._last_rebalance_attempt_step < min_interval:
-                action = self._action_lookup[0]
+                # Coerce only the LP head to hold: the hedge-ratio head is an
+                # independent per-step decision (ADR-039/040) and must survive
+                # the gate, exactly as ``_CheckpointPolicy`` preserves it for
+                # the backtester.  In non-agent mode ``hedge_ratio`` is already
+                # ``None``, so this is byte-identical to ``_action_lookup[0]``.
+                action = replace(
+                    action,
+                    action_type="hold",
+                    center_offset=0,
+                    width=0,
+                )
                 rebalance_gated = True
             else:
                 self._last_rebalance_attempt_step = self._step_count

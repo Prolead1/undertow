@@ -3051,6 +3051,57 @@ class TestHedgeRatioHead:
         assert obs_detail[0] == pytest.approx(env._hedge.short_size / current_delta)
         assert obs_detail[0] == pytest.approx(0.5, rel=1e-2)
 
+    def test_gated_rebalance_keeps_the_hedge_ratio_head_live(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """The min-interval gate coerces only the LP head (ADR-037/039).
+
+        The joint band x hedge recipe (configs/sim_eth_usdc_500_joint_rl.toml)
+        relies on this: after the step-0 band choice every rebalance attempt is
+        gated to hold, but the per-step hedge ratio must still act.  Before the
+        fix the gate replaced the action with a ratio-less hold, silently
+        forcing the short to the unhedged 0.0 entry.
+        """
+        env = _hedge_env(
+            _flat_reference_view(tiny_market_view),
+            _SequencePriceProcess([3004.0] * 6),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+            agent_ratio=True,
+        )
+        env.config = replace(
+            env.config,
+            episode=replace(
+                env.config.episode, min_rebalance_interval_steps=1000
+            ),
+        )
+        env.reset(seed=0)
+        rebalance = Action(action_type="rebalance", center_offset=0, width=2)
+        lp_index = env._action_lookup.index(rebalance)
+
+        # Step 0: the first rebalance is allowed; the full hedge applies.
+        _, _, _, _, first = env.step([lp_index, 4])
+        assert first.get("rebalance_gated") is None
+        assert first["hedge_ratio"] == 1.0
+        assert env._hedge is not None and env._hedge.short_size > 0.0
+
+        # Step 1: the LP attempt is gated to hold, but the ratio head acts.
+        _, _, _, _, gated = env.step([lp_index, 4])
+        assert gated["rebalance_gated"] is True
+        assert gated["action_type"] == "hold"
+        assert gated["hedge_ratio"] == 1.0
+        assert env._hedge is not None and env._hedge.short_size > 0.0
+
+        # Step 2: the same gated path honours the unhedged ratio.
+        _, _, _, _, flat = env.step([lp_index, 0])
+        assert flat["rebalance_gated"] is True
+        assert flat["hedge_ratio"] == 0.0
+        assert env._hedge is not None and env._hedge.short_size == 0.0
+
 
 # ---------------------------------------------------------------------------
 # S20 golden guard: the disabled build reproduces the LP-only output exactly
