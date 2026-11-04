@@ -75,6 +75,7 @@ with exact integer fee accrual. Choose the split with `--split` (default `eval`)
 
 ```bash
 uv run undertow-sim backtest --config configs/sim_default.toml --policy hodl
+uv run undertow-sim backtest --policy hedged_hodl
 uv run undertow-sim backtest --policy passive_narrow
 uv run undertow-sim backtest --policy passive_wide
 uv run undertow-sim backtest --policy full_range_v2
@@ -108,6 +109,28 @@ in the config (defaults: 1,000,000 timesteps, 4 envs per seed, 5 seeds).
 (true multicore replay); each worker loads its own `MarketView`, so the worker
 count is memory-bound (~4 GB per worker on the pinned dataset). `"dummy"` steps
 the slots sequentially in one process and is only for tiny runs.
+
+### Joint (LP + hedge) training
+
+`configs/sim_eth_usdc_500_hedged.toml` enables the short-perp overlay and
+exposes its ratio to the agent: the action space becomes
+`MultiDiscrete([n_lp, 5])` over `h ∈ {0, 0.25, 0.5, 0.75, 1.0}` (S20b,
+ADR-039). Each decision re-hedges the short to `h ×` the LP's ETH delta at the
+decision mark, with funding and perp costs; the episode starts flat.
+Evaluation counts the hedge leg in PnL/Sharpe and the `hedged_hodl` baseline
+(beta-matched short) is included automatically:
+
+```bash
+uv run undertow-sim train --config configs/sim_eth_usdc_500_hedged.toml \
+    --output results/eth_usdc_500_hedged/ --data-config configs/eth_usdc_500.toml
+uv run undertow-sim evaluate --config configs/sim_eth_usdc_500_hedged.toml \
+    --checkpoint results/eth_usdc_500_hedged/seed_0/ppo_seed_0.zip \
+    --output results/eth_usdc_500_hedged/ --data-config configs/eth_usdc_500.toml
+```
+
+A checkpoint's action space is part of its contract: a `Discrete` LP-only
+checkpoint cannot be evaluated under the joint config (and vice versa), so
+retrain when flipping `hedge.agent_ratio`.
 
 ## 4. Evaluate
 
@@ -160,9 +183,13 @@ configuration that produced it.
   snapshot first: `uv run undertow-data snapshot --config <data-config>`.
 - **`config file not found`** — check the `--config` path; the default is
   `configs/sim_default.toml`.
-- **`unknown policy '…'`** — pick one of the six listed in the error / `info`:
-  `hodl`, `passive_narrow`, `passive_wide`, `full_range_v2`, `tau_reset`,
-  `cost_aware`.
+- **`unknown policy '…'`** — pick one of the seven listed in the error / `info`:
+  `hodl`, `hedged_hodl`, `passive_narrow`, `passive_wide`, `full_range_v2`,
+  `tau_reset`, `cost_aware`. `hedged_hodl` holds the initial basket and shorts
+  its ETH delta; the hedge leg is inert unless the config enables `[hedge]`.
+- **`checkpoint action space has … entries`** — the discrete LP grid or the
+  S20b joint head changed; retrain with the matching `[action_grid]`/`[hedge]`
+  config (a joint checkpoint needs `hedge.agent_ratio = true` and vice versa).
 - **`Environment variable … is not set`** — only `undertow-data` needs the
   endpoint secrets, and only for `snapshot`; export the config's `${ENV_VAR}`
   placeholders before running it. `undertow-sim` does not read them.

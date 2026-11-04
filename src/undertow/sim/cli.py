@@ -28,6 +28,7 @@ import json
 import shutil
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -50,6 +51,7 @@ from undertow.sim.marketview import MarketView, load_market_view
 from undertow.sim.policies import (
     CostAwareRebalancePolicy,
     FullRangeV2Policy,
+    HedgedHODLPolicy,
     HODLPolicy,
     PassiveNarrowPolicy,
     PassiveWidePolicy,
@@ -75,6 +77,7 @@ DEFAULT_OUTPUT_DIR: Path = Path("results")
 #: listed when an unknown name is supplied).
 POLICY_NAMES: tuple[str, ...] = (
     "hodl",
+    "hedged_hodl",
     "passive_narrow",
     "passive_wide",
     "full_range_v2",
@@ -294,6 +297,8 @@ def build_policy(name: str, config: SimConfig) -> Policy:
     spacing = int(config.episode.tick_spacing)
     if name == "hodl":
         return HODLPolicy()
+    if name == "hedged_hodl":
+        return HedgedHODLPolicy()
     if name == "passive_narrow":
         return PassiveNarrowPolicy(tick_spacing=spacing)
     if name == "passive_wide":
@@ -343,13 +348,17 @@ class _CheckpointPolicy:
     ``episode.min_rebalance_interval_steps`` gate (ADR-037): the model's early
     rebalance *attempts* return the hold action and consume the interval, so
     the backtester and the simulator apply the identical rule when evaluating
-    the same checkpoint.
+    the same checkpoint.  With ``HedgeConfig.agent_ratio`` (ADR-039) the
+    ``MultiDiscrete`` head is decoded and validated too; the ratio rides on the
+    action independently of the LP gating.
     """
 
     def __init__(self, model: object, config: SimConfig, name: str = "ppo") -> None:
         self._model = model
         self._name = name
         self._actions = _action_grid(config)
+        self._agent_ratio = bool(config.hedge.enabled and config.hedge.agent_ratio)
+        self._ratios = tuple(float(value) for value in config.hedge.ratios)
         self._min_interval = int(config.episode.min_rebalance_interval_steps)
         self._step = 0
         self._last_rebalance_attempt_step = -self._min_interval
@@ -379,21 +388,45 @@ class _CheckpointPolicy:
             )
 
     def _validate_action_space(self, model: object) -> None:
-        """Reject checkpoints trained on a different discrete action grid.
+        """Reject checkpoints trained on a different action space.
 
-        The grid is config-driven (ADR-011): the primary 0.05 % config has 91
-        entries while the 0.30 % contrast has 55, and an index trained on one
-        grid would silently map to a different band on the other.
+        The LP grid is config-driven (ADR-011): the primary 0.05 % config has
+        91 entries while the 0.30 % contrast has 55, and an index trained on
+        one grid would silently map to a different band on the other.  S20b
+        adds a second ``MultiDiscrete`` component for the hedge ratio, so the
+        presence of a head (`n` vs `nvec`) must match the config too.
         """
         space = getattr(model, "action_space", None)
         n = getattr(space, "n", None)
-        if n is None:
+        nvec = getattr(space, "nvec", None)
+        if n is not None:
+            if self._agent_ratio:
+                raise CliError(
+                    "checkpoint has a Discrete action space, but this config "
+                    "enables hedge.agent_ratio (expected MultiDiscrete); retrain "
+                    "with the joint head or disable hedge.agent_ratio."
+                )
+            if int(n) != len(self._actions):
+                raise CliError(
+                    f"checkpoint action space has {int(n)} entries, but this "
+                    f"build's action grid has {len(self._actions)}; retrain or "
+                    "evaluate with the matching [action_grid] config."
+                )
             return
-        if int(n) != len(self._actions):
+        if nvec is None:
+            return
+        expected = [len(self._actions), len(self._ratios)]
+        if [int(value) for value in nvec] != expected:
             raise CliError(
-                f"checkpoint action space has {int(n)} entries, but this build's "
-                f"action grid has {len(self._actions)}; retrain or evaluate with "
-                "the matching [action_grid] config."
+                f"checkpoint action space has {[int(v) for v in nvec]} entries, "
+                f"but this build expects {expected} (LP grid x hedge ratios); "
+                "retrain or evaluate with the matching config."
+            )
+        if not self._agent_ratio:
+            raise CliError(
+                "checkpoint has a MultiDiscrete action space, but this config "
+                "disables hedge.agent_ratio (expected Discrete); evaluate with "
+                "the joint-head config or disable the head."
             )
 
     @property
@@ -426,16 +459,24 @@ class _CheckpointPolicy:
         del rng  # the checkpoint policy is deterministic
         vector = np.asarray(observation.to_vector(), dtype=np.float64)  # type: ignore[attr-defined]
         raw_action, _state = self._model.predict(vector, deterministic=True)  # type: ignore[attr-defined]
-        index = int(np.asarray(raw_action).reshape(-1)[0])
-        index = max(0, min(index, len(self._actions) - 1))
+        values = np.asarray(raw_action).reshape(-1)
+        index = max(0, min(int(values[0]), len(self._actions) - 1))
         action = self._actions[index]
+        # The joint head's ratio is independent of the LP action: an early
+        # rebalance gated to hold below still re-hedges to the chosen ratio.
+        hedge_ratio: float | None = None
+        if self._agent_ratio:
+            ratio_index = max(0, min(int(values[1]), len(self._ratios) - 1))
+            hedge_ratio = self._ratios[ratio_index]
         if self._min_interval > 0 and action.action_type == "rebalance":
             if self._step - self._last_rebalance_attempt_step < self._min_interval:
                 action = self._actions[0]
             else:
                 self._last_rebalance_attempt_step = self._step
         self._step += 1
-        return action
+        if hedge_ratio is None:
+            return action
+        return replace(action, hedge_ratio=hedge_ratio)
 
 
 def _load_checkpoint(checkpoint: Path) -> object:

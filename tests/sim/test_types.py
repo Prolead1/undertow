@@ -72,6 +72,27 @@ class TestAction:
         assert lower < upper
         assert (upper - lower) >= 2 * int(action.width) * 60  # at least width*spacing each side
 
+    # -- S20b: the additive hedge-ratio field ---------------------------------
+    def test_hedge_ratio_defaults_to_none(self) -> None:
+        assert Action("hold").hedge_ratio is None
+        assert Action("rebalance", center_offset=0, width=2).hedge_ratio is None
+
+    def test_hedge_ratio_none_keeps_lp_equality(self) -> None:
+        """An old-style construction still equals an explicit ``None``."""
+        assert Action("hold") == Action("hold", hedge_ratio=None)
+        assert Action("hold") != Action("hold", hedge_ratio=0.0)
+
+    @pytest.mark.parametrize("ratio", [0.0, 0.25, 0.5, 1.0])
+    def test_hedge_ratio_boundaries_are_valid(self, ratio: float) -> None:
+        assert Action("hold", hedge_ratio=ratio).hedge_ratio == ratio
+
+    @pytest.mark.parametrize(
+        "ratio", [-0.01, 1.01, -1.0, 2.0, float("nan"), float("inf"), float("-inf")]
+    )
+    def test_invalid_hedge_ratio_raises(self, ratio: float) -> None:
+        with pytest.raises(ValueError, match="hedge_ratio"):
+            Action("hold", hedge_ratio=ratio)
+
 
 class TestRegime:
     def test_members(self) -> None:

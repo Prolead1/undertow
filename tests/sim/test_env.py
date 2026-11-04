@@ -14,6 +14,7 @@ import math
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
+import gymnasium as gym
 import numpy as np
 import polars as pl
 import pyarrow as pa
@@ -2370,6 +2371,8 @@ def _hedge_env(
     reward_hedge: bool = True,
     reward_gas: bool = True,
     reward_slippage: bool = True,
+    agent_ratio: bool = False,
+    ratios: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0),
 ) -> LpEnvironment:
     """A calibrated env with the hedge overlay configured explicitly."""
     return LpEnvironment(
@@ -2385,6 +2388,8 @@ def _hedge_env(
                 enabled=enabled,
                 ratio=ratio,
                 funding_enabled=funding_enabled,
+                agent_ratio=agent_ratio,
+                ratios=ratios,
             ),
             reward=RewardConfig(
                 hedge_enabled=reward_hedge,
@@ -2775,6 +2780,276 @@ class TestHedgeOverlay:
         assert economics["pnl_net"] == pytest.approx(raw["pnl_net"])
         assert economics["fees"] == raw["fees"]
         assert economics["il_change"] == raw["il_change"]
+
+
+# ---------------------------------------------------------------------------
+# S20b — agent-selected hedge ratio (joint head)
+# ---------------------------------------------------------------------------
+
+
+class TestHedgeRatioHead:
+    def test_action_space_is_multidiscrete_only_when_enabled(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        view = _flat_reference_view(tiny_market_view)
+        disabled = _hedge_env(
+            view,
+            _SequencePriceProcess([3004.0, 3010.0]),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=False,
+        )
+        det = _hedge_env(
+            view,
+            _SequencePriceProcess([3004.0, 3010.0]),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+            agent_ratio=False,
+        )
+        joint = _hedge_env(
+            view,
+            _SequencePriceProcess([3004.0, 3010.0]),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+            agent_ratio=True,
+        )
+        assert isinstance(disabled.action_space, gym.spaces.Discrete)
+        assert disabled.agent_ratio is False
+        assert isinstance(det.action_space, gym.spaces.Discrete)
+        assert det.agent_ratio is False
+        assert isinstance(joint.action_space, gym.spaces.MultiDiscrete)
+        assert joint.agent_ratio is True
+        assert joint.action_space.nvec.tolist() == [joint.n_actions, 5]
+        assert joint.hedge_ratios == (0.0, 0.25, 0.5, 0.75, 1.0)
+
+    def test_action_for_index_decodes_both_arities(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        env = _hedge_env(
+            _flat_reference_view(tiny_market_view),
+            _SequencePriceProcess([3004.0, 3010.0]),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+            agent_ratio=True,
+        )
+        hold_full = env.action_for_index([0, 4])
+        assert hold_full.is_hold()
+        assert hold_full.hedge_ratio == 1.0
+        # A bare int is the LP head with no hedge opinion.
+        assert env.action_for_index(0).hedge_ratio is None
+        rebalance = Action(action_type="rebalance", center_offset=0, width=2)
+        lp_index = env._action_lookup.index(rebalance)
+        decoded = env.action_for_index(np.array([lp_index, 2]))
+        assert decoded == replace(rebalance, hedge_ratio=0.5)
+        # Every ratio in the head is reachable.
+        for ratio_index, ratio in enumerate(env.hedge_ratios):
+            assert env.action_for_index([0, ratio_index]).hedge_ratio == ratio
+
+    def test_action_for_index_rejects_malformed_vectors(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        view = _flat_reference_view(tiny_market_view)
+        joint = _hedge_env(
+            view,
+            _SequencePriceProcess([3004.0]),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+            agent_ratio=True,
+        )
+        with pytest.raises(EnvError, match="lp_index, ratio_index"):
+            joint.action_for_index([0])  # type: ignore[arg-type]
+        with pytest.raises(EnvError, match="hedge-ratio index"):
+            joint.action_for_index([0, 5])
+        with pytest.raises(EnvError, match="outside the action space"):
+            joint.action_for_index([joint.n_actions, 0])
+        det = _hedge_env(
+            view,
+            _SequencePriceProcess([3004.0]),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+        )
+        with pytest.raises(EnvError, match="must be an int"):
+            det.action_for_index([0, 0])  # type: ignore[arg-type]
+
+    def test_reset_is_flat_and_the_first_decision_establishes_the_short(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        env = _hedge_env(
+            _flat_reference_view(tiny_market_view),
+            _SequencePriceProcess([3004.0, 3050.0, 3100.0]),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+            agent_ratio=True,
+        )
+        _, reset_info = env.reset(seed=0)
+        # No pre-trade: the agent has not chosen a ratio yet.
+        assert reset_info["hedge_ratio"] is None
+        assert env._hedge is not None
+        assert env._hedge.short_size == 0.0
+        assert env._hedge_pending_fee == 0.0
+        assert env._position is not None
+        # The target is the pre-step LP delta at the decision mark; the tiny
+        # fixture's reference feed starts after the tape, so the entry mark is
+        # the sqrt-derived price, not the flat close.
+        entry_mark = env._last_mark_price
+        expected = env._position.amount1(env.pool_engine.state.sqrt_price)
+        _, _, _, _, info = env.step([0, 4])  # hold + full hedge at the entry mark
+        assert env._hedge.short_size == pytest.approx(expected)
+        assert info["hedge_ratio"] == 1.0
+        trade = env._hedge.last_trade
+        assert trade is not None
+        assert trade.mark == pytest.approx(entry_mark)
+        assert trade.fee == pytest.approx(expected * entry_mark * 5.0 / 1e4)
+
+    def test_ratio_zero_flattens_the_short(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        env = _hedge_env(
+            _flat_reference_view(tiny_market_view),
+            _SequencePriceProcess([3004.0, 3050.0, 3100.0]),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+            agent_ratio=True,
+        )
+        env.reset(seed=0)
+        env.step([0, 4])
+        assert env._hedge.short_size > 0.0
+        _, _, _, _, info = env.step([0, 0])  # unwind
+        assert env._hedge.short_size == 0.0
+        assert info["hedge_ratio"] == 0.0
+        assert env._hedge.last_trade is not None
+        assert env._hedge.last_trade.fee > 0.0
+
+    def test_constant_ratio_one_matches_the_deterministic_overlay(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """The joint head's constant h=1 is exactly the S20 overlay.
+
+        The deterministic env pre-trades at the entry mark and the joint env
+        trades at the first decision mark; the flat reference pins them to the
+        same price, so both the fees and the funding must agree step for step.
+        """
+        view = _flat_reference_view(tiny_market_view)
+        prices = [3004.0, 3050.0, 3100.0, 3150.0, 3200.0, 3250.0, 3300.0]
+        joint = _hedge_env(
+            view,
+            _SequencePriceProcess(prices),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+            agent_ratio=True,
+        )
+        det = _hedge_env(
+            view,
+            _SequencePriceProcess(prices),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+            ratio=1.0,
+        )
+        joint.reset(seed=0)
+        det.reset(seed=0)
+        for _ in prices:
+            joint.step([0, 4])
+            det.step(0)
+        assert joint._hedge is not None and det._hedge is not None
+        assert joint._hedge.short_size == pytest.approx(det._hedge.short_size)
+        assert joint._hedge.fees_paid == pytest.approx(det._hedge.fees_paid)
+        assert joint._hedge.funding_pnl == pytest.approx(det._hedge.funding_pnl)
+        assert joint._hedge.equity(3300.0) == pytest.approx(
+            det._hedge.equity(3300.0)
+        )
+
+    def test_info_reports_the_resolved_deterministic_ratio(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        env = _hedge_env(
+            _flat_reference_view(tiny_market_view),
+            _SequencePriceProcess([3004.0, 3050.0]),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+            ratio=0.5,
+        )
+        _, reset_info = env.reset(seed=0)
+        assert reset_info["hedge_ratio"] == 0.5
+        _, _, _, _, info = env.step(0)
+        assert info["hedge_ratio"] == 0.5
+        assert env._hedge is not None
+        assert env._hedge.short_size > 0.0
+
+    def test_info_reports_none_when_the_overlay_is_disabled(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        env = _hedge_env(
+            _flat_reference_view(tiny_market_view),
+            _SequencePriceProcess([3004.0, 3050.0]),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=False,
+        )
+        _, reset_info = env.reset(seed=0)
+        assert reset_info["hedge_ratio"] is None
+        _, _, _, _, info = env.step(0)
+        assert info["hedge_ratio"] is None
+
+    def test_partial_ratio_scales_the_short(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        env = _hedge_env(
+            _flat_reference_view(tiny_market_view),
+            _SequencePriceProcess([3004.0, 3050.0]),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+            agent_ratio=True,
+        )
+        env.reset(seed=0)
+        assert env._position is not None
+        delta = env._position.amount1(env.pool_engine.state.sqrt_price)
+        env.step([0, 2])  # hold + 0.5 at the decision mark (3004)
+        assert env._hedge is not None
+        assert env._hedge.short_size == pytest.approx(0.5 * delta)
+        # The observation reports the achieved ratio of the *current* delta
+        # (the price moved during the step, so it is close to, not exactly, 0.5).
+        current_delta = env._position.amount1(env.pool_engine.state.sqrt_price)
+        obs_detail = env._hedge_observation_fields()
+        assert obs_detail[0] == pytest.approx(env._hedge.short_size / current_delta)
+        assert obs_detail[0] == pytest.approx(0.5, rel=1e-2)
 
 
 # ---------------------------------------------------------------------------

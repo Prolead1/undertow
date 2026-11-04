@@ -75,6 +75,30 @@ class _BanditEnv(gym.Env):
         return np.zeros(2, dtype=np.float64), reward, True, False, {}
 
 
+class _MultiBanditEnv(gym.Env):
+    """A joint ``(LP, hedge-ratio)`` bandit with one optimal joint arm.
+
+    The optimal pair is ``[1, 2]``; every other pair pays 0.  This is the S20b
+    probe that PPO's ``MultiCategorical`` head and the env contract line up.
+    """
+
+    observation_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float64)
+    action_space = spaces.MultiDiscrete([2, 3])
+
+    def reset(
+        self, *, seed: int | None = None, options: dict | None = None
+    ) -> tuple[np.ndarray, dict]:
+        del seed, options
+        return np.zeros(2, dtype=np.float64), {}
+
+    def step(
+        self, action: np.ndarray
+    ) -> tuple[np.ndarray, float, bool, bool, dict]:
+        values = np.asarray(action).reshape(-1)
+        reward = 1.0 if (int(values[0]), int(values[1])) == (1, 2) else 0.0
+        return np.zeros(2, dtype=np.float64), reward, True, False, {}
+
+
 class _ConstantRewardEnv(gym.Env):
     """A deterministic environment that pays ``-1`` per step, in fixed episodes.
 
@@ -191,13 +215,17 @@ def _fresh_pool_engine() -> PoolEngine:
 
 
 def _real_env_factory(
-    market_view: object, gas_model: object, slippage_model: object
+    market_view: object,
+    gas_model: object,
+    slippage_model: object,
+    config: SimConfig | None = None,
 ) -> Callable[[], LpEnvironment]:
     """Build a fresh ``LpEnvironment`` on every call (one env per request)."""
-    config = SimConfig(
-        episode=tiny_episode(duration_days=1, step_minutes=10),
-        seed=0,
-    )
+    if config is None:
+        config = SimConfig(
+            episode=tiny_episode(duration_days=1, step_minutes=10),
+            seed=0,
+        )
 
     def factory() -> LpEnvironment:
         return LpEnvironment(
@@ -512,6 +540,36 @@ class TestHoldBias:
         _apply_hold_bias(model, 0.0)
         assert torch.equal(model.policy.action_net.bias.detach(), before)
 
+    def test_hold_bias_shifts_only_the_lp_hold_logit_of_a_joint_head(self) -> None:
+        """S20b: the first ``MultiDiscrete`` component is still ``hold``."""
+        vec_env = DummyVecEnv([_MultiBanditEnv])
+        try:
+            n_steps, batch_size, n_epochs = _derive_rollout(
+                TrainingConfig(total_timesteps=64, parallel_envs=1)
+            )
+            model = PPO(
+                "MlpPolicy",
+                vec_env,
+                n_steps=n_steps,
+                batch_size=batch_size,
+                n_epochs=n_epochs,
+                seed=0,
+                device="cpu",
+                verbose=0,
+            )
+            before = model.policy.action_net.bias.detach().clone()
+            _apply_hold_bias(model, 2.5)
+            after = model.policy.action_net.bias.detach()
+            # The action head concatenates the two categorical heads: logit 0 is
+            # the LP hold, every other logit (LP rebalances and all ratios)
+            # keeps its prior.
+            assert float(after[0]) - float(before[0]) == pytest.approx(2.5)
+            assert torch.equal(after[1:], before[1:])
+            action, _state = model.predict(np.zeros(2), deterministic=True)
+            assert np.asarray(action).reshape(-1).shape == (2,)
+        finally:
+            vec_env.close()
+
     @pytest.mark.parametrize(
         "action_net",
         [
@@ -716,6 +774,40 @@ class TestRealEnvironmentSmoke:
         PPO.load(str(manifest.checkpoint_path), device="cpu")
         payload = json.loads((tmp_path / "manifest.json").read_text())
         assert payload["learning_curve"]  # at least one evaluation recorded
+
+    def test_train_single_seed_with_the_joint_hedge_head(
+        self,
+        tiny_market_view: object,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+        tmp_path: Path,
+    ) -> None:
+        """S20b end-to-end: PPO trains on the ``MultiDiscrete`` joint head."""
+        from undertow.sim.config import HedgeConfig
+
+        config = dataclasses.replace(
+            _training_config(
+                total_timesteps=128, log_freq_steps=64, checkpoint_freq_steps=64
+            ),
+            hedge=HedgeConfig(enabled=True, agent_ratio=True),
+        )
+        env_fn = _CountingFactory(
+            _real_env_factory(
+                tiny_market_view,
+                mock_gas_model,
+                mock_slippage_model,
+                config=config,
+            )
+        )
+        manifest = train_single_seed(env_fn, config, seed=0, log_dir=tmp_path)
+
+        model = PPO.load(str(manifest.checkpoint_path), device="cpu")
+        assert isinstance(model.action_space, spaces.MultiDiscrete)
+        assert model.action_space.nvec.tolist() == [91, 5]
+        action, _state = model.predict(np.zeros(24), deterministic=True)
+        lp_index, ratio_index = np.asarray(action).reshape(-1)
+        assert 0 <= int(lp_index) < 91
+        assert 0 <= int(ratio_index) < 5
 
 
 # ---------------------------------------------------------------------------

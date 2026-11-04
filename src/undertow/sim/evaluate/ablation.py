@@ -61,6 +61,7 @@ from undertow.sim.frictions import FlatGasModel
 from undertow.sim.policies import (
     CostAwareRebalancePolicy,
     FullRangeV2Policy,
+    HedgedHODLPolicy,
     HODLPolicy,
     PassiveNarrowPolicy,
     PassiveWidePolicy,
@@ -101,6 +102,7 @@ ABLATION_VARIANTS: tuple[tuple[str, dict[str, bool], bool], ...] = (
 #: and requires the caller's ``train_fn``.
 _BASELINE_TYPES: tuple[type, ...] = (
     HODLPolicy,
+    HedgedHODLPolicy,
     PassiveNarrowPolicy,
     PassiveWidePolicy,
     FullRangeV2Policy,

@@ -1,10 +1,12 @@
 """The baseline ladder for ``undertow.sim`` (CONTRACTS.md §10).
 
-Six deterministic, frozen baselines used to evaluate the RL agent against
+Seven deterministic, frozen baselines used to evaluate the RL agent against
 sensible reference strategies (roadmap §10.5 items 1–3 + 5; PLAN.md §7
 "Baseline ladder"):
 
 * :class:`HODLPolicy` — buy and hold the initial token mix.
+* :class:`HedgedHODLPolicy` — hold the initial basket and short a constant
+  fraction of its ETH delta (the beta-matched benchmark, S20b).
 * :class:`PassiveNarrowPolicy` — deploy a ±5 % band once, then never rebalance.
 * :class:`PassiveWidePolicy` — deploy a ±20 % band once, then never rebalance.
 * :class:`FullRangeV2Policy` — the Uniswap-V2-equivalent full range.
@@ -19,6 +21,7 @@ lower tick carries the **higher** price bound.
 
 from __future__ import annotations
 
+import math
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -92,6 +95,47 @@ class HODLPolicy:
     ) -> Action:
         """Always hold; HODL never deploys or rebalances liquidity."""
         return HOLDAction
+
+
+class HedgedHODLPolicy:
+    """Unhedged LP plus a constant short fraction of the live ETH delta (S20b).
+
+    The beta-matched benchmark of the measurement protocol (ADR-030): the
+    initial basket is held passively (the environment/backtester deploy it) and
+    every decision re-hedges the short to ``hedge_ratio *`` the LP's ETH delta.
+    ``1.0`` is the fully delta-neutral (beta-matched) portfolio, ``0.0`` is the
+    shipped :class:`HODLPolicy`; the hedge leg only exists when
+    ``HedgeConfig.enabled`` is true.
+    """
+
+    def __init__(self, hedge_ratio: float = 1.0) -> None:
+        value = float(hedge_ratio)
+        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            raise ValueError(f"hedge_ratio must be in [0, 1], got {hedge_ratio!r}")
+        self._hedge_ratio = value
+        self._action = Action(
+            action_type="hold", center_offset=0, width=0, hedge_ratio=value
+        )
+
+    @property
+    def name(self) -> str:
+        return "hedged_hodl"
+
+    @property
+    def hedge_ratio(self) -> float:
+        """The constant short fraction this policy maintains."""
+        return self._hedge_ratio
+
+    def reset(self) -> None:
+        """No episode-local state to reset."""
+
+    def act(
+        self,
+        observation: Observation,
+        rng: np.random.Generator | None = None,
+    ) -> Action:
+        """Always hold the LP and re-hedge to the constant ratio."""
+        return self._action
 
 
 class _PassiveBandPolicy:
