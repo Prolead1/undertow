@@ -119,19 +119,23 @@ design. Table~\ref{tab:ablations} lists the design choices the sequence
 touched: band geometry, the reward basket and window sampling, the rebalance
 interval, the hedge head and the risk penalty. Section~\ref{sec:results}
 reports the progression as a sequence of repairs, not as the marginal effect of
-each change. The friction rows and the rows for regime features, and the
-$0.30\,\%$ contrast pool, have not run. For the boundary question the protocol
-calls for a sweep of realised volatility, volume relative to liquidity, fee
-tier, gas price and capital, evaluating each point on replayed windows rather
-than a fitted process; the completed results map the regimes the learned policy
-was tested in and leave the sweep pending.
+each change. Three targeted probes complete the table: the friction terms are
+ablated on a one-shot band and on a recentring rule, the whole rule ladder is
+repeated on the $0.30\,\%$ tier, and an arm with the regime feature frozen is
+trained across the five seeds. For the boundary question the protocol calls for
+a sweep of realised volatility, volume relative to liquidity, fee tier, gas
+price and capital, evaluating each point on replayed windows rather than a
+fitted process. The completed sweep moves the gas and capital levels and the
+fee tier; the realised windows supply the volatility and volume variation the
+LVR overlay uses, while a controlled volatility and volume sweep remains
+open.
 
 \begin{table}[tbp]
-\caption{The design choices the repair sequence touched. The changes were made
-in sequence rather than varied one at a time, so Section~\ref{sec:results}
-measures the sequence of repairs, not the marginal effect of each change. The
-rows for regime features, the friction rows, and the $0.30\,\%$ contrast
-pool, were not run.}
+\caption{The design choices the repair sequence touched, plus the targeted
+probes that complete the table. The repair changes were made in sequence rather
+than varied one at a time, so Section~\ref{sec:results} measures the sequence
+of repairs, not the marginal effect of each change; the friction, fee-tier and
+regime-feature rows are the probes.}
 \label{tab:ablations}
 \centering
 \small
@@ -143,9 +147,9 @@ Band geometry & removed from the observation & does the agent need to see the li
 Window sampling & windows held fixed instead of resampled & how much does resampling the training windows buy? \\
 Hedge & overlay disabled & what does the hedge contribute net of funding? \\
 Risk penalty & toggled & does the risk penalty change the tail without costing Sharpe? \\
-Regime features & removed (not run) & do the regime labels inform the policy? \\
-Frictions & full model, no gas, no slippage, static fee, no impermanent loss (not run) & which cost drives the result? \\
-Fee tier & repeated on the $0.30\,\%$ pool (not run) & does a higher fee tier buy a longer viable range? \\
+Regime features & frozen to a constant across the five seeds & do the regime labels inform the policy? \\
+Frictions & full model, no gas, no slippage, flat gas, no impermanent loss & which cost drives the result? \\
+Fee tier & repeated on the $0.30\,\%$ pool & does a higher fee tier buy a longer viable range? \\
 \bottomrule
 \end{tabular}
 \end{table}
