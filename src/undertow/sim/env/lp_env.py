@@ -192,7 +192,10 @@ class LpEnvironment(gym.Env):
         else:
             self.action_space = gym.spaces.Discrete(len(self._action_lookup))
 
-        self._builder = ObservationBuilder(market_view)
+        self._builder = ObservationBuilder(
+            market_view,
+            regime_features=config.observation.regime_features,
+        )
         self._capture_pool_base()
 
         # State populated by reset().  ``_base_seed`` anchors the run and
@@ -1522,6 +1525,8 @@ class LpEnvironment(gym.Env):
             "tick": int(observation.tick),
             "in_range": bool(observation.position_in_range),
             "position_value": float(observation.position_value),
-            "regime": observation.regime,
+            # Telemetry keeps the live label even when the observation gate
+            # freezes the policy-facing feature (S23 ablation arm).
+            "regime": observation.regime or self.market_view.regime_at(at_time),
             "gas_price_wei": float(observation.gas_price_recent_wei),
         }

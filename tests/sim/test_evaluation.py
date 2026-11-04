@@ -27,6 +27,7 @@ import pytest
 from tests.sim.synthetic_pool import tiny_episode
 from undertow.sim.config import HedgeConfig, SimConfig, TrainingConfig
 from undertow.sim.env.lp_env import LpEnvironment
+from undertow.sim.env.observations import REGIME_ABLATED
 from undertow.sim.evaluate import (
     ABLATION_VARIANTS,
     METRIC_NAMES,
@@ -429,6 +430,14 @@ class TestObservationAdapter:
         assert observation.hedge_short_ratio == 0.75
         assert observation.hedge_equity_frac == -0.002
         assert observation.funding_rate_recent == 0.0001
+
+    def test_regime_gate_returns_the_ablation_sentinel(self) -> None:
+        vector = [0.0] * 24
+        vector[15] = 1.0  # bear ordinal
+        assert observation_from_vector(vector).regime == "bear"
+        gated = observation_from_vector(vector, regime_features=False)
+        assert gated.regime == REGIME_ABLATED
+        assert gated.to_vector()[15] == 0.0
 
     def test_wrong_length_raises(self) -> None:
         with pytest.raises(EvaluationError, match="length 24"):

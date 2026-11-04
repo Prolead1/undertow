@@ -79,7 +79,12 @@ from undertow.sim.core.position import (
     Position,
     initial_deposit,
 )
-from undertow.sim.env.observations import ObservationBuilder, scale_vector
+from undertow.sim.env.observations import (
+    REGIME_ABLATED,
+    REGIME_ORDINAL,
+    ObservationBuilder,
+    scale_vector,
+)
 from undertow.sim.frictions import GasCostCalculator, ProportionalSlippageModel
 from undertow.sim.hedge import ETH_DELTA_EPS, HedgeAccount
 from undertow.sim.marketview import MarketView
@@ -175,7 +180,11 @@ class BacktestObservation:
         (ADR-034), so a checkpoint trained in the simulator sees the same
         scale when the backtester replays it.
         """
-        ordinal = {"bull": 0, "bear": 1, "sideways": 2, "high_vol": 3, "unknown": 4}
+        regime_value = (
+            0.0
+            if self.regime == REGIME_ABLATED
+            else float(REGIME_ORDINAL.get(self.regime, REGIME_ORDINAL["unknown"]))
+        )
         raw = np.asarray(
             [
                 self.price,
@@ -193,7 +202,7 @@ class BacktestObservation:
                 float(self.pool_fee_tier_bps),
                 self.gas_price_recent_wei,
                 self.eth_usd_price_recent,
-                float(ordinal.get(self.regime, 4)),
+                regime_value,
                 float(self.step_in_episode),
                 float(self.steps_remaining),
                 float(self.distance_to_lower_bound_spacings),
@@ -380,7 +389,10 @@ class _Replay:
         # The observation's rolling features come from the same reference-bar
         # windows the environment uses (CONTRACTS §11), so a frozen policy is
         # fed identical features in both instruments.
-        self.observation_builder = ObservationBuilder(market_view)
+        self.observation_builder = ObservationBuilder(
+            market_view,
+            regime_features=config.observation.regime_features,
+        )
 
         # Position + exact fee-growth state.  ``replay`` (ADR-013) is set by
         # ``run_backtest`` once the pool and the tape's opening tick are known.
@@ -688,7 +700,11 @@ class _Replay:
             pool_fee_tier_bps=int(self.config.episode.fee_tier_bps),
             gas_price_recent_wei=gas_wei,
             eth_usd_price_recent=obs_price,
-            regime=regime,
+            regime=(
+                regime
+                if self.config.observation.regime_features
+                else REGIME_ABLATED
+            ),
             step_in_episode=step_in_episode,
             steps_remaining=max(0, total_decisions_hint - step_in_episode - 1),
             distance_to_lower_bound_spacings=distance_lower,

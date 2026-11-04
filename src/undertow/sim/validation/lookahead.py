@@ -355,7 +355,10 @@ class _ProbeSuite:
         position = self.env._position
         assert position is not None, "probe runs after reset, which deploys a position"
         pool_engine = self.env.pool_engine
-        builder = ObservationBuilder(view)
+        builder = ObservationBuilder(
+            view,
+            regime_features=self.env.config.observation.regime_features,
+        )
         observation = builder.build_at(
             at_time=at_time,
             tape_row=self.env._last_tape_row,

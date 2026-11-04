@@ -10,6 +10,11 @@ marginal_agent = true
 fee_tier_bps = 500
 tick_spacing = 10
 
+[observation]
+# S23 ablation gate: false freezes the regime ordinal to 0.0 for the
+# regime-feature ablation arm; true (default) keeps the live label.
+regime_features = true
+
 [action_grid]
 center_offsets = [-4, -3, -2, -1, 0, 1, 2, 3, 4]
 # Widths are half-ranges in tick-spacing units; spacing 10 needs the wider ladder
