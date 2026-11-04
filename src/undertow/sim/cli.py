@@ -343,6 +343,14 @@ class _CheckpointPolicy:
     the returned discrete index back to the matching factored :class:`Action`
     (ADR-011).  It is the only adapter between an SB3 model and the simulator's
     policy protocol, and lives with the composition root (the CLI).
+
+    It also mirrors :class:`~undertow.sim.env.lp_env.LpEnvironment`'s
+    ``episode.min_rebalance_interval_steps`` gate (ADR-037): the model's early
+    rebalance *attempts* return the hold action and consume the interval, so
+    the backtester and the simulator apply the identical rule when evaluating
+    the same checkpoint.  With ``HedgeConfig.agent_ratio`` (ADR-039) the
+    ``MultiDiscrete`` head is decoded and validated too; the ratio rides on the
+    action independently of the LP gating.
     """
 
     def __init__(self, model: object, config: SimConfig, name: str = "ppo") -> None:
@@ -351,6 +359,9 @@ class _CheckpointPolicy:
         self._actions = _action_grid(config)
         self._agent_ratio = bool(config.hedge.enabled and config.hedge.agent_ratio)
         self._ratios = tuple(float(value) for value in config.hedge.ratios)
+        self._min_interval = int(config.episode.min_rebalance_interval_steps)
+        self._step = 0
+        self._last_rebalance_attempt_step = -self._min_interval
         self._validate_observation_space(model)
         self._validate_action_space(model)
 
@@ -423,24 +434,49 @@ class _CheckpointPolicy:
         return self._name
 
     def reset(self) -> None:
-        """No episode-local state to reset."""
+        """Re-arm the episode-local min-interval gate.
+
+        Both :func:`run_backtest` and the walk-forward simulator call this once
+        per episode, so the first action is always allowed and the two backends
+        stay in lockstep with the environment (which re-arms on ``reset()``).
+        """
+        self._step = 0
+        self._last_rebalance_attempt_step = -self._min_interval
 
     def act(
         self,
         observation: object,
         rng: np.random.Generator | None = None,
     ) -> Action:
-        """Predict a discrete action index and return its factored action."""
+        """Predict a discrete action index and return its factored action.
+
+        With ``episode.min_rebalance_interval_steps > 0`` an early rebalance
+        attempt is mapped to hold and does not advance the last-attempt step;
+        an allowed attempt is recorded even if the engine later rejects it as
+        unaffordable.  ``self._step`` advances on every call, matching the
+        environment's decision count.
+        """
         del rng  # the checkpoint policy is deterministic
         vector = np.asarray(observation.to_vector(), dtype=np.float64)  # type: ignore[attr-defined]
         raw_action, _state = self._model.predict(vector, deterministic=True)  # type: ignore[attr-defined]
         values = np.asarray(raw_action).reshape(-1)
         index = max(0, min(int(values[0]), len(self._actions) - 1))
         action = self._actions[index]
-        if not self._agent_ratio:
+        # The joint head's ratio is independent of the LP action: an early
+        # rebalance gated to hold below still re-hedges to the chosen ratio.
+        hedge_ratio: float | None = None
+        if self._agent_ratio:
+            ratio_index = max(0, min(int(values[1]), len(self._ratios) - 1))
+            hedge_ratio = self._ratios[ratio_index]
+        if self._min_interval > 0 and action.action_type == "rebalance":
+            if self._step - self._last_rebalance_attempt_step < self._min_interval:
+                action = self._actions[0]
+            else:
+                self._last_rebalance_attempt_step = self._step
+        self._step += 1
+        if hedge_ratio is None:
             return action
-        ratio_index = max(0, min(int(values[1]), len(self._ratios) - 1))
-        return replace(action, hedge_ratio=self._ratios[ratio_index])
+        return replace(action, hedge_ratio=hedge_ratio)
 
 
 def _load_checkpoint(checkpoint: Path) -> object:

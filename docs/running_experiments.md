@@ -115,7 +115,7 @@ the slots sequentially in one process and is only for tiny runs.
 `configs/sim_eth_usdc_500_hedged.toml` enables the short-perp overlay and
 exposes its ratio to the agent: the action space becomes
 `MultiDiscrete([n_lp, 5])` over `h ∈ {0, 0.25, 0.5, 0.75, 1.0}` (S20b,
-ADR-037). Each decision re-hedges the short to `h ×` the LP's ETH delta at the
+ADR-039). Each decision re-hedges the short to `h ×` the LP's ETH delta at the
 decision mark, with funding and perp costs; the episode starts flat.
 Evaluation counts the hedge leg in PnL/Sharpe and the `hedged_hodl` baseline
 (beta-matched short) is included automatically:

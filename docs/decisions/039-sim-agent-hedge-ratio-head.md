@@ -1,4 +1,4 @@
-# ADR 037 — Agent-selected hedge ratio: a joint (LP, hedge) action head and joint evaluation
+# ADR 039 — Agent-selected hedge ratio: a joint (LP, hedge) action head and joint evaluation
 
 **Status:** accepted (implementation)
 **Affects:** `src/undertow/sim/types.py` · `config.py` · `env/lp_env.py` · `backtest/engine.py` · `evaluate/protocol.py` · `policies/baselines.py` · `cli.py` · `CONTRACTS.md` §1/§2/§12/§13 · `configs/sim_eth_usdc_500_hedged.toml`
