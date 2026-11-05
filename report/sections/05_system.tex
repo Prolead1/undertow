@@ -1,11 +1,14 @@
 \section{Building a Trustworthy Testbed}
 \label{sec:system}
 
-A study of this question needs a world in which the LP's costs can be measured
-rather than assumed. That world must be exact enough that a reported fee or
-loss is the real one, and fast enough that a policy can make millions of
-decisions. No single engine satisfies both, so the testbed uses two and checks
-them against each other. Figure~\ref{fig:testbed} shows the flow.
+The decision problem framed in Section~\ref{sec:formulation} needs a world in
+which the LP's costs are measured rather than assumed. Such a world must be
+exact enough that a reported fee or loss is the real one, and fast enough for a
+learned policy to make millions of decisions. No single engine delivers both,
+so the testbed runs two and checks one against the other. Constructing that
+instrument is part of the contribution, because a result is only as
+trustworthy as the recording and the arithmetic beneath it.
+Figure~\ref{fig:testbed} shows the flow.
 
 \begin{figure}[tbp]
 \centering
@@ -18,61 +21,63 @@ check reconciles them before a policy is trusted.}
 
 \subsection{The record}
 
-The data are the raw logs of two real ETH/USDC pools: the $0.05\,\%$ pool used
-as the primary market and the $0.30\,\%$ pool used as a fee-tier contrast. The
-pipeline turns those logs into one ordered event tape of swaps, mints, burns
-and collects, and joins it with three auxiliary feeds: one-minute reference
-prices, per-block gas prices, and regime labels computed from thresholds fixed
-in advance. A fourth feed, the funding rate of a perpetual margined in USDT,
-prices the hedge. The window runs from January 2022 to December 2024, with
-2022--2023 for training and 2024 held out. The primary pool's training tape
-alone holds about 4.86 million events, which is why speed matters later. Every
-read goes through one interface that enforces block ordering and the train/eval
-boundary, so an observation at time $t$ cannot accidentally see a bar from
-$t+1$.
+The record begins with the raw logs of two real ETH/USDC pools. The
+$0.05\,\%$ pool is the primary pool, and the $0.30\,\%$ pool provides a
+fee-tier contrast. The pipeline turns those logs into one ordered event tape of
+swaps, mints, burns and collects, then joins three auxiliary feeds to it,
+namely one-minute reference prices, per-block gas prices and regime labels
+computed from thresholds fixed in advance. A fourth feed, the funding rate of a
+perpetual margined in USDT, prices the hedge. The window runs from January 2022
+to December 2024, with 2022--2023 for training and 2024 held out. The primary
+pool's training tape alone holds about 4.86 million events, which is why speed
+matters later. Reads pass through one interface that enforces block ordering
+and the train/eval boundary, so an observation at time $t$ cannot accidentally
+see a bar from $t+1$.
 
 \subsection{The exact engine}
 
-The backtester replays a frozen policy against the tape in the protocol's own
-integer arithmetic. Fees come from the pool's recorded fee-growth accumulators,
-exactly as the contract computes them; liquidity events update an external tick
-lattice seeded from a boundary snapshot; swaps are apportioned across the ticks
-they cross. The ledger therefore satisfies an accounting identity by
-construction: fees plus impermanent loss, minus gas and slippage, equals the
-strategy's excess over holding the opening deposit. A backtested policy is
-frozen by construction because the interface exposes no way to update it, and
-every ledger records the configuration and seed that produced it.
+The exact backtester replays a frozen policy against the tape in the protocol's
+own integer arithmetic. Fees come from the pool's recorded fee-growth
+accumulators, exactly as the contract computes them. Liquidity events update an
+external tick lattice seeded from a boundary snapshot, and swaps are
+apportioned across the ticks they cross. The ledger therefore satisfies its
+accounting identity exactly. Fees plus impermanent loss, minus gas and
+slippage, equals the strategy's excess over holding the opening deposit.
+Because the interface exposes no way to update the policy, a backtested run is
+frozen by construction, and the ledger records the configuration and seed
+behind it.
 
 \subsection{Two engines, one check}
 
-Training on the exact engine would be far too slow, so the simulator mirrors
-the same economics in floating point. Its agent is marginal: the position never
-moves the price, and its fee share is the fraction of active liquidity it
-supplies. The simulator can run on the recorded events or on a calibrated
-regime-switching jump process fitted to the training years, and it executes
-each action at the price observed before the interval advances, as a live LP
-would.
+Training on the exact backtester would be far too slow, so the fast simulator
+mirrors the same economics in floating point. Its agent is marginal. The
+position never moves the price, and its fee share is the fraction of the active
+liquidity it supplies. The simulator can run on the recorded events or on a
+calibrated regime-switching jump process fitted to the training years, and it
+executes a decision at the price observed before the interval advances, as a
+live LP would.
 
 Two numeric worlds are only useful if their disagreement is bounded. The parity
-harness feeds both engines the same prices, positions and gas series, and then
-compares fees, impermanent loss and PnL under a stated tolerance. Since the
-simulator's fee engine was made exact, the remaining drift on real data is
-tiny: mean fee differences on the order of $10^{-7}$ USDC per step per seed,
-and impermanent loss matching exactly. The harness originally exercised only the
-passive policy, which never rebalances; it now also runs a policy that does,
-which is the path the fee and loss results depend on. A separate suite of
-look-ahead probes attacks the composed system at the train/eval seam.
+harness feeds both engines the same prices, positions and gas series, then
+compares fees, impermanent loss and PnL under a stated tolerance. The
+simulator's fee engine was made exact, so the remaining drift on real data is
+tiny. Mean fee differences sit on the order of $10^{-7}$ USDC per step per
+seed, and impermanent loss matches exactly. The harness first exercised only
+the passive policy, which never rebalances. It now also runs a policy that
+rebalances, which is the setting the fee and loss results depend on. A separate suite of
+look-ahead probes attacks the composed system at the train/eval seam, where a
+leak would be easiest to hide.
 
 \subsection{The failures that shaped the design}
 
-The first two training runs produced policies that did nothing useful: every
-seed collapsed to one deterministic action, some always holding and some always
-repeating a single rebalance, and the measured advantage barely distinguished
-the actions. The collapse was not a tuning problem. Table~\ref{tab:repairs}
-lists the interface defects behind it and the repair for each. Each repair is
-small, but together they were the difference between a policy that can learn
-and one that cannot, which is why the failure is treated as a result rather
-than an implementation note.
+The first two training runs produced policies that did nothing useful. The
+seeds collapsed to one deterministic action, some holding throughout and others
+repeating a single rebalance, and the measured advantage barely separated the
+actions. The collapse was not a tuning problem. Table~\ref{tab:repairs} lists
+the interface defects behind it and the repair for each. Individually the
+repairs are small. Together they were the difference between a policy that can
+learn and one that cannot, which is why the failure is treated as a result
+rather than an implementation note.
 
 \begin{table}[tbp]
 \caption{The defects that collapsed the first policies, and the repair for
@@ -91,7 +96,7 @@ distances to each edge and the band width, in tick spacings \\
 Reward measured loss against a rolling entry basket &
 after a rebalance the reward no longer matched the reported metric &
 excess against the fixed opening basket, never rebased \\
-Every episode replayed one fixed window &
+Episodes replayed one fixed window &
 the agent never saw a different market &
 training windows resampled from 2022--2023 \\
 Slippage charged on the whole position value &

@@ -1,45 +1,48 @@
 \section{Related Work}
 \label{sec:related}
 
-The study sits between two literatures. The first prices what an automated
-market maker can earn and lose; it shows that adverse selection is a
-structural cost, not an accident of who trades. The second supplies the
-decision machinery: reinforcement learning for market making and trading, and
-the risk-sensitive extensions that judge a policy on its tail. This section
-reviews both, states what each establishes, and locates the gap the study
-fills.
+Two literatures bear on the problem. Market making and optimal
+execution establish how a dealer quotes around a reference price, manages
+inventory and unwinds a position under uncertainty. The design and economics of
+automated market makers establish what a liquidity provider earns and loses,
+and they identify adverse selection as a structural cost rather than an
+accident of who trades. Reinforcement learning then supplies the decision
+machinery for a problem of that shape, and its risk-sensitive branch supplies
+the objective, judging a policy on the tail of its outcomes as well as on their
+mean. The economic
+literature prices the problem and the learning literature acts on it; the gap
+between them is the provider's decision loop under realistic frictions.
 
 \subsection{Market making and optimal execution}
 
-Classical market making quotes prices around a reference value while managing
+Classical market making sets quotes around a reference value while managing
 inventory risk. Avellaneda and Stoikov model a dealer who posts bid and ask
-quotes against a limit order book, derives reservation prices from inventory
-and risk aversion, and shows how spreads widen as inventory grows and as the
-horizon shortens\cite{avellaneda2008high}. The same tension, between capturing
-the spread and carrying unwanted inventory, governs a much older problem:
-Almgren and Chriss choose a liquidation schedule that trades price impact
-against timing risk, and the optimal schedule is the ancestor of the
+quotes against a limit order book, derives a reservation price from inventory
+and risk aversion, and shows that spreads widen as inventory grows and as the
+horizon shortens\cite{avellaneda2008high}. The same tension drives a much older
+problem. Almgren and Chriss choose a liquidation schedule that trades price
+impact against timing risk, and the optimal schedule is the ancestor of the
 cost-aware rebalancing rule this study uses as a benchmark\cite{almgren2001optimal}.
-Neither model is an AMM. A limit order book dealer chooses quote prices and
-sizes, while a liquidity provider chooses a price range and a liquidity share;
-the LP's inventory is a deterministic function of the range, and its loss
-mechanism is the concavity of that function rather than an adverse selection
-spread.
+Neither model describes an automated market maker. A limit order book dealer
+chooses quote prices and sizes, while a liquidity provider chooses a price
+range and a liquidity share; the LP's inventory is a deterministic function of
+the range, and its loss arises from the concavity of that function rather than
+from an adverse selection spread.
 
 The reinforcement learning line replaces closed-form quotes with learned
 policies. Gu\'eant and Manziuk train a policy that quotes across hundreds of
 corporate bonds at once, sidestepping the curse of dimensionality that makes a
 per-instrument model impractical\cite{gueant2019deep}. Ganesh et al.\ build a
-multi-agent dealer market and show that a learner discovers competitor pricing
-and learns to shade quotes and manage inventory, with the reward
-specification deciding much of the behaviour\cite{ganesh2019reinforcement}.
-Zhang et al.\ study continuous futures with volatility-scaled positions and
-report gains against time-series momentum after transaction
-costs\cite{zhang2019deep}. These papers demonstrate that reinforcement
-learning works in trading settings with realistic frictions, and they supply
-the reward design lessons, but their state is an order book and their action
-is a quote, so they do not speak to range geometry or to the losses that make
-liquidity provision hard.
+multi-agent dealer market and show that a learner discovers competitor pricing,
+shades quotes and manages inventory, with the reward specification deciding
+much of the resulting behaviour\cite{ganesh2019reinforcement}. Zhang et al.\
+study continuous futures with volatility-scaled positions and report gains
+against time-series momentum after transaction costs\cite{zhang2019deep}.
+These papers demonstrate that reinforcement learning works in trading settings
+with realistic frictions, and they supply reward-design lessons that carry into
+liquidity provision. The state in these studies is an order book and the action
+is a quote, so range geometry and the losses that make liquidity provision
+hard stay outside their reach.
 
 \subsection{Automated market maker design and LP economics}
 
@@ -49,11 +52,11 @@ conditions and characterise the deviation when the reference moves away, with
 agent-based simulations supporting the stability argument\cite{angeris2019analysis}.
 The same authors give conditions under which a constant-function market works
 as a price oracle\cite{angeris2020improved}, and later work axiomatises the
-family and shows that every constant-function market admits a unique
-well-behaved trading function in a general geometric
+family and shows that a constant-function market admits a unique well-behaved
+trading function in a general geometric
 framework\cite{schlegel2022axioms,angeris2023geometry}. Xu et al.\ systematise
 the design space and its trade-offs\cite{xu2021sok}. This literature explains
-what a pool does to prices; it treats the liquidity provider's return as a
+what a pool does to prices, and it treats the liquidity provider's return as a
 residual of the mechanism.
 
 That residual is now measured. Capponi and Jia show that automated execution
@@ -65,12 +68,12 @@ Uniswap~v3 provider faces and argue that the design demands far more decisions
 than earlier automated markets, with fee income and loss exposure moving
 together\cite{heimbach2022risks}. Loesch et al.\ measure impermanent loss on
 live v3 positions and show that concentration magnifies it when the price
-leaves the band\cite{loesch2021impermanent}. Fritsch and Canidio compare the
-two sides on real pools and find arbitrage losses typically exceeding the fees
-earned, with passive full-range positions often outperforming concentrated
-ones\cite{fritsch2024measuring}.
+leaves the band\cite{loesch2021impermanent}. Fritsch and Canidio compare fee
+income with arbitrage losses on real pools and find that the losses typically
+exceed the fees earned, with passive full-range positions often outperforming
+concentrated ones\cite{fritsch2024measuring}.
 
-The theory of that loss is the anchor of this report. Milionis et al.\ define
+The theory of that loss anchors this report. Milionis et al.\ define
 loss-versus-rebalancing as the gap between the pool and a continuously
 rebalanced portfolio, derive the rate $\frac{1}{8}\sigma^2V$ for a full-range
 constant-product position, and show that it accrues on any price path, whether
@@ -79,7 +82,7 @@ threshold rather than the mechanism: with a proportional fee, arbitrage only
 pays once the pool price deviates by more than the fee, and the expected
 arbitrage profit scales down with the fraction of blocks that present a
 profitable opportunity\cite{milionis2023fees}. Competition among permissionless
-providers then pushes liquidity past the social optimum, because each provider
+providers then pushes liquidity past the social optimum, because a provider
 ignores the adverse-selection cost its entry imposes on the
 others\cite{ma2024cost}. Campbell et al.\ endogenise the fee itself and show
 that the profit-maximising fee depends on volatility and volume, so the fee
@@ -89,9 +92,9 @@ strands agree on the shape of the problem: gross fee yield is not an LP's
 return, and the gap between them is adverse selection.
 
 What this literature does not supply is a decision rule. Its objects are
-mechanisms, fee schedules and passive positions; the provider is a price taker
-of the mechanism, not an agent who chooses when to act, how wide to sit and
-how much of the residual risk to hedge.
+mechanisms, fee schedules and passive positions, and the provider appears as a
+price taker of the mechanism rather than an agent that chooses when to act, how
+wide to set the band, and how much of the residual risk to hedge.
 
 \subsection{Learning for liquidity provision}
 
@@ -104,20 +107,20 @@ range placement\cite{nadkarni2023zeroswap}. Chionas et al.\ treat concentrated
 liquidity as a risk-aversion problem in simulation and find that higher
 volatility and gas widen optimal positions and reduce rebalancing, while a
 risk penalty trims the adverse tail; their analysis uses no on-chain data and
-no hedge\cite{chionas2026concentrated}. Xu and Brini train a PPO provider that
-adjusts positions on rolling windows to balance fees against impermanent loss
-under regime shifts\cite{xu2025improving}. RAmmStein poses regime-dependent
+no hedge\cite{chionas2026concentrated}. Xu and Brini use proximal policy
+optimisation to train a provider that adjusts positions on rolling windows to
+balance fees against impermanent loss under regime
+shifts\cite{xu2025improving}. RAmmStein poses regime-dependent
 rebalancing thresholds as a problem of impulse control and reports that lazy
 rebalancing when the regime warrants it improves net return with far fewer
 rebalances, though its net metric excludes impermanent loss and the study
 relies on off-chain data for one pair\cite{anchuri2026rammstein}.
 
 These studies establish that a learned provider can beat a hand-written rule
-inside their respective settings. Each leaves at least one of the study's
-requirements untouched: none charges every friction on both the liquidity and
-hedge legs, none evaluates on validated on-chain replay across several seeds
-with paired intervals, and none places the hedge ratio in the same learned
-action as the range decision.
+inside their respective settings. None of the studies above charges frictions
+on the liquidity and hedge legs together, evaluates on validated on-chain
+replay across several seeds with paired intervals, or places the hedge ratio in
+the same learned action as the range decision.
 
 \subsection{Risk-sensitive reinforcement learning}
 
@@ -128,48 +131,48 @@ risk-seeking and risk-averse behaviour\cite{mihatsch2002risk}. Tamar et al.\
 extend policy gradients to coherent risk measures generally, using a
 convex-programming step over the risk envelope\cite{tamar2015policy}, and Chow
 and Ghavamzadeh derive policy-gradient and actor-critic algorithms for
-mean-CVaR Markov decision processes, which makes the tail a differentiable
+mean-CVaR Markov decision processes, so that the tail becomes a differentiable
 objective rather than a post-hoc measurement\cite{chow2014algorithms}. B\"uhler
 et al.\ bring the same machinery to hedging under frictions and risk limits,
 and show that a rich enough set of learned strategies approximates the optimal
-solution\cite{buehler2018deep}. The measures themselves are fixed by
-Artzner et al.'s coherence axioms\cite{artzner1999coherent} and by the convex
+solution\cite{buehler2018deep}. The measures themselves rest on Artzner et
+al.'s coherence axioms\cite{artzner1999coherent} and on the convex
 representation of Rockafellar and Uryasev\cite{rockafellar2000cvar}.
 
 This study uses those results in two places. The reward subtracts a multiple
-of a trailing empirical expected shortfall, so the policy's gradient sees the
-tail it will be judged on, and the checkpoint selection ranks candidates by a
-validation Sharpe computed on a held-out slice of the training lane. The
-second choice is a direct response to the failure documented in the results:
-selection on training return chose an over-hedged policy that lost out of
-sample.
+of a trailing empirical expected shortfall, so the policy's gradient reflects
+the tail on which it is evaluated, and the checkpoint selection ranks
+candidates by a validation Sharpe computed on a held-out slice of the training
+lane. The second choice responds directly to the failure documented in
+Section~\ref{sec:results}, where selection on training return chose an
+over-hedged policy that lost out of sample.
 
 \subsection{Learning methods and tooling}
 
-The optimization machinery is standard and deliberately so.
-Reinforcement learning solves sequential decisions from interaction data
-without a model\cite{sutton2018reinforcement}; proximal policy optimization
+The optimisation machinery is standard, and deliberately so. Reinforcement
+learning solves sequential decisions from interaction data without a
+model\cite{sutton2018reinforcement}; proximal policy optimisation (PPO)
 supplies a clipped surrogate objective that is stable across
-updates\cite{schulman2017ppo}; generalized advantage estimation controls the
+updates\cite{schulman2017ppo}; generalised advantage estimation controls the
 variance of its advantage estimates\cite{schulman2015gae}. The study uses the
 reference implementations of both through Stable-Baselines3 on the Gymnasium
 interface\cite{raffin2021stablebaselines3,towers2024gymnasium}, which keeps
 the experiments reproducible without making the algorithms part of the
-contribution. The one interface that is not standard is the action space: the
+contribution. The one interface that is not standard is the action space. The
 policy emits a factored action whose first component is a range choice and
 whose second is a hedge ratio, a discrete multi-head space rather than a
 single categorical output.
 
 \subsection{The gap}
 
-Table~\ref{tab:gap} places the closest studies beside this one. Two patterns
-are visible. The economic literature prices the LP's losses but leaves the
-decisions open; the learning literature makes the decisions but evaluates them
-in simulation, on one leg, or without the frictions that decide the sign of
-the result. This study trains a single policy over width and hedge on recorded
-on-chain events, charges gas, slippage, fees and funding on both legs, and
-reports the pre-registered risk comparison across five seeds with paired
-intervals.
+Table~\ref{tab:gap} places the closest studies beside this one, and two
+patterns emerge. The economic literature prices the LP's losses but leaves the
+decisions open. The learning literature makes the decisions but evaluates them
+in simulation, on one leg, or without the frictions that decide the sign of the
+result. This study trains a single learned policy over width and hedge on
+recorded on-chain events, charges gas, slippage, fees and funding on both legs,
+and reports the pre-registered risk comparison against the one-shot rules and a
+delta-matched hedge, across five seeds with paired intervals.
 
 \begin{table}[tbp]
 \caption{The closest studies and what each leaves open. ``Decisions'' lists

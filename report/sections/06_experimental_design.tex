@@ -2,10 +2,14 @@
 \label{sec:design}
 
 The measurement protocol and the decision rule are fixed before the headline
-comparison; the interface corrections that preceded the final runs are
-reported as such. Table~\ref{tab:protocol}
-states the pools, the split and the training budget, and
-Fig.~\ref{fig:split} shows how the windows sit on the calendar.
+comparison, so the evaluation year cannot shape the design judged on it. That
+ordering matters most for the frozen comparator, since a static width chosen
+after seeing 2024 would flatter any policy measured against it. The interface
+corrections that preceded the final runs are reported as corrections rather
+than absorbed into the design, because they changed what the policy could
+observe and what it was rewarded for. Table~\ref{tab:protocol} states the
+pools, the split and the training budget, and Fig.~\ref{fig:split} shows how
+the windows sit on the calendar.
 
 \begin{table}[tbp]
 \caption{The study protocol and the training configuration. Both pools are
@@ -64,13 +68,17 @@ last a partial period, and no episode crosses the split.}
 \subsection{Benchmarks}
 
 A learned policy that beats only the weakest rule written by hand has
-demonstrated nothing. The comparison therefore includes the full ladder in
-Table~\ref{tab:benchmarks}, a best static width chosen on the training split and
-then frozen, and a hedged benchmark with a delta-matched short. Two reference
-holdings frame the ladder. A pure buy-and-hold basket holds the opening token
-mix as tokens and never provides liquidity; it is the numeraire for excess over
-HODL. The \textsf{hodl} rule instead deploys the opening band before the first
-decision and never recentres, so it earns fees and pays impermanent loss.
+demonstrated nothing, so the ladder in Table~\ref{tab:benchmarks} includes the
+opponents that could otherwise account for a positive result. It runs from the
+one-shot rules through the rebalancing heuristics to the best static width,
+chosen on the training split and frozen there, and it ends with a delta-matched
+hedge. That last rung matters because a policy whose advantage is the removal
+of directional risk would otherwise be measured against opponents that carry
+that risk. Two reference holdings frame the ladder. A pure buy-and-hold basket
+holds the opening token mix as tokens and never provides liquidity, which makes
+it the numeraire for excess over HODL. The \textsf{hodl} rule deploys the
+opening band before the first decision and never recentres, so it earns fees
+and pays impermanent loss.
 
 \begin{table}[tbp]
 \caption{Benchmark policies. The learned policy is compared with all of them;
@@ -87,8 +95,8 @@ hedged benchmark, not just \textsf{hodl}.}
 \textsf{passive\_narrow} & Deploy a $\pm 5\,\%$ band once; never recentre. \\
 \textsf{passive\_wide} & Deploy a $\pm 20\,\%$ band once; never recentre. \\
 \textsf{full\_range\_v2} & The Uniswap-v2-equivalent full range. \\
-\textsf{tau\_reset} & Recenter whenever the price exits the live band. \\
-\textsf{cost\_aware} & Recenter at most daily, and only when the estimated fee gain exceeds gas. \\
+\textsf{tau\_reset} & Recentre whenever the price exits the live band. \\
+\textsf{cost\_aware} & Recentre at most daily, and only when the estimated fee gain exceeds gas. \\
 Best static width & The ladder width with the best Sharpe on the training split, frozen for test. \\
 Hedged HODL & The opening band held, plus a short perpetual matched to its delta, with funding and perp costs. \\
 Learned policy & PPO over the joint (timing, width, hedge ratio) action space. \\
@@ -99,36 +107,44 @@ Learned policy & PPO over the joint (timing, width, hedge ratio) action space. \
 \subsection{Metrics}
 
 Two primary statistics carry the inference, both computed on the joint equity
-curve of the liquidity and hedge legs. The annualised Sharpe ratio is the mean
-of the per-step equity returns over their standard deviation, scaled to a year
-at the ten-minute cadence. CVaR at the $5\,\%$ level is the average of the
-worst $5\,\%$ of per-step equity changes in USDC, the same quantity the reward
-penalty controls. A policy is compared with each benchmark on the per-window
-differences of both statistics, with bootstrap confidence intervals over the
-thirteen windows; because the tail is thin at that sample size, the worst
-window is reported alongside them. Secondary statistics are raw PnL, excess
-over HODL, annualised return, Sortino ratio, maximum drawdown, rebalance
-count, and the cost ledger of fee income, gas, slippage, realised impermanent
-loss and the hedge flows. Per-regime tables stratify by each window's dominant
-label: bull, bear, sideways or high volatility.
+curve of the liquidity and hedge legs, so a hedge that flattens the tail at a
+cost in return is scored on the trade rather than on one side of it. The
+annualised Sharpe ratio is the mean of the per-step equity returns divided by
+their standard deviation, scaled to a year at the ten-minute cadence, and it
+measures the return per unit of risk. CVaR at the $5\,\%$ level is the average
+of the worst $5\,\%$ of per-step equity changes in USDC, the same quantity the
+reward penalty controls, and it measures the depth of the loss when the market
+turns. The learned policy is compared with the benchmark ladder through paired
+per-window differences in both statistics, with bootstrap confidence intervals
+over the thirteen windows. Because the tail is thin at that sample size, the
+worst window is reported alongside the intervals. Secondary statistics are raw
+PnL, excess over HODL, annualised return, Sortino ratio, maximum drawdown,
+rebalance count, and the cost ledger of fee income, gas, slippage, realised
+impermanent loss and the hedge flows. Per-regime tables stratify the windows
+by their dominant label, namely bull, bear, sideways or high volatility.
 
 \subsection{Ablations and the boundary}
 
 The failure modes were repaired in sequence rather than varied in a factorial
-design. Table~\ref{tab:ablations} lists the design choices the sequence
-touched: band geometry, the reward basket and window sampling, the rebalance
-interval, the hedge head and the risk penalty. Section~\ref{sec:results}
-reports the progression as a sequence of repairs, not as the marginal effect of
-each change. Three targeted probes complete the table: the friction terms are
-ablated on a one-shot band and on a recentring rule, the whole rule ladder is
-repeated on the $0.30\,\%$ tier, and an arm with the regime feature frozen is
-trained across the five seeds. For the boundary question the protocol calls for
-a sweep of realised volatility, volume relative to liquidity, fee tier, gas
-price and capital, evaluating each point on replayed windows rather than a
-fitted process. The completed sweep moves the gas and capital levels and the
-fee tier; the realised windows supply the volatility and volume variation the
-LVR overlay uses, while a controlled volatility and volume sweep remains
-open.
+design, and the sequence is reported as such. Table~\ref{tab:ablations} lists
+the design choices the repairs touched, namely band geometry, the reward basket
+and window sampling, the rebalance interval, the hedge head and the risk
+penalty. A sequence cannot isolate the marginal effect of a single change,
+because a repair landed on an interface the next repair could also move, so
+Section~\ref{sec:results} reports the progression rather than an attribution.
+Three targeted probes complete the table and recover part of what the sequence
+cannot separate. The friction terms are ablated on a one-shot band and on a
+recentring rule, the rule ladder is repeated on the $0.30\,\%$ tier, and an arm
+with the regime feature frozen is trained across the five seeds.
+
+The boundary question calls for a sweep of realised volatility, volume
+relative to liquidity, fee tier, gas price and capital, evaluated on replayed
+windows rather than a fitted process. The choice keeps a boundary point tied to
+market states that occurred, so the sweep does not add a generator's
+assumptions to those already carried by the testbed. The completed sweep moves
+the gas and capital levels and the fee tier, while the realised windows supply
+the volatility and volume variation the LVR overlay uses. A controlled
+volatility and volume sweep remains open.
 
 \begin{table}[tbp]
 \caption{The design choices the repair sequence touched, plus the targeted
@@ -154,9 +170,10 @@ Fee tier & repeated on the $0.30\,\%$ pool & does a higher fee tier buy a longer
 \end{tabular}
 \end{table}
 
-Decision rules are stated in advance: the learned policy earns a positive
-verdict only if its mean Sharpe beats the best static width and the hedged HODL
-with a paired $95\,\%$ confidence interval excluding zero, and its CVaR is no
-worse than the best heuristic's. Section~\ref{sec:results} reports where the
-rule is met and where it is not; where the evidence is negative, the negative
-result is the finding.
+The pre-registered rule awards a positive verdict only if the learned policy's
+mean Sharpe beats the best static width and the delta-matched hedge with a
+paired $95\,\%$ confidence interval that excludes zero, and only if the
+policy's CVaR is no worse than the best heuristic's. Both clauses must hold,
+so tail protection without a return advantage does not pass.
+Section~\ref{sec:results} reports where the rule is met and where it is not.
+Where the evidence is negative, the negative result is the finding.

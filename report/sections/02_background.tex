@@ -3,8 +3,9 @@
 
 \subsection{A position as a bet on a range}
 
-Uniswap~v3 indexes price by integer ticks. An LP picks a lower and an upper
-tick, and the deposit backs trades only while the pool price stays between
+Uniswap~v3 indexes price by integer ticks, and a concentrated position is a bet
+on the range where the pool price will stay. An LP picks a lower and an upper
+tick, and the deposit backs trades only while the price remains between
 them\cite{adams2021uniswap}. In protocol units the price is a raw square root,
 $s=\sqrt{1.0001^{\text{tick}}}$, which increases with the tick; the human price
 is $q(s)=10^{d_1-d_0}/s^2$ USDC per WETH, so a lower tick means a higher ETH
@@ -21,17 +22,18 @@ V(s) = x(s) + y(s)\,q(s)
      = \frac{L}{10^{d_0}}\left(\frac{2}{s}-\frac{1}{s_b}-\frac{s_a}{s^2}\right).
 \label{eq:value}
 \end{equation}
-As the ETH price falls, the position sells USDC and accumulates WETH; as the
-price rises it does the opposite. At an edge of the band the position holds a
-single asset, and once the price leaves the band it stops trading altogether,
-so a passive position cannot escape the wrong side of a move.
+A fall in the ETH price moves the deposit out of USDC and into WETH; a rise
+reverses the trade. At an edge of the band the position holds a single asset,
+and once the price leaves the band it stops trading altogether, so a passive
+position cannot escape the wrong side of a move.
 
 Fees accrue in proportion to the position's share of active liquidity.
 Narrowing the band raises that share for a given deposit, which is why
-concentration is attractive, but it also shortens the expected time until the
-price reaches an edge. That tension between fee density and band lifetime sits
-underneath every decision in the report, and Fig.~\ref{fig:payoff} shows the
-two effects together.
+concentration is attractive, but it also shortens the band lifetime, the
+expected time until the price reaches an edge. Fee density and band lifetime
+therefore pull in opposite directions, and the band width sets the balance
+between them. That tension shapes the decisions examined throughout this
+report, and Fig.~\ref{fig:payoff} shows the two effects together.
 
 \begin{figure}[tbp]
 \centering
@@ -47,21 +49,22 @@ to USDC as the price rises and freezes at the edge. Illustrative parameters:
 
 \subsection{Two losses, one larger}
 
-Impermanent loss (IL) is the shortfall of the position against holding the
-initial deposit. For a full-range position with equally valued legs and price
-ratio $r=q_t/q_0$,
+Liquidity provision is not free, and its cost arrives as two losses. Impermanent loss (IL)
+is the shortfall of the position against holding the initial deposit. For a
+full-range position with equally valued legs and price ratio $r=q_t/q_0$,
 \begin{equation}
 \mathrm{IL}(r) = \frac{2\sqrt{r}}{1+r} - 1,
 \label{eq:il}
 \end{equation}
-which is second order in the price move; at $r=1.2$ it is $-0.41\,\%$. On v3
-the same expression applies only inside the band, and outside it the position
-is a one-sided holding, so IL depends on where the band was
+which is second order in the price move: at $r=1.2$ it is $-0.41\,\%$. On v3
+the same expression applies only inside the band. Outside it the position is a
+one-sided holding, so IL depends on where the band was
 placed\cite{loesch2021impermanent}.
 
-LVR is sharper. Compare the position with a portfolio that continuously
-rebalances to hold the same instantaneous exposure. A second-order expansion of
-the full-range value shows that the LP falls behind that portfolio at the rate
+LVR is the sharper loss. It measures the position against a portfolio that
+continuously rebalances to hold the same instantaneous exposure, and a
+second-order expansion of the full-range value shows that the LP falls behind
+that portfolio at the rate
 \begin{equation}
 \mathrm{dLVR}_t = \frac{1}{8}\,\sigma^2\,V_t\,\mathrm{d}t,
 \label{eq:lvr}
@@ -69,10 +72,10 @@ the full-range value shows that the LP falls behind that portfolio at the rate
 the loss-versus-rebalancing of Milionis et al.\cite{milionis2022lvr}. Adverse
 selection therefore grows with the square of volatility and with position size,
 and fee income must exceed it for passive provision to be viable. Concentration
-raises fee density but not the fee rate, so it helps only when the extra fee
-share outweighs the extra exposure to arbitrage; Section~\ref{sec:related}
-finds that on many large pools it does not. Figure~\ref{fig:losses} shows the
-shape of both losses.
+raises fee density but not the fee rate set by the fee tier, so it helps only
+when the extra fee share outweighs the extra exposure to arbitrage;
+Section~\ref{sec:related} finds that on many large pools it does not.
+Figure~\ref{fig:losses} shows the shape of both losses.
 
 \begin{figure}[tbp]
 \centering
@@ -86,22 +89,25 @@ quadratic dependence on volatility and the linear dependence on size.}
 
 \subsection{The decisions and the risk}
 
-An LP that wants to improve on the passive outcome must decide when to act,
-where and how wide to place the next band, and how much market risk to carry.
-The levers interfere, and Table~\ref{tab:levers} states what each one buys and
-what it costs. Because acting is lumpy, the problem is one of impulse
-control\cite{anchuri2026rammstein}, and because the outcome is uncertain the
-right measure is profit per unit of risk. We use the annualised Sharpe ratio
-and the conditional value-at-risk (CVaR) at the $5\,\%$ level as primary
-statistics; CVaR is coherent and has a convex representation that can be
-optimised directly\cite{rockafellar2000cvar}. Figure~\ref{fig:decisions} makes
-the sequence of decisions and costs concrete.
+An LP who wants to improve on the one-shot rule, which sets a band once and
+holds it, faces three decisions, namely when to act, where and how wide to
+place the next band, and how much market risk to carry. The hedge lever shorts a fraction
+of the position's ETH delta, and a full short is the delta-matched hedge. The
+levers interact, so the choice is not separable, and Table~\ref{tab:levers}
+states what each lever buys and what it costs. Action is discrete and costly,
+which places the problem in impulse control\cite{anchuri2026rammstein}, and the
+outcome is uncertain, so the objective must be profit per unit of risk rather
+than profit alone. The primary statistics are the annualised Sharpe ratio and
+the conditional value-at-risk (CVaR) at the $5\,\%$ level; CVaR is coherent and
+has a convex representation that can be optimised
+directly\cite{rockafellar2000cvar}. Figure~\ref{fig:decisions} makes the
+sequence of decisions and costs concrete.
 
 \begin{table}[tbp]
-\caption{The three levers and the trade-off each carries. Every return in the
-study is measured after the costs of the active levers are charged: the
-liquidity leg pays gas, slippage and impermanent loss, and the hedge leg adds
-funding and perp fees once the overlay is enabled.}
+\caption{The three levers and the trade-off each carries. All returns in the
+study are measured after the active levers' costs are charged. The liquidity
+leg pays gas, slippage and impermanent loss, and the hedge leg adds funding and
+perp fees once the overlay is enabled.}
 \label{tab:levers}
 \centering
 \small
@@ -109,7 +115,7 @@ funding and perp fees once the overlay is enabled.}
 \toprule
 \textbf{Lever} & \textbf{Choice} & \textbf{Buys} & \textbf{Costs} \\
 \midrule
-Timing $\kappa_t$ & hold or recenter & fee income on a band close to the price & gas and slippage; the fee position restarts \\
+Timing $\kappa_t$ & hold or recentre & fee income on a band close to the price & gas and slippage; the fee position restarts \\
 Width $w_t$ & width of the band, in tick spacings & fee density for a given deposit & time until the price reaches an edge \\
 Hedge $h_t$ & short fraction of ETH delta & removal of directional swings & funding and perp trading fees \\
 \bottomrule
@@ -120,8 +126,8 @@ Hedge $h_t$ & short fraction of ETH delta & removal of directional swings & fund
 \centering
 \includegraphics[width=0.92\linewidth]{figures/decision_path.pdf}
 \caption{Why acting is a decision rather than a rule. An illustrative price
-path with a $\pm5\%$ band: each exit forces a recentring, and each recentring
-adds gas and slippage to a cost that only ever grows. The path is illustrative
+path with a $\pm5\%$ band: an exit forces a recentring, and each recentring
+adds gas and slippage to a cost that never falls. The path is illustrative
 and the costs are simplified; the study charges per-block gas and slippage on
 the inventory actually swapped.}
 \label{fig:decisions}

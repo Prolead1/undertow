@@ -13,7 +13,7 @@ the price observed \emph{before} the interval advances, matching the latency a
 live LP faces and keeping the simulator and the backtester on the same
 convention. The engine's state is the pool's integer tick lattice: liquidity
 is minted and burned on the exact ticks the tape reports, and a swap is
-apportioned across every tick segment it crosses. Fee accrual comes from the
+apportioned across the tick segments it crosses. Fee accrual comes from the
 protocol's own fee-growth accumulators, which are 128-bit fixed-point integers
 that increase monotonically with every swap; the position's fee over a step is
 its liquidity multiplied by the change in the inside fee-growth value divided
@@ -26,13 +26,13 @@ identity by construction,
 = \text{strat\-egy excess over the opening basket},
 \label{eq:app-identity}
 \end{equation}
-and the identity is checked at every step of every replay.
+and the identity is checked at each step of a replay.
 
 Three numerical details matter for exactness. First, liquidity arithmetic is
 done in Python integers, not floats, because a large gross liquidity in
 floating point carries a residue that can round a small delta to zero.
-Second, the initial position is deployed before the first decision for every
-policy, so the HODL benchmark has a definite token mix; the pure basket holds
+Second, the initial position is deployed before the first decision for all
+policies, so the HODL benchmark has a definite token mix; the pure basket holds
 the same mix as tokens. Third, a rebalance that the position cannot afford is
 recorded as rejected and the position is held, mirroring an on-chain revert
 rather than forcing a sale.
@@ -45,7 +45,7 @@ economics in floating point under a marginal-agent assumption: the agent's
 position never moves the pool price, and its fee share is its fraction of the
 active liquidity while in range. This removes the segment-level replay and
 raises throughput by more than an order of magnitude. The simulator runs either
-on the recorded events, the mode used for every result in this report, or on a
+on the recorded events, the mode used for the results in this report, or on a
 regime-switching jump process calibrated to the training years; the calibrated
 mode is not exercised here because the study keeps the evaluation on recorded
 states.
@@ -104,7 +104,7 @@ Hedge taker fee & $5$ basis points & short notional adjustments \\
 
 The observation is a fixed-order vector of twenty-four scaled features. Table
 \ref{tab:app:observation} lists them in order. The heavy-tailed dimensions are
-log-compressed so every input reaches the policy at order one. The regime slot
+log-compressed so all inputs reach the policy at order one. The regime slot
 is the ordinal of the as-of label; the ablation arm in
 Appendix~\ref{app:ablations} freezes that slot to a constant.
 
@@ -157,7 +157,7 @@ arms.
 \begin{table}[tbp]
 \caption{The restricted action grid of the study. Widths are half-widths in
 tick spacings; the hedge ratio is the short notional as a fraction of the LP's
-WETH delta, and it is chosen at every decision.}
+WETH delta, and it is chosen at each decision.}
 \label{tab:app:action}
 \centering
 \small
@@ -173,13 +173,13 @@ Hedge ratio & $0$, $0.25$, $0.5$, $0.75$, $1.0$ & short share of the delta \\
 
 \subsection{Training settings}
 
-Table~\ref{tab:app:training} lists the optimization settings. Five seeds are
+Table~\ref{tab:app:training} lists the optimisation settings. Five seeds are
 trained per configuration and the checkpoint with the highest validation
 Sharpe on the last 180 days of the training lane is the one evaluated. The
 configuration was fixed before the evaluation year was scored.
 
 \begin{table}[tbp]
-\caption{Optimization settings for every learned policy in the study.}
+\caption{Optimisation settings for the learned policies in the study.}
 \label{tab:app:training}
 \centering
 \small

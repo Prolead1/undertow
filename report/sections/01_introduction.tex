@@ -1,18 +1,19 @@
 \section{Introduction}
 \label{sec:intro}
 
-Automated market makers let anyone earn trading fees without quoting prices by
-hand. Uniswap~v3 sharpened the offer: a liquidity provider (LP) chooses the
-price range it is willing to trade in, so a deposit of \usdc{100000} earns the
-fee share of a larger full-range position while the price stays inside the
-chosen band\cite{adams2021uniswap}. Narrowing the band raises the fee earned
-per dollar of capital, and that promise drew liquidity into v3.
+Automated market makers allow any participant to earn trading fees without
+quoting prices by hand. Uniswap~v3 refined the offer: a liquidity provider (LP)
+selects the price range in which it is willing to trade, so a deposit of
+\usdc{100000} earns the fee share of a larger full-range position while the
+price stays inside the chosen band\cite{adams2021uniswap}. Narrowing the band
+raises the fee earned per dollar of capital, and that prospect drew liquidity
+into v3.
 
 The promise hides a cost. Liquidity quoted away from the market price is an
-offer that arbitrageurs accept, and every such trade pushes the pool toward the
-market price while leaving the LP holding more of the asset that is falling.
-Because the loss is a transfer rather than a fluctuation, it does not reverse
-when the price returns. Milionis et al.\ named this adverse selection cost
+offer that arbitrageurs accept, and such trades push the pool toward the market
+price while leaving the LP holding more of the falling asset. Because the loss
+is a transfer rather than a fluctuation, it does not reverse when the price
+returns. Milionis et al.\ named this adverse selection cost
 loss-versus-rebalancing (LVR) and showed that a full-range position loses value
 at a rate proportional to the square of volatility\cite{milionis2022lvr}.
 Fritsch and Canidio measured realised arbitrage losses on large pools and found
@@ -21,51 +22,51 @@ Loesch et al.\ showed that concentration magnifies the loss once the price
 leaves the band\cite{loesch2021impermanent}. Fee income alone is not the LP's
 return.
 
-An LP who wants more than a passive range has three decisions, and they
-interact. When to recenter trades fee income against gas and slippage; how wide
-to set the next band trades fee density against the time until an edge; how
-much of the position to hedge trades directional risk against funding and perp
-fees. Each decision is an impulse, costly and taken under uncertainty about
-volatility, order flow and regime. The objective is not to earn the most but to
-earn the most per unit of risk taken, which places the problem within
-risk-sensitive impulse control rather than static portfolio
+An LP who seeks more than a passive range faces three decisions that interact,
+so they cannot be made independently. When to recentre trades fee income against
+gas and slippage; how wide to set the next band trades fee density against the
+time until an edge; how much of the position to hedge trades directional risk
+against funding and perp fees. These choices arrive as costly impulses under
+uncertainty about volatility, order flow and regime. The objective is not the
+highest fee income but the highest return per unit of risk, which places the
+problem within risk-sensitive impulse control rather than static portfolio
 choice\cite{anchuri2026rammstein}.
 
-Recent work takes up parts of it. Zhang et al.\ train a hedged agent for v3
-provision, but the hedge executes without cost or funding and the policy sees
-no regime information\cite{zhang2023adaptive}. ZeroSwap learns to set a market
-maker's spread so that quoted prices track an external reference, a different
-lever from range placement\cite{nadkarni2023zeroswap}. RAmmStein derives
-regime-dependent rebalancing thresholds and reports fewer rebalances for the
-same net return, but its net metric excludes impermanent loss and it works with
-off-chain data for a single pair\cite{anchuri2026rammstein}. Chionas et al.\
-study risk aversion in concentrated liquidity inside a simulation and leave out
-on-chain data and the hedge\cite{chionas2026concentrated}. None of these places
-timing, width and hedge decisions in a single risk-sensitive policy, charges
-every friction on both the liquidity and hedge legs, and evaluates it on
-recorded on-chain trades against hand-written rules.
+Recent work addresses parts of the problem. Zhang et al.\ train a hedged agent
+for v3 provision, but the hedge executes without cost or funding and the policy
+sees no regime information\cite{zhang2023adaptive}. ZeroSwap learns to set a
+market maker's spread so that quoted prices track an external reference, a
+different lever from range placement\cite{nadkarni2023zeroswap}. RAmmStein
+derives regime-dependent rebalancing thresholds and reports fewer rebalances
+for the same net return, but its net metric excludes impermanent loss and it
+works with off-chain data for a single pair\cite{anchuri2026rammstein}. Chionas
+et al.\ study risk aversion in concentrated liquidity inside a simulation and
+leave out on-chain data and the hedge\cite{chionas2026concentrated}. None of
+these places timing, width and hedge decisions in a single risk-sensitive
+policy, charges the frictions on both the liquidity and hedge legs, and tests
+the result on recorded on-chain trades against hand-written rules.
 
-This report fills that gap. We build a testbed on three years of recorded
-trades from two real ETH/USDC pools, with an exact replay backtester that
-computes fees in the protocol's own integer arithmetic, a fast simulator for
-training, and a parity harness that keeps the two honest on identical inputs.
-On that testbed we ask four questions.
+This report closes that gap. The evidence base is a testbed built from three
+years of recorded trades in two real ETH/USDC pools. An exact replay backtester
+computes fees in the protocol's own integer arithmetic, a fast simulator
+supports training, and a parity harness keeps the two in agreement on identical
+inputs. On that testbed we ask four questions.
 
 \begin{itemize}
 \item \textbf{Where do fees fail?} We decompose passive returns into fees,
-impermanent loss, gas and slippage, and locate the conditions under which the
-losses win.
-\item \textbf{Why does naive learning fail?} We document the collapse of a
-standard policy on this task, trace it to three interface problems, and measure
-what each repair buys.
+impermanent loss, gas and slippage, and identify the conditions under which the
+deficit persists.
+\item \textbf{Why did the first policies fail?} We document the collapse of a
+standard policy on this task, trace it to three interface problems, and
+quantify what the repairs recover.
 \item \textbf{Can one policy do better?} We train a risk-sensitive policy over
-timing, width and hedging and compare it out of sample with the best
-hand-written rules and a hedged benchmark.
-\item \textbf{Where is active management worth it?} We map the boundary between
+timing, width and hedging and compare it out of sample with the strongest
+hand-written rules and a delta-matched hedge.
+\item \textbf{Where does active management pay?} We map the boundary between
 active and passive provision across volatility, fee tier, gas and capital.
 \end{itemize}
 
 The failures of the first policies are part of the result, not a footnote. In
 this domain, what the agent is allowed to see and what it is rewarded for
-matter more than the choice of learning algorithm, and a report that showed
-only the eventual policy would hide the more transferable lesson.
+matter more than the choice of learning algorithm. A report that showed only
+the eventual policy would hide the more transferable lesson.

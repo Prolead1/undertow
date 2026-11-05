@@ -3,99 +3,100 @@
 
 \subsection{The boundary the windows draw}
 
-The four answers converge on a single boundary that stress conditions
-define. Passive provision paid in the quiet windows, where fee income is
-reliable and the unhedged bands keep it. Breadth mattered more than action in the trending
+The four answers point to a single boundary that stress conditions define.
+Passive provision paid in the quiet windows, where fee income is reliable and
+the unhedged bands keep it. Breadth mattered more than action in the trending
 windows, because a wide band carries the market exposure that a narrow band
-sells away. The one high-volatility window reversed the ordering: the unhedged
-rules lost heavily, while the hedged and wider positions lost less. The
-learned policy sits on the defensive side of that boundary, and the premium it
-pays is visible in every calm window. Judged on tail risk the boundary moves
-in its favour; judged on PnL it stays with the passive bands.
-Table~\ref{tab:regimes} reports the PnL and tail loss behind each clause.
+sells away. The one high-volatility window reversed the ordering. The unhedged
+rules lost heavily, while the hedged and wider positions lost less. The learned
+policy sits on the defensive side of that boundary, and the premium it pays is
+visible in the calm windows. On tail risk the boundary moves in its favour,
+while on PnL it stays with the passive bands. Table~\ref{tab:regimes} reports
+the PnL and tail loss behind these claims.
 
-Each regime label applies only to the windows assigned to it, and a single
-high-volatility window cannot characterise a regime. The map is therefore a
-description of the evaluation year, not a fitted boundary, and the study's
-inference rests on the paired intervals of the primary statistics rather than
-on any single regime cell.
+A regime label applies only to the windows assigned to it, and a single
+high-volatility window cannot characterise a regime. The map therefore
+describes the evaluation year rather than a fitted boundary. The study's
+inference rests on the paired intervals of the primary statistics and not on
+any single regime cell.
 
 \subsection{What the hedge buys and costs}
 
-The hedge is insurance, and the study compares policies that sit at three
-points along a single trade-off between protection and cost, though not as a
-controlled hedge ablation. At full delta match on the opening band the tail is
-nearly flat and the maximum drawdown is a fraction of the unhedged one; the
-bill is an average negative hedge flow and a total PnL below the unhedged
-rule. At the learned seed's partial ratios the middle of that trade-off
-appears. The one-shot unhedged rules sit at the other end, with a large tail
-and no premium, and the two rebalancing rules trade at similar tails. Across
-the compared policies the ordering is monotone in protection and in cost.
-Funding was positive on average at every point because the short collected it;
-the mark loss on a short in a rising market and the perp fees outweighed that
-income. Table~\ref{tab:aggregate} reports the corresponding PnL, Sharpe ratio
-and tail loss.
+The hedge is insurance. The study compares policies at three points along one
+trade-off between protection and cost, though not as a controlled hedge
+ablation. At full delta match on the opening band the tail is nearly flat and
+the maximum drawdown is a fraction of the unhedged one. The bill is an average
+negative hedge flow and a total PnL below the unhedged rule. At the learned
+seed's partial ratios the middle of that trade-off appears. The one-shot
+unhedged rules sit at the other end with a large tail and no premium, and the
+two rebalancing rules trade at similar tails. Across the compared policies the
+ordering is monotone in protection and in cost. Funding was positive on average
+at all measured points because the short collected it, but the mark loss on a
+short in a rising market and the perp fees outweighed that income.
+Table~\ref{tab:aggregate} reports the corresponding PnL, Sharpe ratio and tail
+loss.
 
-The hedge does not improve the mean, it reshapes the tail, so its value
-depends on the risk budget the LP is managed against. A mandate that treats
-tail risk as important as Sharpe will buy the protection that a mandate
-maximising return will refuse. The pre-registered rule gives tail risk
-equal standing, which is why a policy that fails the return clause and
-passes the tail clause is a partial success rather than a failed idea.
+The hedge does not improve the mean, it reshapes the tail, so its value depends
+on the risk budget against which the LP is managed. A mandate that treats tail
+risk as important as Sharpe will buy the protection that a mandate maximising
+return will refuse. The pre-registered rule gives tail risk equal standing,
+which is why a policy that fails the return clause and passes the tail clause
+is a partial success rather than a failed idea.
 
 \subsection{Why timing collapsed to a deployment decision}
 
-None of the trained seeds learned to time; each deployed one band and held
-it. The rebalancing benchmarks explain why. On this fee tier and in this
-year, frequent recentring repeatedly realises impermanent loss, and the fees
-collected do not cover it: both active rules finish further behind the
-basket than every one-shot rule, despite trading far more
-(Table~\ref{tab:decomposition}). Timing is not irrelevant in principle; it is
-dominated in this market.
+None of the trained seeds learned to time. They deployed one band and held it.
+The rebalancing benchmarks explain why. On this fee tier and in this year,
+frequent recentring repeatedly realises impermanent loss, and the fees
+collected do not cover it. Both active rules finish further behind the basket
+than any one-shot rule, despite trading far more
+(Table~\ref{tab:decomposition}). Timing is not irrelevant in principle, but it
+is dominated in this market.
 
 The study's configuration restricted the timing head after the early runs
-showed the collapse, so the estimator was never asked to learn a decision
-that the evidence says it could not afford. That restriction is itself a
-finding about the pool, and it bounds the claim: a higher fee tier, cheaper
-execution or a market where price moves arrive more slowly could move the
-boundary, and the width choice is the substitute for timing under those
-conditions. The action interface still admits the wider timing grid, so a
-future run can test the shift without a redesign.
+showed the collapse, so the estimator was never asked to learn a decision that
+the evidence indicates it cannot afford. That restriction is itself a finding
+about the pool, and it bounds the claim. A higher fee tier, cheaper execution or
+a market where price moves arrive more slowly could move the boundary, and the
+width choice substitutes for timing under those conditions. The action
+interface still admits the wider timing grid, so a future run can test the shift
+without a redesign.
 
 The evidence base has limits that bound the claims. The failure modes were
 repaired in sequence rather than varied one at a time, so the ablation table
-reports the sequence and three targeted probes, not the marginal effect of
-every design choice. The boundary is drawn from the realised 2024 windows on
-one pool pair; the $0.30\,\%$ tier is measured for the rule-based ladder but
-not retrained with the learned policy; and the regime with a single window is
-a case study. What remains open is a factorial ablation of the repairs, a
-controlled volatility and volume sweep, and a learned policy on the contrast
-tier, all re-runs of the same testbed.
+reports the sequence and three targeted probes, not the marginal effect of any
+single design choice. The boundary is drawn from the realised 2024 windows on one pool
+pair. The $0.30\,\%$ tier is measured for the rule-based ladder but not
+retrained with the learned policy, and the regime with a single window is a
+case study. A factorial ablation of the repairs remains open, as do a controlled
+volatility and volume sweep and a learned policy on the contrast tier. All
+three are re-runs of the same testbed.
 
 \subsection{Threats to validity}
 
 The simulator replays recorded events, so prices, liquidity and fee growth are
-real rather than modelled. Its assumption that the agent is marginal is the main
-simplification: the position never moves the price, and its fee share is
+real rather than modelled. Its assumption that the agent is marginal is the
+main simplification. The position never moves the price, and its fee share is
 proportional to active liquidity. That is the standard replay assumption and it
-is recorded with every run, but it cannot capture queueing at the tick level or
-the impact of an unusually large position. The gas model charges representative
-per-action units rather than transaction receipts, so gas is a defensible
-floor rather than an exact quote, and the hedge uses a perpetual proxy whose
-funding and basis are representative rather than exact for a specific venue.
+is recorded alongside the results, but it cannot capture queueing at the tick
+level or the impact of an unusually large position. The gas model charges
+representative per-action units rather than transaction receipts, so gas is a
+defensible floor rather than an exact quote. The hedge uses a perpetual proxy
+whose funding and basis are representative rather than exact for a specific
+venue.
 
 Table~\ref{tab:threats} states the threats that bound what the study can claim
-and the scope each imposes. The parity check bounds the distance between the
+and the scope it imposes. The parity check bounds the distance between the
 simulator and the backtester, not the distance between the backtester and
 reality. Where the data allow, the external part of the gap is quantified by
-reconciling fees and collects; where they do not, latency, the privacy of order
-flow and MEV are discussed rather than measured. We therefore claim results about
-performance under risk on recorded market states under a stated cost model. We
-do not claim deployable profitability, optimality of the action grid, or that
-the policy would survive market conditions absent from 2022 to 2024.
+reconciling fees and collects. Where they do not, latency, the privacy of order
+flow and MEV are discussed rather than measured. We therefore claim results
+about performance under risk on recorded market states under a stated cost
+model. We do not claim deployable profitability, optimality of the action grid,
+or that the policy would survive market conditions absent from 2022 to 2024.
 
 \begin{table}[tbp]
-\caption{Threats to validity and the scope each imposes.}
+\caption{Threats to validity and the scope it imposes.}
 \label{tab:threats}
 \centering
 \small
