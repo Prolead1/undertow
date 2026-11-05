@@ -30,12 +30,18 @@ from undertow.data import (
     tick_to_price,
     tick_to_sqrt_price_x96,
 )
-from undertow.sim.config import HedgeConfig, RewardConfig, SimConfig
+from undertow.sim.config import (
+    HedgeConfig,
+    ObservationConfig,
+    RewardConfig,
+    SimConfig,
+)
 from undertow.sim.core.pool import PoolEngine, PoolState, TickState
 from undertow.sim.core.position import calc_sqrt_price_a, initial_deposit
 from undertow.sim.env.lp_env import LpEnvironment
 from undertow.sim.env.observations import (
     OBSERVATION_VECTOR_LENGTH,
+    REGIME_ABLATED,
     SCALED_VECTOR_INDICES,
     Observation,
     ObservationBuilder,
@@ -232,6 +238,7 @@ class TestObservationDataclass:
             ("high_vol", 3.0),
             ("unknown", 4.0),
             ("not_a_regime", 4.0),
+            (REGIME_ABLATED, 0.0),
         ],
     )
     def test_regime_ordinal(self, regime: str, ordinal: float) -> None:
@@ -391,6 +398,67 @@ class TestObservationBuilder:
         assert obs.distance_to_lower_bound_spacings == pytest.approx(-2.0)
         assert obs.distance_to_upper_bound_spacings > 0.0
         assert obs.position_width_spacings > 0.0
+
+    def test_regime_feature_gate_freezes_the_vector_slot(
+        self,
+        tiny_market_view: MarketView,
+        tiny_pool_engine: PoolEngine,
+        mock_gas_model: object,
+    ) -> None:
+        """S23: the ablation arm sees one constant value in the regime slot."""
+        position = tiny_pool_engine.positions[0]
+        live = ObservationBuilder(tiny_market_view)
+        ablated = ObservationBuilder(tiny_market_view, regime_features=False)
+        kwargs = {
+            "entry_price": 3004.0,
+            "entry_sqrt_price": calc_sqrt_price_a(Tick(_ENTRY_TICK)),
+            "initial_capital": 100_000.0,
+        }
+        seqs = tiny_market_view.active_split_data()["seq"].to_list()
+        # Sample across the whole tape: the fixture's regime blocks are ~250
+        # rows each, so adjacent seqs share a label and a dense prefix would
+        # not exercise the live variation.
+        sample = seqs[:: max(1, len(seqs) // 12)]
+        live_values: set[float] = set()
+        for seq in sample:
+            live_obs = live.build(
+                seq, position, tiny_pool_engine, mock_gas_model, **kwargs
+            )
+            live_values.add(round(float(live_obs.to_vector()[15]), 9))
+            ablated_obs = ablated.build(
+                seq, position, tiny_pool_engine, mock_gas_model, **kwargs
+            )
+            assert ablated_obs.regime == REGIME_ABLATED
+            assert ablated_obs.to_vector()[15] == 0.0
+        # The fixture cycles through several labels, so the live slot varies
+        # while the ablated slot stayed a constant zero.
+        assert len(live_values) > 1
+
+    def test_regime_feature_gate_reaches_the_env_vector(self, tiny_env: object) -> None:
+        """S23: the env with the gate off returns a constant zero regime slot."""
+        gated_config = dataclasses.replace(
+            tiny_env.config,  # type: ignore[attr-defined]
+            observation=ObservationConfig(regime_features=False),
+        )
+        gated = LpEnvironment(
+            tiny_env.market_view,  # type: ignore[attr-defined]
+            tiny_env.pool_engine,  # type: ignore[attr-defined]
+            tiny_env.price_process,  # type: ignore[attr-defined]
+            tiny_env.gas_model,  # type: ignore[attr-defined]
+            tiny_env.slippage_model,  # type: ignore[attr-defined]
+            gated_config,
+        )
+        vector, info = gated.reset(seed=0)
+        assert vector[15] == 0.0
+        # Telemetry keeps the live label even though the policy-facing slot is
+        # frozen (and the label is never the ablation sentinel).
+        assert info["regime"] == gated.market_view.regime_at(info["timestamp"])
+        assert info["regime"] != REGIME_ABLATED
+        for _ in range(3):
+            vector, _reward, terminated, truncated, _info = gated.step(0)
+            assert vector[15] == 0.0
+            if terminated or truncated:
+                break
 
     def test_build_measures_il_against_the_supplied_hodl_basket(
         self,
@@ -3050,6 +3118,57 @@ class TestHedgeRatioHead:
         obs_detail = env._hedge_observation_fields()
         assert obs_detail[0] == pytest.approx(env._hedge.short_size / current_delta)
         assert obs_detail[0] == pytest.approx(0.5, rel=1e-2)
+
+    def test_gated_rebalance_keeps_the_hedge_ratio_head_live(
+        self,
+        tiny_market_view: MarketView,
+        mock_gas_model: object,
+        mock_slippage_model: object,
+    ) -> None:
+        """The min-interval gate coerces only the LP head (ADR-037/039).
+
+        The joint band x hedge recipe (configs/sim_eth_usdc_500_joint_rl.toml)
+        relies on this: after the step-0 band choice every rebalance attempt is
+        gated to hold, but the per-step hedge ratio must still act.  Before the
+        fix the gate replaced the action with a ratio-less hold, silently
+        forcing the short to the unhedged 0.0 entry.
+        """
+        env = _hedge_env(
+            _flat_reference_view(tiny_market_view),
+            _SequencePriceProcess([3004.0] * 6),
+            mock_gas_model,
+            mock_slippage_model,
+            enabled=True,
+            agent_ratio=True,
+        )
+        env.config = replace(
+            env.config,
+            episode=replace(
+                env.config.episode, min_rebalance_interval_steps=1000
+            ),
+        )
+        env.reset(seed=0)
+        rebalance = Action(action_type="rebalance", center_offset=0, width=2)
+        lp_index = env._action_lookup.index(rebalance)
+
+        # Step 0: the first rebalance is allowed; the full hedge applies.
+        _, _, _, _, first = env.step([lp_index, 4])
+        assert first.get("rebalance_gated") is None
+        assert first["hedge_ratio"] == 1.0
+        assert env._hedge is not None and env._hedge.short_size > 0.0
+
+        # Step 1: the LP attempt is gated to hold, but the ratio head acts.
+        _, _, _, _, gated = env.step([lp_index, 4])
+        assert gated["rebalance_gated"] is True
+        assert gated["action_type"] == "hold"
+        assert gated["hedge_ratio"] == 1.0
+        assert env._hedge is not None and env._hedge.short_size > 0.0
+
+        # Step 2: the same gated path honours the unhedged ratio.
+        _, _, _, _, flat = env.step([lp_index, 0])
+        assert flat["rebalance_gated"] is True
+        assert flat["hedge_ratio"] == 0.0
+        assert env._hedge is not None and env._hedge.short_size == 0.0
 
 
 # ---------------------------------------------------------------------------

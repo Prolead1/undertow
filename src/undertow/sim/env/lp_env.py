@@ -192,7 +192,10 @@ class LpEnvironment(gym.Env):
         else:
             self.action_space = gym.spaces.Discrete(len(self._action_lookup))
 
-        self._builder = ObservationBuilder(market_view)
+        self._builder = ObservationBuilder(
+            market_view,
+            regime_features=config.observation.regime_features,
+        )
         self._capture_pool_base()
 
         # State populated by reset().  ``_base_seed`` anchors the run and
@@ -816,7 +819,17 @@ class LpEnvironment(gym.Env):
         min_interval = int(self.config.episode.min_rebalance_interval_steps)
         if action.action_type == "rebalance" and min_interval > 0:
             if self._step_count - self._last_rebalance_attempt_step < min_interval:
-                action = self._action_lookup[0]
+                # Coerce only the LP head to hold: the hedge-ratio head is an
+                # independent per-step decision (ADR-039/040) and must survive
+                # the gate, exactly as ``_CheckpointPolicy`` preserves it for
+                # the backtester.  In non-agent mode ``hedge_ratio`` is already
+                # ``None``, so this is byte-identical to ``_action_lookup[0]``.
+                action = replace(
+                    action,
+                    action_type="hold",
+                    center_offset=0,
+                    width=0,
+                )
                 rebalance_gated = True
             else:
                 self._last_rebalance_attempt_step = self._step_count
@@ -1512,6 +1525,8 @@ class LpEnvironment(gym.Env):
             "tick": int(observation.tick),
             "in_range": bool(observation.position_in_range),
             "position_value": float(observation.position_value),
-            "regime": observation.regime,
+            # Telemetry keeps the live label even when the observation gate
+            # freezes the policy-facing feature (S23 ablation arm).
+            "regime": observation.regime or self.market_view.regime_at(at_time),
             "gas_price_wei": float(observation.gas_price_recent_wei),
         }

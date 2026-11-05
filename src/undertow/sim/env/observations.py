@@ -54,6 +54,8 @@ from undertow.sim.types import LookAheadError, Price, Regime, SqrtPrice, Tick, W
 
 __all__ = [
     "OBSERVATION_VECTOR_LENGTH",
+    "REGIME_ABLATED",
+    "REGIME_ORDINAL",
     "SCALED_VECTOR_INDICES",
     "Observation",
     "ObservationBuilder",
@@ -69,6 +71,11 @@ REGIME_ORDINAL: dict[str, int] = {
     "high_vol": 3,
     "unknown": 4,
 }
+
+#: Sentinel label the builder emits when the regime feature is ablated
+#: (``ObservationConfig.regime_features = false``).  ``to_vector`` maps it to
+#: ``0.0``, so the ablation arm sees a constant in that slot.
+REGIME_ABLATED: str = ""
 
 #: Length of :meth:`Observation.to_vector` — one scalar per field.
 OBSERVATION_VECTOR_LENGTH: int = 24
@@ -149,7 +156,9 @@ class Observation:
     eth_usd_price_recent: float
 
     # -- Regime --
-    regime: str  # one of the Regime enum values
+    #: One of the Regime enum values, or :data:`REGIME_ABLATED` when the
+    #: regime feature is gated off (S23 ablation).
+    regime: str
 
     # -- Time --
     step_in_episode: int
@@ -172,7 +181,8 @@ class Observation:
 
         ``bool`` fields become ``0.0``/``1.0``; the regime string is mapped to
         its ordinal in :data:`REGIME_ORDINAL` (``unknown`` = 4 for any
-        unrecognised label). The order follows the field declaration order.
+        unrecognised label, and :data:`REGIME_ABLATED` = 0.0 for the ablated
+        feature). The order follows the field declaration order.
 
         The heavy-tailed features named by :data:`SCALED_VECTOR_INDICES` are
         log-compressed by :func:`scale_vector` so every dimension reaches the
@@ -196,7 +206,9 @@ class Observation:
                 float(self.pool_fee_tier_bps),
                 float(self.gas_price_recent_wei),
                 float(self.eth_usd_price_recent),
-                float(REGIME_ORDINAL.get(self.regime, REGIME_ORDINAL["unknown"])),
+                0.0
+                if self.regime == REGIME_ABLATED
+                else float(REGIME_ORDINAL.get(self.regime, REGIME_ORDINAL["unknown"])),
                 float(self.step_in_episode),
                 float(self.steps_remaining),
                 float(self.distance_to_lower_bound_spacings),
@@ -255,6 +267,7 @@ class ObservationBuilder:
         *,
         episode_start: int = 0,
         episode_length: int = 0,
+        regime_features: bool = True,
     ) -> None:
         if lookback_bars <= 0:
             raise ValueError(f"lookback_bars must be > 0, got {lookback_bars!r}")
@@ -262,6 +275,9 @@ class ObservationBuilder:
         self.lookback_bars = int(lookback_bars)
         self.episode_start = int(episode_start)
         self.episode_length = int(episode_length)
+        #: S23 ablation gate: keep the live regime ordinal, or freeze it to
+        #: :data:`REGIME_ABLATED` so the vector slot is a constant zero.
+        self.regime_features = bool(regime_features)
         self._build_indexes()
 
     # -- As-of indexes ----------------------------------------------------
@@ -578,7 +594,11 @@ class ObservationBuilder:
             pool_fee_tier_bps=int(pool_engine.state.fee_tier_bps),
             gas_price_recent_wei=gas_price_recent,
             eth_usd_price_recent=price,
-            regime=self._regime_at(at_time),
+            regime=(
+                self._regime_at(at_time)
+                if self.regime_features
+                else REGIME_ABLATED
+            ),
             step_in_episode=int(step_in_episode),
             steps_remaining=int(steps_remaining),
             distance_to_lower_bound_spacings=(

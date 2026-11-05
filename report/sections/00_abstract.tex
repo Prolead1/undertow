@@ -1,17 +1,24 @@
 Providing liquidity on Uniswap~v3 looks passive, but it is not. A liquidity
 provider (LP) chooses a price range, earns fees while the price stays inside
-it, and loses whenever informed traders move the pool price against the quoted
-level. Those losses are not hypothetical: on many large pools the arbitrage
-losses borne by liquidity providers exceed the fees they earn. The LP is left
-with three decisions, all of them costly: when to recenter, how wide to keep
-the band, and how much of the position's exposure to hedge. We study those
-decisions as a risk-sensitive reinforcement learning problem, in a testbed
-built on three years of recorded on-chain trades, with the final year held
-out. An exact replay engine provides the ground truth,
-a fast simulator provides the training throughput, and a parity harness keeps
-the two honest. The report asks four questions. Where does fee income fall
-short of the losses? Why does a standard learning algorithm fail on this task,
-and what repairs it? Can a single policy manage timing, width and hedging
-together and outperform the best rules written by hand on unseen data? And
-under which market environment does active management begin to pay? \pending{The final numbers and the last two answers
-will be filled in once the experiment runs complete.}
+it, and loses when informed flow moves the price against it. On many large
+pools those losses exceed the fees earned. The LP must decide when to
+recenter, how wide to keep the band and how much to hedge; each choice costs
+gas, fees or slippage.
+
+We study those decisions as a risk-sensitive reinforcement learning problem
+on three years of recorded on-chain trades from the $0.05\,\%$ (500 pips)
+ETH/USDC pool, with 2024 held out and all frictions charged. The study asks
+where fees fall short of losses, why a standard learner fails, whether one
+policy can manage the band and the hedge jointly, and where active
+management pays.
+
+Fees fail to cover impermanent loss at every width. Two rebalancing rules
+lose far more than one-shot deployment. A standard learner collapsed into
+churn; after repairs, five seeds learned to deploy one band and hold. The
+mean learned policy fails the pre-registered Sharpe test against the frozen
+best static width ($-0.73$, CI $[-1.36,-0.04]$) and earns less, but cuts
+CVaR against every unhedged rule ($+23.7$ to $+34.2$). A delta-matched
+hedge cuts the tail to $-3.15$ from $-59.65$ at an average hedge cost of
+$2\,731$ per window. The best seed ties the static width on Sharpe and leads on tail
+risk. On this pool, active management buys insurance in stress and pays for
+it in calm.

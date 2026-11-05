@@ -1,7 +1,9 @@
 \section{Experimental Design}
 \label{sec:design}
 
-The protocol is fixed before any result is inspected. Table~\ref{tab:protocol}
+The measurement protocol and the decision rule are fixed before the headline
+comparison; the interface corrections that preceded the final runs are
+reported as such. Table~\ref{tab:protocol}
 states the pools, the split and the training budget, and
 Fig.~\ref{fig:split} shows how the windows sit on the calendar.
 
@@ -24,7 +26,12 @@ Capital & \usdc{100000} per episode \\
 Evaluation tiling & 12 windows of 30 days plus a partial final window (13 episodes) \\
 Seeds & 5 \\
 Training budget & 1\,000\,000 timesteps per seed \\
-Algorithm & clipped PPO, $\gamma=0.99$, GAE $\lambda=0.95$, clip $0.15$ \\
+Timing & one deployment per episode; the band is held afterwards \\
+Width arms & half-widths of 50, 250 and 1000 tick spacings, plus hold \\
+Hedge head & short ratio in $\{0,0.25,0.5,0.75,1.0\}$ at every decision \\
+Risk penalty & CVaR at $5\,\%$ of the trailing one-day loss, $\lambda=0.05$ \\
+Checkpoint selection & highest validation Sharpe on the last 180 days of training \\
+Algorithm & clipped PPO, $\gamma=0.9999$, GAE $\lambda=0.95$, clip $0.15$ \\
 Network & 2 hidden layers of 256 units \\
 Parallel environments & 4 \\
 \bottomrule
@@ -59,16 +66,16 @@ last a partial period, and no episode crosses the split.}
 A learned policy that beats only the weakest rule written by hand has
 demonstrated nothing. The comparison therefore includes the full ladder in
 Table~\ref{tab:benchmarks}, a best static width chosen on the training split and
-then frozen, and a hedged HODL portfolio with matched beta, and the learned
-policy must beat the strongest of these, not merely a passive holding. The
-hedged HODL benchmark runs once the hedge overlay ships; its values are
-pending.
+then frozen, and a hedged benchmark with a delta-matched short. Two reference
+holdings frame the ladder. A pure buy-and-hold basket holds the opening token
+mix as tokens and never provides liquidity; it is the numeraire for excess over
+HODL. The \textsf{hodl} rule instead deploys the opening band before the first
+decision and never recentres, so it earns fees and pays impermanent loss.
 
 \begin{table}[tbp]
 \caption{Benchmark policies. The learned policy is compared with all of them;
-a positive claim requires beating the best static width and the hedged HODL
-with matched beta, not just \textsf{hodl}. The hedged HODL comparator is part
-of the planned protocol and runs once the hedge overlay ships.}
+a positive claim requires beating the best static width and the delta-matched
+hedged benchmark, not just \textsf{hodl}.}
 \label{tab:benchmarks}
 \centering
 \small
@@ -76,14 +83,14 @@ of the planned protocol and runs once the hedge overlay ships.}
 \toprule
 \textbf{Benchmark} & \textbf{Rule} \\
 \midrule
-\textsf{hodl} & Hold the initial token mix; never provide liquidity. \\
-\textsf{passive\_narrow} & Deploy a $\pm 5\,\%$ band once; never recenter. \\
-\textsf{passive\_wide} & Deploy a $\pm 20\,\%$ band once; never recenter. \\
+\textsf{hodl} & Hold the opening band of half-width 120 ticks; never recentre. \\
+\textsf{passive\_narrow} & Deploy a $\pm 5\,\%$ band once; never recentre. \\
+\textsf{passive\_wide} & Deploy a $\pm 20\,\%$ band once; never recentre. \\
 \textsf{full\_range\_v2} & The Uniswap-v2-equivalent full range. \\
 \textsf{tau\_reset} & Recenter whenever the price exits the live band. \\
 \textsf{cost\_aware} & Recenter at most daily, and only when the estimated fee gain exceeds gas. \\
 Best static width & The ladder width with the best Sharpe on the training split, frozen for test. \\
-Hedged HODL & Initial basket plus a short perp matched to its beta, with funding and perp costs. \\
+Hedged HODL & The opening band held, plus a short perpetual matched to its delta, with funding and perp costs. \\
 Learned policy & PPO over the joint (timing, width, hedge ratio) action space. \\
 \bottomrule
 \end{tabular}
@@ -91,30 +98,40 @@ Learned policy & PPO over the joint (timing, width, hedge ratio) action space. \
 
 \subsection{Metrics}
 
-Two primary statistics carry the inference: the annualised Sharpe ratio,
-computed on each episode's equity curve and paired across seeds and windows,
-and CVaR at the $5\,\%$ level, the average of the worst $5\,\%$ of episode
-returns pooled across seeds. Both are reported with bootstrap confidence
-intervals; because the tail is thin at thirteen episodes and five seeds, the
-worst episode is reported alongside them. Secondary statistics are raw PnL,
-excess over HODL, annualised return, Sortino ratio, maximum drawdown, rebalance
-count, and the cost ledger of fee income, gas, slippage and realised
-impermanent loss. Per-regime tables stratify by each window's dominant label:
-bull, bear, sideways or high volatility.
+Two primary statistics carry the inference, both computed on the joint equity
+curve of the liquidity and hedge legs. The annualised Sharpe ratio is the mean
+of the per-step equity returns over their standard deviation, scaled to a year
+at the ten-minute cadence. CVaR at the $5\,\%$ level is the average of the
+worst $5\,\%$ of per-step equity changes in USDC, the same quantity the reward
+penalty controls. A policy is compared with each benchmark on the per-window
+differences of both statistics, with bootstrap confidence intervals over the
+thirteen windows; because the tail is thin at that sample size, the worst
+window is reported alongside them. Secondary statistics are raw PnL, excess
+over HODL, annualised return, Sortino ratio, maximum drawdown, rebalance
+count, and the cost ledger of fee income, gas, slippage, realised impermanent
+loss and the hedge flows. Per-regime tables stratify by each window's dominant
+label: bull, bear, sideways or high volatility.
 
 \subsection{Ablations and the boundary}
 
-The failure modes are ablated one at a time, as set out in
-Table~\ref{tab:ablations}. The cost decomposition is repeated over frictions
-and on the $0.30\,\%$ pool. For the boundary question the runner sweeps
-realised volatility, volume relative to liquidity, fee tier, gas price and
-capital, evaluating each point on replayed windows rather than a fitted
-process.
+The failure modes were repaired in sequence rather than varied in a factorial
+design. Table~\ref{tab:ablations} lists the design choices the sequence
+touched: band geometry, the reward basket and window sampling, the rebalance
+interval, the hedge head and the risk penalty. Section~\ref{sec:results}
+reports the progression as a sequence of repairs, not as the marginal effect of
+each change. The friction rows and the rows for regime features, and the
+$0.30\,\%$ contrast pool, have not run. For the boundary question the protocol
+calls for a sweep of realised volatility, volume relative to liquidity, fee
+tier, gas price and capital, evaluating each point on replayed windows rather
+than a fitted process; the completed results map the regimes the learned policy
+was tested in and leave the sweep pending.
 
 \begin{table}[tbp]
-\caption{The ablations, each one isolating a design choice the study relies on.
-Every ablation is trained and evaluated under the protocol of
-Table~\ref{tab:protocol}.}
+\caption{The design choices the repair sequence touched. The changes were made
+in sequence rather than varied one at a time, so Section~\ref{sec:results}
+measures the sequence of repairs, not the marginal effect of each change. The
+rows for regime features, the friction rows, and the $0.30\,\%$ contrast
+pool, were not run.}
 \label{tab:ablations}
 \centering
 \small
@@ -126,9 +143,9 @@ Band geometry & removed from the observation & does the agent need to see the li
 Window sampling & windows held fixed instead of resampled & how much does resampling the training windows buy? \\
 Hedge & overlay disabled & what does the hedge contribute net of funding? \\
 Risk penalty & toggled & does the risk penalty change the tail without costing Sharpe? \\
-Regime features & removed & do the regime labels inform the policy? \\
-Frictions & full model, no gas, no slippage, static fee, no impermanent loss & which cost drives the result? \\
-Fee tier & repeated on the $0.30\,\%$ pool & does a higher fee tier buy a longer viable range? \\
+Regime features & removed (not run) & do the regime labels inform the policy? \\
+Frictions & full model, no gas, no slippage, static fee, no impermanent loss (not run) & which cost drives the result? \\
+Fee tier & repeated on the $0.30\,\%$ pool (not run) & does a higher fee tier buy a longer viable range? \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -136,5 +153,6 @@ Fee tier & repeated on the $0.30\,\%$ pool & does a higher fee tier buy a longer
 Decision rules are stated in advance: the learned policy earns a positive
 verdict only if its mean Sharpe beats the best static width and the hedged HODL
 with a paired $95\,\%$ confidence interval excluding zero, and its CVaR is no
-worse than the best heuristic's. Where the evidence is negative, the negative
+worse than the best heuristic's. Section~\ref{sec:results} reports where the
+rule is met and where it is not; where the evidence is negative, the negative
 result is the finding.

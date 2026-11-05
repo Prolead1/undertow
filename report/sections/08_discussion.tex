@@ -1,18 +1,91 @@
 \section{Discussion}
 \label{sec:discussion}
 
-\pending{The interpretive discussion is deferred until the locked runs land: it
-will connect the four answers to the active/passive boundary and to the design
-lessons for learning in this setting. The validity concerns below do not depend
-on the results.}
+\subsection{The boundary the windows draw}
+
+The four answers converge on a single boundary, and stress draws it.
+Passive provision paid in the quiet windows: in the sideways windows the
+\textsf{hodl} earned \usdc{4648}, the narrow band kept most of it,
+and the delta-matched hedge subtracted \usdc{3145}. Breadth mattered more
+than action in the trending windows, because a wide band carries the market
+exposure that a narrow band sells away, and the full range earned
+\usdc{7379} in the bull windows against \usdc{1093} for the learned seed.
+The one high-volatility window reversed the ordering: every unhedged rule
+lost between \usdc{12642} and \usdc{22999.6}, the learned seed lost about a
+quarter of the \textsf{hodl} loss, and the full hedge lost the least. The
+learned policy sits on the defensive side of that boundary, and the premium
+it pays is visible in every calm window. Judged on tail risk the boundary
+moves in its favour; judged on PnL it stays with the passive bands.
+
+The regime labels carry only the windows they label, and one
+high-volatility window cannot estimate a regime. The map is a description
+of the evaluation year, not a fitted boundary, and the study's inference
+rests on the paired intervals of the primary statistics rather than on any
+single regime cell.
+
+\subsection{What the hedge buys and costs}
+
+The hedge is insurance, and the study compares policies that sit at three
+points along the same protection-and-cost trade-off, though not as a
+controlled hedge ablation. At full delta match on the opening band the floor is nearly flat:
+CVaR falls from \usdc{-59.65} to \usdc{-3.15} and the maximum drawdown from
+$12.2\,\%$ to $2.7\,\%$, and the bill is an average \usdc{-2731} of hedge
+flows and a total PnL of \usdc{-1996}. At the learned seed's partial ratios
+the middle of that trade-off appears: CVaR \usdc{-17.04} and a hedge cost of
+\usdc{-1557}. The one-shot unhedged rules sit at the other end, with CVaR
+between \usdc{-51.31} and \usdc{-59.65} and no premium; the two rebalancing
+rules trade at \usdc{-56.10} and \usdc{-61.84}. Across the compared policies
+the ordering is monotone in protection and in cost. Funding was positive on average at every point
+because the short collected it; the mark loss on a short in a rising market
+and the perp fees outweighed that income.
+
+The hedge does not improve the mean, it reshapes the tail, so its value
+depends on the risk budget the LP is managed against. A mandate that treats
+tail risk as important as Sharpe will buy the protection that a mandate
+maximising return will refuse. The pre-registered rule gives tail risk
+equal standing, which is why a policy that fails the return clause and
+passes the tail clause is a partial success rather than a failed idea.
+
+\subsection{Why timing collapsed to a deployment decision}
+
+The learned policy never learned to time; its seeds deployed one band and
+held it. The rebalancing benchmarks show why. On this fee tier and in this
+year, frequent recentring realises impermanent loss again and again, and
+the fees collected do not cover it: \textsf{tau\_reset} recentred 122.8
+times per episode and ended \usdc{19968} behind the basket, the cost-aware
+rule recentred 22.0 times and ended \usdc{4280} behind, and the one-shot
+rules ended between \usdc{106} and \usdc{1553} behind. Timing is not
+irrelevant in principle; it is dominated in this market.
+
+The study's configuration restricted the timing head after the early runs
+showed the collapse, so the estimator was never asked to learn a decision
+that the evidence says it could not afford. That restriction is itself a
+finding about the pool, and it bounds the claim: a higher fee tier, cheaper
+execution or a market where price moves arrive more slowly could move the
+boundary, and the width choice is the substitute for timing under those
+conditions. The action interface still admits the wider timing grid, so a
+future run can test the shift without a redesign.
+
+Much of the pre-registered protocol was not run: the controlled sweep across
+volatility, volume relative to liquidity, fee tier, gas and capital, the
+$0.30\,\%$ (3000 pips) contrast pool, and the ablations of the regime
+features, the frictions and the fee tiers. The failure modes were repaired in
+sequence rather than
+varied one at a time, so none of the ablation rows isolates a single change. The boundary above
+is drawn from the realised 2024 windows on the primary pool alone, and the
+regime with one window is reported as a case study.
+\pending{the boundary sweep, the $0.30\,\%$ contrast pool, and the ablations of
+the regime features, the frictions and the fee tiers}
+
+\subsection{Threats to validity}
 
 The simulator replays recorded events, so prices, liquidity and fee growth are
-real rather than modelled. Its marginal-agent assumption is the main
+real rather than modelled. Its assumption that the agent is marginal is the main
 simplification: the position never moves the price, and its fee share is
 proportional to active liquidity. That is the standard replay assumption and it
 is recorded with every run, but it cannot capture queueing at the tick level or
 the impact of an unusually large position. The gas model charges representative
-per-action units rather than per-transaction receipts, so gas is a defensible
+per-action units rather than transaction receipts, so gas is a defensible
 floor rather than an exact quote, and the hedge uses a perpetual proxy whose
 funding and basis are representative rather than exact for a specific venue.
 
@@ -20,8 +93,8 @@ Table~\ref{tab:threats} states the threats that bound what the study can claim
 and the scope each imposes. The parity check bounds the distance between the
 simulator and the backtester, not the distance between the backtester and
 reality. Where the data allow, the external part of the gap is quantified by
-reconciling fees and collects; where they do not, latency, order-flow privacy
-and MEV are discussed rather than measured. We therefore claim results about
+reconciling fees and collects; where they do not, latency, the privacy of order
+flow and MEV are discussed rather than measured. We therefore claim results about
 performance under risk on recorded market states under a stated cost model. We
 do not claim deployable profitability, optimality of the action grid, or that
 the policy would survive market conditions absent from 2022 to 2024.

@@ -419,7 +419,10 @@ def _sim_step_series(
     decisions: list[_Decision] = []
     equity_prev = float(sim_env.config.episode.agent_capital_usdc)
     for _ in range(episode_length):
-        observation = observation_from_vector(vector.tolist())
+        observation = observation_from_vector(
+            vector.tolist(),
+            regime_features=sim_env.config.observation.regime_features,
+        )
         action = policy.act(observation, rng)
         action_index = action_to_index(sim_env, action)
         vector, _reward, terminated, truncated, info = sim_env.step(action_index)

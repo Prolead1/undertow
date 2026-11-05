@@ -378,6 +378,19 @@ class TrainingConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ObservationConfig:
+    """Observation feature gates (S23 ablation program).
+
+    ``regime_features`` keeps the live regime ordinal in the 24-dim vector when
+    true (the default, byte-identical to earlier runs).  When false the builder
+    emits the ablation sentinel, so the policy sees one constant in that slot
+    regardless of the live label: the regime-feature ablation arm.
+    """
+
+    regime_features: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class BacktestConfig:
     compute_decomposition: bool = True
     log_decision_every_step: bool = False
@@ -386,6 +399,7 @@ class BacktestConfig:
 @dataclass(frozen=True, slots=True)
 class SimConfig:
     episode: EpisodeConfig = field(default_factory=EpisodeConfig)
+    observation: ObservationConfig = field(default_factory=ObservationConfig)
     action_grid: ActionGridConfig = field(default_factory=ActionGridConfig)
     gas: GasConfig = field(default_factory=GasConfig)
     slippage: SlippageConfig = field(default_factory=SlippageConfig)
@@ -421,6 +435,7 @@ def load_sim_config(path: str | Path) -> SimConfig:
 
     _known_sections = {
         "episode",
+        "observation",
         "action_grid",
         "gas",
         "slippage",
@@ -464,6 +479,7 @@ def load_sim_config(path: str | Path) -> SimConfig:
 
     return SimConfig(
         episode=_populate(EpisodeConfig, raw.get("episode")),
+        observation=_populate(ObservationConfig, raw.get("observation")),
         action_grid=_populate(ActionGridConfig, raw.get("action_grid")),
         gas=_populate(GasConfig, raw.get("gas")),
         slippage=_populate(SlippageConfig, raw.get("slippage")),

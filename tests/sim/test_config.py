@@ -544,6 +544,14 @@ class TestLoadSimConfig:
         cfg = load_sim_config(str(path))
         assert cfg.episode.duration_days == 30
 
+    def test_observation_gate_round_trips_through_the_toml_loader(self, tmp_path) -> None:
+        path = tmp_path / "observation.toml"
+        _write_toml(path, "[observation]\nregime_features = false\n")
+        cfg = load_sim_config(str(path))
+        assert cfg.observation.regime_features is False
+        # The default keeps the live regime feature on.
+        assert SimConfig().observation.regime_features is True
+
     def test_partial_override(self, tmp_path) -> None:
         path = tmp_path / "partial.toml"
         _write_toml(

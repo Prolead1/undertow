@@ -31,6 +31,7 @@ from undertow.sim.backtest import (
 from undertow.sim.config import (
     GasConfig,
     HedgeConfig,
+    ObservationConfig,
     SimConfig,
     SlippageConfig,
 )
@@ -1279,6 +1280,43 @@ def test_tau_reset_policy_runs_on_volatile_tape() -> None:
     ledger = run_backtest(TauResetPolicy(120, tick_spacing=TICK_SPACING), view, _PINNED_SIM_CONFIG)
     assert ledger.equity_curve.height == 20
     assert set(ledger.decision_log["action_type"].to_list()) <= {"hold", "rebalance"}
+
+
+def test_regime_feature_gate_reaches_the_backtest_observation() -> None:
+    """S23: the gated backtester feeds the sentinel and a zero regime slot."""
+    from undertow.sim.env.observations import REGIME_ABLATED
+
+    class _RecordingPolicy(Policy):
+        def __init__(self) -> None:
+            self.regimes: list[str] = []
+            self.slots: list[float] = []
+
+        @property
+        def name(self) -> str:
+            return "recording"
+
+        def reset(self) -> None:
+            self.regimes = []
+            self.slots = []
+
+        def act(self, observation: object, rng: object = None) -> Action:  # noqa: ARG002
+            self.regimes.append(observation.regime)  # type: ignore[attr-defined]
+            self.slots.append(float(observation.to_vector()[15]))  # type: ignore[attr-defined]
+            return Action(action_type="hold", center_offset=0, width=0)
+
+    view = _flat_view()
+    live = _RecordingPolicy()
+    run_backtest(live, view, _PINNED_SIM_CONFIG)
+    assert live.regimes and set(live.regimes) == {"sideways"}
+    assert live.slots == [2.0] * len(live.slots)
+
+    gated_config = replace(
+        _PINNED_SIM_CONFIG, observation=ObservationConfig(regime_features=False)
+    )
+    gated = _RecordingPolicy()
+    run_backtest(gated, view, gated_config)
+    assert gated.regimes and set(gated.regimes) == {REGIME_ABLATED}
+    assert gated.slots == [0.0] * len(gated.slots)
 
 
 def test_gas_price_uses_tape_columns() -> None:

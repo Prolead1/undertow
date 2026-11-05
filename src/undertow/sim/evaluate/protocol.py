@@ -269,20 +269,24 @@ def dominant_regime(
     return str(best[0])
 
 
-def observation_from_vector(vector: Sequence[float]) -> Observation:
+def observation_from_vector(
+    vector: Sequence[float], *, regime_features: bool = True
+) -> Observation:
     """Rebuild the §11 :class:`Observation` from its flattened vector.
 
     The environment's public API returns the stable-order ``to_vector()`` array.
     :class:`Policy` expects the structured ``Observation``, so this inverts the
     documented field order.  It is the only adapter between the two S12 surfaces
-    and is deliberately strict about the vector length.
+    and is deliberately strict about the vector length.  With
+    ``regime_features=False`` the regime slot is the ablation sentinel that
+    :func:`~undertow.sim.env.observations.Observation.to_vector` emitted (0.0).
     """
     if len(vector) != OBSERVATION_VECTOR_LENGTH:
         raise EvaluationError(
             "observation vector must have length "
             f"{OBSERVATION_VECTOR_LENGTH}, got {len(vector)}"
         )
-    from undertow.sim.env.observations import REGIME_ORDINAL
+    from undertow.sim.env.observations import REGIME_ABLATED, REGIME_ORDINAL
 
     inverse = {value: name for name, value in REGIME_ORDINAL.items()}
     # ``to_vector`` log-compresses the heavy-tailed fields (ADR-034); undo it
@@ -306,7 +310,11 @@ def observation_from_vector(vector: Sequence[float]) -> Observation:
         pool_fee_tier_bps=int(values[12]),
         gas_price_recent_wei=values[13],
         eth_usd_price_recent=values[14],
-        regime=inverse.get(int(round(values[15])), "unknown"),
+        regime=(
+            inverse.get(int(round(values[15])), "unknown")
+            if regime_features
+            else REGIME_ABLATED
+        ),
         step_in_episode=int(values[16]),
         steps_remaining=int(values[17]),
         distance_to_lower_bound_spacings=values[18],
@@ -611,7 +619,13 @@ def _run_sim_window(
     done = False
     steps = 0
     while not done:
-        action = policy.act(observation_from_vector(vector.tolist()), rng)
+        action = policy.act(
+            observation_from_vector(
+                vector.tolist(),
+                regime_features=env.config.observation.regime_features,
+            ),
+            rng,
+        )
         index = action_to_index(env, action)
         vector, _reward, terminated, truncated, info = env.step(index)
         raw = info["reward_breakdown_raw"]

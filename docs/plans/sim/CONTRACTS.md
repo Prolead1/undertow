@@ -219,6 +219,12 @@ class TrainingConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ObservationConfig:
+    # S23 ablation gate: false freezes the regime ordinal (observation slot 15)
+    # to 0.0 for the regime-feature ablation arm; true keeps the live label.
+    regime_features: bool = True
+
+@dataclass(frozen=True, slots=True)
 class BacktestConfig:
     compute_decomposition: bool = True
     log_decision_every_step: bool = False
@@ -226,6 +232,7 @@ class BacktestConfig:
 @dataclass(frozen=True, slots=True)
 class SimConfig:
     episode: EpisodeConfig = field(default_factory=EpisodeConfig)
+    observation: ObservationConfig = field(default_factory=ObservationConfig)  # S23 additive
     action_grid: ActionGridConfig = field(default_factory=ActionGridConfig)
     gas: GasConfig = field(default_factory=GasConfig)
     slippage: SlippageConfig = field(default_factory=SlippageConfig)
@@ -958,7 +965,9 @@ class Observation:
     eth_usd_price_recent: float
 
     # -- Regime --
-    regime: str                               # one of the Regime enum values
+    regime: str                               # one of the Regime enum values, or the
+                                              # S23 ablation sentinel (empty) when
+                                              # ObservationConfig.regime_features is false
 
     # -- Time --
     step_in_episode: int
@@ -985,7 +994,8 @@ class Observation:
         stay stable. The heavy-tailed fields at indices 0, 1, 2, 7, 8, 9, 11,
         13 and 14 are log-compressed with ``sign(v) * log1p(|v|)`` so every
         dimension reaches the network at O(1) scale; ``unscale_vector``
-        restores the raw units (ADR-034)."""
+        restores the raw units (ADR-034). The regime slot (15) is the ordinal
+        of ``regime``, or 0.0 for the S23 ablation sentinel."""
         ...
 ```
 
