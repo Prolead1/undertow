@@ -20,17 +20,14 @@ provision lies.
 The measured verdict is narrower than the bargain promised. On the
 $0.05\,\%$ pool in 2024 the liquidity leg of every rule ran a deficit
 against the pure buy-and-hold basket, and no strategy in the ladder beat
-that basket on PnL; the best unhedged rule, the full range, finished
-\usdc{105.6} below it. Active rebalancing fared worst: \textsf{tau\_reset}
-lost \usdc{17680} and the cost-aware rule \usdc{1992}, while deploying one
-frozen static band earned \usdc{1082}. The learned policy reproduced the
-width its seeds preferred without learning to time, failed the
-pre-registered Sharpe test against that frozen width (difference $-0.733$,
-interval $[-1.355,-0.041]$), and passed the tail test against every unhedged
-rule. Its best seed tied the static width on Sharpe and led it on CVaR, and
-the delta-matched hedge bought a flat tail at a carry cost. On this market,
-learning did not make active management pay; it produced a policy whose
-value is defence, and it priced the insurance.
+that basket on PnL; active rebalancing fared worst. The learned policy
+reproduced the width its seeds preferred without learning to time, failed
+the pre-registered Sharpe test against the frozen static width (difference
+$-0.733$, interval $[-1.355,-0.041]$), and passed the tail test against every
+unhedged rule. Its best seed tied the static width on Sharpe and led it on
+CVaR, and the delta-matched hedge bought a flat tail at a carry cost. On this
+market, learning did not make active management pay; it produced a policy
+whose value is defence, and it priced the insurance.
 
 The boundary of the study is also a map for future work: the action space can
 be extended with continuous width and an explicit exit decision, the boundary

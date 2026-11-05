@@ -46,9 +46,8 @@ configuration files & every experiment configuration (pools, splits, grids, cost
 \texttt{contrast\_fee\_tier.py} & the full ladder on the $0.30\,\%$ pool \\
 \texttt{analyze\_regime\_ablation.py} & the regime-feature ablation arm \\
 \texttt{make\_appendix\_tables.py} & every table in Appendices~\ref{app:results} and \ref{app:ablations}, from the CSV artefacts \\
-\texttt{make\_figures.py} & the four story figures of the main body \\
+\texttt{make\_figures.py} & the main-body figures \\
 \texttt{build\_report.sh} & builds the report PDF from the LaTeX sources \\
-\texttt{plagiarism\_check.py} & originality screen against the cited papers and the repository's own prose \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -57,9 +56,11 @@ configuration files & every experiment configuration (pools, splits, grids, cost
 
 The complete source code, the tests, the configurations and the LaTeX sources
 of this report are in the public repository at
-\url{https://github.com/Prolead1/undertow}; downloading the repository archive
-provides everything needed to rebuild the report from source. The large binary
-artefacts are published as release assets: the validated dataset snapshots at
+\url{https://github.com/Prolead1/undertow}; the repository archive contains the
+code but not the data it reads. The reproduction cannot run from the source
+alone: the dataset snapshots and the recorded outputs must first be downloaded
+from the release assets and unpacked over the repository root as shown below.
+The assets are the validated dataset snapshots at
 \url{https://github.com/Prolead1/undertow/releases/tag/data-v1} and the
 recorded evaluation outputs, including the trained checkpoints and training
 telemetry, at
@@ -85,12 +86,13 @@ artefacts under \texttt{results/}.
 
 \subsection{How to run}
 
-From the repository root, the wrapper reproduces the analyses, tables,
-figures, PDF and checks:
+From the repository root, after the release assets have been unpacked over it,
+the wrapper reproduces the analyses, tables, figures, PDF and checks:
 
 {\footnotesize
 \begin{verbatim}
 uv sync
+# (download and unpack the release assets first; see above)
 scripts/report/reproduce.sh            # analyses, tables, figures, PDF, checks
 scripts/report/reproduce.sh --train    # the above, after retraining both arms
 \end{verbatim}
@@ -120,6 +122,5 @@ bounds the distance between the two engines on the recorded tape. The test
 suite contains more than two thousand three hundred tests covering the data
 boundary, position mathematics, the exact fee engine, the environment,
 training, evaluation and the command-line interfaces, at about $95\,\%$ line
-coverage. The originality screen compares the report's prose with the cited
-papers and the repository's own documents at a threshold of eight consecutive
-words; it reports no external matches.
+coverage. A clean reproduction therefore reduces to downloading the two
+release assets and running the wrapper above.

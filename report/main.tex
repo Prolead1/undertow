@@ -38,6 +38,27 @@
 
 \renewcommand{\thesection}{\Roman{section}}
 \renewcommand{\thesubsection}{\thesection.\Alph{subsection}}
+
+% Roman section numbers (VII, VIII) and compound subsection numbers (VIII.A)
+% are wider than the default table-of-contents number boxes, so widen them;
+% otherwise the number overprints the entry title (e.g. "VIIResults").
+\makeatletter
+\renewcommand*\l@section[2]{%
+  \ifnum \c@tocdepth >\z@
+    \addpenalty\@secpenalty
+    \addvspace{1.0em \@plus\p@}%
+    \setlength\@tempdima{2.3em}%
+    \begingroup
+      \parindent \z@ \rightskip \@pnumwidth
+      \parfillskip -\@pnumwidth
+      \leavevmode \bfseries
+      \advance\leftskip\@tempdima
+      \hskip -\leftskip
+      #1\nobreak\hfil \nobreak\hb@xt@\@pnumwidth{\hss #2}\par
+    \endgroup
+  \fi}
+\renewcommand*\l@subsection{\@dottedtocline{2}{2.3em}{3.0em}}
+\makeatother
 \newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
 
 \setlist[itemize]{leftmargin=1.4em,itemsep=0.3em,topsep=0.5em}
@@ -69,7 +90,7 @@
 % Monetary quantities are in token0 (USDC); see the background section.
 \newcommand{\usdc}[1]{\SI{#1}{USDC}}
 
-\title{Making Concentrated Liquidity Pay\\[0.4em]
+\title{Undertow: Making Concentrated Liquidity Pay\\[0.4em]
   \large Risk-Sensitive Reinforcement Learning on Uniswap~v3}
 \author{Thaker Rahul Dilipkumar\\[0.2em]
   \small Risk Management Institute, National University of Singapore}

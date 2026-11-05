@@ -210,6 +210,19 @@ def test_action_map_data_rejects_a_seed_without_decisions() -> None:
         figures.action_map_data(rows, ["ppo_s0"])
 
 
+def test_text_color_for_share_uses_contrast_at_both_ends() -> None:
+    # Viridis is near-black at the bottom of the map and bright at the top, so
+    # the annotations flip from white to dark grey.
+    assert figures.text_color_for_share(0.0, 1.0) == "white"
+    assert figures.text_color_for_share(1.0, 1.0) == "0.1"
+
+
+def test_text_color_for_share_scales_with_a_small_maximum() -> None:
+    # A share at the maximum is the top of the map, whatever the maximum is.
+    assert figures.text_color_for_share(0.1, 0.1) == figures.text_color_for_share(1.0, 1.0)
+    assert figures.text_color_for_share(0.0, 0.1) == "white"
+
+
 def test_fee_lvr_points_filters_to_the_passive_gas_arm() -> None:
     rows = [
         {"level": "gas_0.25x", "policy": "hodl"},

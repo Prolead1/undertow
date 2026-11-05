@@ -30,6 +30,7 @@ import csv
 import json
 from collections.abc import Sequence
 from pathlib import Path
+from typing import overload
 
 import matplotlib
 
@@ -37,7 +38,8 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
-import qbstyles  # noqa: E402
+import numpy.typing as npt  # noqa: E402
+import qbstyles  # type: ignore[import-untyped]  # noqa: E402
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch  # noqa: E402
 
 #: Decimal factor for the USDC/WETH pair (10^(18-6)).
@@ -152,7 +154,17 @@ def eth_weight(
     return float(np.clip(weth * q / value, 0.0, 1.0))
 
 
-def impermanent_loss(price_ratio: float) -> float:
+@overload
+def impermanent_loss(price_ratio: float) -> float: ...
+
+
+@overload
+def impermanent_loss(price_ratio: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]: ...
+
+
+def impermanent_loss(
+    price_ratio: float | npt.NDArray[np.float64],
+) -> float | npt.NDArray[np.float64]:
     """IL of a full-range constant-product position at ``r = q_t / q_0``."""
     return 2.0 * np.sqrt(price_ratio) / (1.0 + price_ratio) - 1.0
 
@@ -477,19 +489,32 @@ def make_risk_return(output_dir: Path, *, png: bool = False) -> Path:
     static_cvar = mean_metric(static, "cvar_95")
     fig, ax = plt.subplots(figsize=(7.16, 3.4))
 
-    def point(name: str, label: str, color: str, marker: str, *, size: int = 36) -> None:
+    def point(
+        name: str,
+        label: str,
+        color: str,
+        marker: str,
+        *,
+        size: int = 36,
+        offset: tuple[float, float] = (6, 4),
+        align: str = "left",
+    ) -> None:
         ax.scatter(sharpes[name], cvars[name], color=color, marker=marker, s=size, zorder=5)
         ax.annotate(label, (sharpes[name], cvars[name]), textcoords="offset points",
-                    xytext=(6, 4), fontsize=7, color=color)
+                    xytext=offset, fontsize=7, color=color, ha=align)
 
-    for name, label in (("hodl", "hodl"), ("passive_narrow", "narrow"),
-                        ("passive_wide", "wide"), ("full_range_v2", "full range"),
-                        ("hedged_hodl_1.0", "hedged HODL")):
-        point(name, label, "#ffb74d", "s")
-    for name, label in (("tau_reset", "recentring"), ("cost_aware", "cost-aware")):
-        point(name, label, "#e57373", "v")
-    for seed in range(5):
-        point(f"ppo_s{seed}", f"seed {seed}", "#4dd0e1", "o")
+    for name, label, offset in (("hodl", "hodl", (6, 4)), ("passive_narrow", "narrow", (6, 4)),
+                                ("passive_wide", "wide", (6, 4)),
+                                ("full_range_v2", "full range", (-6, 4)),
+                                ("hedged_hodl_1.0", "hedged HODL", (6, 4))):
+        point(name, label, "#ffb74d", "s", offset=offset,
+              align="right" if offset[0] < 0 else "left")
+    point("tau_reset", "recentring", "#e57373", "v")
+    point("cost_aware", "cost-aware", "#e57373", "v", offset=(-6, -12), align="right")
+    for seed, offset in ((0, (6, 4)), (1, (6, 4)), (2, (6, -12)), (3, (6, 4)),
+                         (4, (-6, -12))):
+        point(f"ppo_s{seed}", f"seed {seed}", "#4dd0e1", "o", offset=offset,
+              align="right" if offset[0] < 0 else "left")
     ax.scatter(static_sharpe, static_cvar, color="#81c784", marker="*", s=110, zorder=6)
     ax.annotate(
         "frozen width",
@@ -508,41 +533,59 @@ def make_risk_return(output_dir: Path, *, png: bool = False) -> Path:
     return _save(fig, output_dir, "risk_return", png)
 
 
+def text_color_for_share(share: float, share_max: float) -> str:
+    """Dark or light annotation text for a viridis cell at ``share``.
+
+    ``share_max`` must be positive; the action map normalises every seed's
+    row, so it always is. Returns a dark grey on bright cells and white on
+    dark ones, keeping the percentage readable on either end of the map.
+    """
+    red, green, blue, _ = matplotlib.colormaps["viridis"](share / share_max)
+    luminance = 0.299 * red + 0.587 * green + 0.114 * blue
+    return "0.1" if luminance > 0.5 else "white"
+
+
 def make_action_map(output_dir: Path, *, png: bool = False) -> Path:
-    """Band choice per seed and window, and each seed's hedge-ratio mix."""
+    """Band choice per seed and window, and each seed's hedge-ratio mix.
+
+    Both panels are labelled cell grids: the left one is categorical (the band
+    each seed chose per window) and the right one is a sequential share matrix
+    whose cells carry the percentage, so neither relies on a cramped legend.
+    """
     apply_style()
     seeds = [f"ppo_s{seed}" for seed in range(5)]
     windows, bands, ratios = action_map_data(read_rows(MAIN_ANALYSIS / "windows.csv"), seeds)
 
     fig, (left, right) = plt.subplots(
-        1, 2, figsize=(7.16, 2.7), gridspec_kw={"width_ratios": [1.6, 1.0]}
+        1, 2, figsize=(7.16, 3.0), gridspec_kw={"width_ratios": [1.5, 1.05]}
     )
     cmap = matplotlib.colors.ListedColormap(["#555555", "#4dd0e1", "#81c784", "#ffb74d"])
     norm = matplotlib.colors.BoundaryNorm([-1.5, -0.5, 50.5, 250.5, 1000.5], cmap.N)
     left.imshow(bands, cmap=cmap, norm=norm, aspect="auto")
-    left.set_xticks(range(len(windows)), [str(window) for window in windows], fontsize=6)
-    left.set_yticks(range(len(seeds)), [f"seed {seed}" for seed in range(5)], fontsize=7)
+    left.set_xticks(range(len(windows)), [str(window) for window in windows], fontsize=7)
+    left.set_yticks(range(len(seeds)), [f"seed {seed}" for seed in range(5)], fontsize=8)
     left.set_xlabel("Evaluation window", fontsize=8)
     left.set_title("Band chosen, tick spacings", fontsize=9)
     for row in range(len(seeds)):
         for column in range(len(windows)):
             label = "hold" if bands[row, column] < 0 else f"{int(bands[row, column])}"
-            left.text(column, row, label, ha="center", va="center", fontsize=5.5,
+            left.text(column, row, label, ha="center", va="center", fontsize=7,
                       color="white")
 
     ratio_labels = ("0", "0.25", "0.5", "0.75", "1.0")
-    ratio_colors = ("#e57373", "#ffb74d", "#81c784", "#4dd0e1", "#ba68c8")
-    bottom = np.zeros(len(seeds))
-    for index, label in enumerate(ratio_labels):
-        right.bar(range(len(seeds)), ratios[:, index], bottom=bottom,
-                  color=ratio_colors[index], width=0.62, label=label)
-        bottom += ratios[:, index]
+    # Each seed's row is normalised to sum to one, so the maximum is positive.
+    share_max = float(ratios.max())
+    right.imshow(ratios.T, cmap="viridis", vmin=0.0, vmax=share_max, aspect="auto")
     right.set_xticks(range(len(seeds)), [str(seed) for seed in range(5)], fontsize=7)
+    right.set_yticks(range(len(ratio_labels)), ratio_labels, fontsize=7)
     right.set_xlabel("Seed", fontsize=8)
-    right.set_ylabel("Share of steps", fontsize=8)
-    right.set_title("Hedge ratio", fontsize=9)
-    right.legend(fontsize=6, ncol=2, loc="lower center", framealpha=0.35)
-    right.tick_params(labelsize=7)
+    right.set_ylabel("Hedge ratio", fontsize=8)
+    right.set_title("Share of steps at each ratio, %", fontsize=9)
+    for row in range(len(ratio_labels)):
+        for column in range(len(seeds)):
+            share = float(ratios[column, row])
+            right.text(column, row, f"{100 * share:.0f}", ha="center", va="center",
+                       fontsize=7, color=text_color_for_share(share, share_max))
     fig.suptitle("Four seeds deploy the same band; every seed hedges partially", fontsize=9)
     fig.tight_layout()
     return _save(fig, output_dir, "action_map", png)
@@ -597,7 +640,7 @@ def make_fee_tier(output_dir: Path, *, png: bool = False) -> Path:
     ):
         ax.bar(x, [means[policy] for policy in policies], color=color, width=0.62)
         ax.axhline(0.0, color="0.7", linewidth=0.8)
-        ax.set_xticks(x, labels, fontsize=7, rotation=25, ha="right")
+        ax.set_xticks(x, labels, fontsize=6.5, rotation=35, ha="right")
         ax.set_title(title, fontsize=9)
         ax.set_yscale("symlog", linthresh=1000.0)
         ax.tick_params(labelsize=7)
