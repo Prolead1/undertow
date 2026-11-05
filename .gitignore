@@ -16,6 +16,10 @@ build/
 /data/cache/
 # Training runs and evaluation outputs (checkpoints, telemetry, rollouts).
 # Anchored to the repo root so the tracked scripts/smoke_fixture/runs/ is kept.
+# The heavy artefacts are published in the `results-v1` release; the small
+# analysis CSVs and per-seed provenance are force-added once
+# (`git add -f results/**/analysis ...`) so every reported number stays visible
+# in the repository. Tracked files are unaffected by this rule afterwards.
 /runs/
 /results/
 *.parquet

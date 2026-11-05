@@ -53,6 +53,7 @@
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning,calc}
 \usepackage{url}
+\usepackage{xurl}
 \usepackage[super]{cite}
 \usepackage[hidelinks]{hyperref}
 \hypersetup{pageanchor=false}
@@ -60,7 +61,7 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Draft markers.  \pending{} marks an experiment or number that does not exist
 % yet.  \todo{} marks a structural note for the author.  Both MUST be resolved
-% before submission; the report-writer agent flags every occurrence.
+% before submission.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \newcommand{\pending}[1]{\textcolor{red}{\textsf{[PENDING: #1]}}}
 \newcommand{\todo}[1]{\textcolor{orange}{\textsf{[TODO: #1]}}}
@@ -70,7 +71,7 @@
 
 \title{Making Concentrated Liquidity Pay\\[0.4em]
   \large Risk-Sensitive Reinforcement Learning on Uniswap~v3}
-\author{Thaker, Rahul\\[0.2em]
+\author{Thaker Rahul Dilipkumar\\[0.2em]
   \small Risk Management Institute, National University of Singapore}
 \date{}
 
@@ -85,10 +86,6 @@
 \input{sections/00_abstract}
 \end{abstract}
 
-\noindent\textbf{Index Terms:} reinforcement learning, Uniswap~v3,
-concentrated liquidity, market making, loss-versus-rebalancing, impermanent
-loss, risk-sensitive reinforcement learning.
-
 \clearpage
 \tableofcontents
 
@@ -101,6 +98,9 @@ loss, risk-sensitive reinforcement learning.
 \input{sections/07_results}
 \input{sections/08_discussion}
 \input{sections/09_conclusion}
+
+\clearpage
+\input{sections/10_acknowledgement}
 
 \clearpage
 \bibliographystyle{IEEEtran}

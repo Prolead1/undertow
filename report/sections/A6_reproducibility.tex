@@ -53,17 +53,35 @@ configuration files & every experiment configuration (pools, splits, grids, cost
 \end{tabular}
 \end{table}
 
-\subsection{Data files}
+\subsection{Code and artefact availability}
 
-The two dataset snapshots and the recorded evaluation artefacts are
-distributed with the submission archive; they are excluded from version
-control because of their size. The primary pool's snapshot is approximately
-$812$\,MB and the contrast pool's approximately $293$\,MB, partitioned by
-stream and block bucket. Each carries a manifest with row counts and block
-ranges and a validation report; Appendix~\ref{app:data} summarises both. The
-reproduction program does not re-fetch the data because the fetch step needs
-API credentials; every reported number is produced from the distributed
-snapshots and the recorded evaluation artefacts under \texttt{results/}.
+The complete source code, the tests, the configurations and the LaTeX sources
+of this report are in the public repository at
+\url{https://github.com/Prolead1/undertow}; downloading the repository archive
+provides everything needed to rebuild the report from source. The large binary
+artefacts are published as release assets: the validated dataset snapshots at
+\url{https://github.com/Prolead1/undertow/releases/tag/data-v1} and the
+recorded evaluation outputs, including the trained checkpoints and training
+telemetry, at
+\url{https://github.com/Prolead1/undertow/releases/tag/results-v1}. They are
+excluded from version control because of their size. The archives unpack over
+the repository root:
+
+{\footnotesize
+\begin{verbatim}
+tar -xzf eth_usdc_500-data-v1.tar.gz -C data/datasets
+tar -xzf eth_usdc_3000-data-v1.tar.gz -C data/datasets
+tar -xzf results-v1.tar.gz -C .
+\end{verbatim}
+}
+
+The primary pool's snapshot is approximately $812$\,MB and the contrast
+pool's approximately $293$\,MB, partitioned by stream and block bucket. Each
+carries a manifest with row counts and block ranges and a validation report;
+Appendix~\ref{app:data} summarises both. The reproduction program does not
+re-fetch the data because the fetch step needs API credentials; every reported
+number is produced from the released snapshots and the recorded evaluation
+artefacts under \texttt{results/}.
 
 \subsection{How to run}
 

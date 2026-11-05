@@ -112,6 +112,17 @@ static width $167$ spacings & $+2\,204$ & 1.97 & $+734$ \\
 \end{tabular}
 \end{table}
 
+\begin{figure}[tbp]
+\centering
+\includegraphics[width=\linewidth]{figures/fee_tier.pdf}
+\caption{Net excess over the opening basket on the two fee tiers, mean over the
+thirteen 2024 evaluation windows. The primary pool is the $0.05\,\%$ tier, the
+contrast pool the $0.30\,\%$ tier. Bars above zero beat the passive holding;
+the vertical axis is symmetric-logarithmic so the recentring rules remain
+visible.}
+\label{fig:fee-tier}
+\end{figure}
+
 \begin{table}[tbp]
 \caption{Fee income against impermanent loss on the thirteen evaluation
 windows, mean per window in USDC. Fees, impermanent loss, gas and slippage
@@ -197,6 +208,16 @@ also diverge more, from one that never deploys to two that widen to the
 $1000$-spacing band, and the arm's best validation seed finishes worst out of
 sample: the selection signal is thin even when the policy learns.
 
+\begin{figure}[tbp]
+\centering
+\includegraphics[width=\linewidth]{figures/learning_curves.pdf}
+\caption{Training reward of the five seeds of the main joint run: mean episode
+return against timesteps. The return is measured against the opening basket and
+normalised by capital, so a less negative curve is a policy that has learned to
+lose less.}
+\label{fig:learning-curves}
+\end{figure}
+
 \subsection{Whether one policy does better}
 
 The pre-registered comparison runs against the strongest hand-written
@@ -204,6 +225,17 @@ rules, the best static width chosen on the training split, and a hedged
 benchmark with a matched delta. Table~\ref{tab:aggregate} sets out the
 levels and Table~\ref{tab:paired} the paired per-window differences that
 the decision rule turns on.
+
+\begin{figure}[tbp]
+\centering
+\includegraphics[width=\linewidth]{figures/risk_return.pdf}
+\caption{Annualised Sharpe against CVaR at the $5\,\%$ level for every rule in
+the evaluation ladder, mean over the thirteen 2024 windows. Up and to the right
+is better. The star marks the static width frozen on the training split; the
+learned seeds sit above the unhedged rules on the tail axis but left of the
+best static width on the return axis.}
+\label{fig:risk-return}
+\end{figure}
 
 Start with the frozen comparator. Training Sharpes for half-widths of 50,
 250 and 1000 tick spacings were 2.20, 1.45 and 0.80, so the protocol froze
@@ -252,6 +284,16 @@ holds 0.50 or 1.00. The learned policy sets a band and a hedge ratio; it is
 not a timing policy, and its preferred width of 250 is the static band with the
 best Sharpe on the evaluation windows, though it was not the frozen
 comparator.
+
+\begin{figure}[tbp]
+\centering
+\includegraphics[width=\linewidth]{figures/action_map.pdf}
+\caption{What each learned seed chose on the thirteen evaluation windows.
+Left: the band half-width in tick spacings chosen at deployment, with
+\textsf{hold} where the seed never deployed. Right: the share of decision steps
+spent at each short ratio.}
+\label{fig:action-map}
+\end{figure}
 
 The worst window for the one-shot rules and the learned mean is the single
 high-volatility window. \textsf{hodl}
@@ -401,6 +443,17 @@ widths still lose to the opening basket, and the $0.30\,\%$ tier is where they
 cross into surplus. The evaluation year holds one high-volatility
 window, so the stress row stays a case study and the boundary drawn here holds
 for this pair, this year and the tested ranges.
+
+\begin{figure}[tbp]
+\centering
+\includegraphics[width=0.62\linewidth]{figures/fee_lvr.pdf}
+\caption{Fee income of the opening band against the analytical full-range LVR
+floor $0.125\,\sigma^2Vt$, one point per evaluation window, coloured by the
+window's realised volatility. The dashed line is where fees exactly cover the
+floor; the annotated point is the partial final window, whose floor rescales to
+its length.}
+\label{fig:fee-lvr}
+\end{figure}
 
 \begin{table}[tbp]
 \caption{The boundary sweep on the $0.05\,\%$ pool, mean over the thirteen

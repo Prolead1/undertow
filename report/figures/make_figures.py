@@ -11,6 +11,11 @@ vector PDF. The figures illustrate the mechanics the report describes:
   lumpy cost of each recentring.
 * ``testbed``           -- the two engines and the parity check that keeps
   them honest.
+* ``learning_curves``   -- the training reward of every seed in the main run.
+* ``risk_return``       -- Sharpe against CVaR for the evaluation ladder.
+* ``action_map``        -- the band and hedge ratio each seed chose per window.
+* ``fee_lvr``           -- fee income against the analytical LVR floor.
+* ``fee_tier``          -- net excess on the primary and contrast fee tiers.
 
 Usage::
 
@@ -21,6 +26,8 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -348,6 +355,259 @@ def make_testbed(output_dir: Path, *, png: bool = False) -> Path:
     return _save(fig, output_dir, "testbed", png)
 
 
+# ---------------------------------------------------------------------------
+# Result figures: read the evaluation artefacts written by scripts/report/.
+# ---------------------------------------------------------------------------
+
+#: Repository root (this file lives at report/figures/make_figures.py).
+ROOT = Path(__file__).resolve().parents[2]
+#: Analysis artefacts produced by the reproduction programs.
+RESULTS = ROOT / "results"
+MAIN_ANALYSIS = RESULTS / "eth_usdc_500_joint_rl" / "analysis"
+CONTRAST_ANALYSIS = RESULTS / "eth_usdc_3000_contrast" / "analysis"
+
+
+def read_rows(path: Path) -> list[dict[str, str]]:
+    """Read a result CSV into a list of string dictionaries."""
+    with path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def mean_metric(rows: Sequence[dict[str, str]], metric: str) -> float:
+    """Mean of one numeric column over the rows."""
+    values = [float(row[metric]) for row in rows]
+    if not values:
+        raise ValueError(f"mean_metric: no rows for {metric!r}")
+    return float(np.mean(values))
+
+
+def policy_means(rows: Sequence[dict[str, str]], metric: str) -> dict[str, float]:
+    """Mean of one metric per policy, preserving first-seen order."""
+    grouped: dict[str, list[float]] = {}
+    for row in rows:
+        grouped.setdefault(row["policy"], []).append(float(row[metric]))
+    return {name: float(np.mean(values)) for name, values in grouped.items()}
+
+
+def telemetry_curve(path: Path) -> list[tuple[int, float]]:
+    """``(timestep, mean episode return)`` pairs from one seed's telemetry."""
+    curve: list[tuple[int, float]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        record = json.loads(line)
+        reward = record.get("ep_rew_mean")
+        if reward is not None:
+            curve.append((int(record["timestep"]), float(reward)))
+    return curve
+
+
+def action_map_data(
+    rows: Sequence[dict[str, str]], seeds: Sequence[str]
+) -> tuple[list[int], np.ndarray, np.ndarray]:
+    """Band matrix and normalised hedge-ratio mix for the action map.
+
+    Returns the sorted window numbers, the ``(seeds, windows)`` band matrix
+    with ``-1`` for a hold, and the ``(seeds, 5)`` share of decision steps at
+    each hedge ratio. Raises ``ValueError`` when a seed has no hedge-ratio
+    observations, since its mix would be undefined.
+    """
+    windows = sorted({int(row["window"]) for row in rows})
+    ratio_keys = ("ratio_0", "ratio_025", "ratio_05", "ratio_075", "ratio_10")
+    bands = np.full((len(seeds), len(windows)), -1.0)
+    ratios = np.zeros((len(seeds), len(ratio_keys)))
+    for row in rows:
+        if row["policy"] not in seeds:
+            continue
+        index = seeds.index(row["policy"])
+        bands[index, windows.index(int(row["window"]))] = float(row["band"])
+        ratios[index] += np.array([float(row[key]) for key in ratio_keys])
+    totals = ratios.sum(axis=1, keepdims=True)
+    if np.any(totals == 0.0):
+        raise ValueError("action_map_data: a seed has no hedge-ratio observations")
+    return windows, bands, ratios / totals
+
+
+def fee_lvr_points(rows: Sequence[dict[str, str]]) -> list[dict[str, str]]:
+    """Passive-band rows of the gas x0.25 arm, in the file's window order."""
+    return [
+        row for row in rows if row["level"] == "gas_0.25x" and row["policy"] == "hodl"
+    ]
+
+
+def make_learning_curves(output_dir: Path, *, png: bool = False) -> Path:
+    """Training reward of the five seeds of the main joint run."""
+    apply_style()
+    fig, ax = plt.subplots(figsize=(7.16, 2.7))
+    colors = ["#4dd0e1", "#81c784", "#ffb74d", "#ba68c8", "#e57373"]
+    grid = np.linspace(0.0, 1.0, 100)
+    curves: list[np.ndarray] = []
+    for seed in range(5):
+        path = RESULTS / "eth_usdc_500_joint_rl" / f"seed_{seed}" / "telemetry.jsonl"
+        curve = telemetry_curve(path)
+        steps = np.array([step for step, _ in curve]) / 1e6
+        rewards = np.array([reward for _, reward in curve])
+        ax.plot(steps, rewards, color=colors[seed], linewidth=0.9, alpha=0.8,
+                label=f"seed {seed}")
+        curves.append(np.interp(grid, steps, rewards))
+    ax.plot(grid, np.mean(curves, axis=0), color="white", linewidth=2.0,
+            label="mean over seeds")
+    ax.axhline(0.0, color="0.6", linewidth=0.7, linestyle=":")
+    ax.set_xlabel("Training steps, millions", fontsize=8)
+    ax.set_ylabel("Mean episode\nreturn", fontsize=8)
+    ax.set_title("Every seed learns the same thing: stop losing", fontsize=9)
+    ax.legend(fontsize=7, loc="lower right", ncol=3)
+    ax.tick_params(labelsize=7)
+    fig.tight_layout()
+    return _save(fig, output_dir, "learning_curves", png)
+
+
+def make_risk_return(output_dir: Path, *, png: bool = False) -> Path:
+    """Sharpe against CVaR for the ladder, the learned seeds and the hedge."""
+    apply_style()
+    rows = read_rows(MAIN_ANALYSIS / "windows.csv") + read_rows(
+        MAIN_ANALYSIS / "extra_benchmarks.csv"
+    )
+    sharpes = policy_means(rows, "sharpe")
+    cvars = policy_means(rows, "cvar_95")
+    static = [
+        row
+        for row in read_rows(MAIN_ANALYSIS / "static_widths.csv")
+        if row["split"] == "eval" and row["policy"] == "static_w50"
+    ]
+    static_sharpe = mean_metric(static, "sharpe")
+    static_cvar = mean_metric(static, "cvar_95")
+    fig, ax = plt.subplots(figsize=(7.16, 3.4))
+
+    def point(name: str, label: str, color: str, marker: str, *, size: int = 36) -> None:
+        ax.scatter(sharpes[name], cvars[name], color=color, marker=marker, s=size, zorder=5)
+        ax.annotate(label, (sharpes[name], cvars[name]), textcoords="offset points",
+                    xytext=(6, 4), fontsize=7, color=color)
+
+    for name, label in (("hodl", "hodl"), ("passive_narrow", "narrow"),
+                        ("passive_wide", "wide"), ("full_range_v2", "full range"),
+                        ("hedged_hodl_1.0", "hedged HODL")):
+        point(name, label, "#ffb74d", "s")
+    for name, label in (("tau_reset", "recentring"), ("cost_aware", "cost-aware")):
+        point(name, label, "#e57373", "v")
+    for seed in range(5):
+        point(f"ppo_s{seed}", f"seed {seed}", "#4dd0e1", "o")
+    ax.scatter(static_sharpe, static_cvar, color="#81c784", marker="*", s=110, zorder=6)
+    ax.annotate(
+        "frozen width",
+        (static_sharpe, static_cvar),
+        textcoords="offset points",
+        xytext=(6, -10),
+        fontsize=7,
+        color="#81c784",
+    )
+    ax.axvline(0.0, color="0.6", linewidth=0.7, linestyle=":")
+    ax.set_xlabel("Annualised Sharpe ratio", fontsize=8)
+    ax.set_ylabel(r"CVaR at $5\,\%$, USDC", fontsize=8)
+    ax.set_title("The learned seeds trade return for a smaller tail", fontsize=9)
+    ax.tick_params(labelsize=7)
+    fig.tight_layout()
+    return _save(fig, output_dir, "risk_return", png)
+
+
+def make_action_map(output_dir: Path, *, png: bool = False) -> Path:
+    """Band choice per seed and window, and each seed's hedge-ratio mix."""
+    apply_style()
+    seeds = [f"ppo_s{seed}" for seed in range(5)]
+    windows, bands, ratios = action_map_data(read_rows(MAIN_ANALYSIS / "windows.csv"), seeds)
+
+    fig, (left, right) = plt.subplots(
+        1, 2, figsize=(7.16, 2.7), gridspec_kw={"width_ratios": [1.6, 1.0]}
+    )
+    cmap = matplotlib.colors.ListedColormap(["#555555", "#4dd0e1", "#81c784", "#ffb74d"])
+    norm = matplotlib.colors.BoundaryNorm([-1.5, -0.5, 50.5, 250.5, 1000.5], cmap.N)
+    left.imshow(bands, cmap=cmap, norm=norm, aspect="auto")
+    left.set_xticks(range(len(windows)), [str(window) for window in windows], fontsize=6)
+    left.set_yticks(range(len(seeds)), [f"seed {seed}" for seed in range(5)], fontsize=7)
+    left.set_xlabel("Evaluation window", fontsize=8)
+    left.set_title("Band chosen, tick spacings", fontsize=9)
+    for row in range(len(seeds)):
+        for column in range(len(windows)):
+            label = "hold" if bands[row, column] < 0 else f"{int(bands[row, column])}"
+            left.text(column, row, label, ha="center", va="center", fontsize=5.5,
+                      color="white")
+
+    ratio_labels = ("0", "0.25", "0.5", "0.75", "1.0")
+    ratio_colors = ("#e57373", "#ffb74d", "#81c784", "#4dd0e1", "#ba68c8")
+    bottom = np.zeros(len(seeds))
+    for index, label in enumerate(ratio_labels):
+        right.bar(range(len(seeds)), ratios[:, index], bottom=bottom,
+                  color=ratio_colors[index], width=0.62, label=label)
+        bottom += ratios[:, index]
+    right.set_xticks(range(len(seeds)), [str(seed) for seed in range(5)], fontsize=7)
+    right.set_xlabel("Seed", fontsize=8)
+    right.set_ylabel("Share of steps", fontsize=8)
+    right.set_title("Hedge ratio", fontsize=9)
+    right.legend(fontsize=6, ncol=2, loc="lower center", framealpha=0.35)
+    right.tick_params(labelsize=7)
+    fig.suptitle("Four seeds deploy the same band; every seed hedges partially", fontsize=9)
+    fig.tight_layout()
+    return _save(fig, output_dir, "action_map", png)
+
+
+def make_fee_lvr(output_dir: Path, *, png: bool = False) -> Path:
+    """Fee income of the opening band against the analytical LVR floor."""
+    apply_style()
+    rows = fee_lvr_points(read_rows(MAIN_ANALYSIS / "boundary_sweep.csv"))
+    if not rows:
+        raise ValueError("make_fee_lvr: no gas x0.25 passive rows to plot")
+    fees = np.array([float(row["total_fees"]) for row in rows])
+    lvr = np.array([float(row["lvr_usdc"]) for row in rows])
+    sigma = np.array([float(row["sigma"]) for row in rows])
+    fig, ax = plt.subplots(figsize=(3.6, 3.1))
+    scatter = ax.scatter(lvr, fees, c=sigma, cmap="viridis", s=38, zorder=4)
+    limit = max(fees.max(), lvr.max()) * 1.08
+    ax.plot([0.0, limit], [0.0, limit], color="0.7", linewidth=0.8, linestyle="--")
+    ax.set_xlim(0.0, limit)
+    ax.set_ylim(0.0, limit)
+    ax.set_xlabel("Analytical LVR floor, USDC", fontsize=8)
+    ax.set_ylabel("Fee income, USDC", fontsize=8)
+    ax.set_title("Fees clear the full-range floor", fontsize=9)
+    ax.tick_params(labelsize=7)
+    bar = fig.colorbar(scatter, ax=ax)
+    bar.set_label("Realised $\\sigma$", fontsize=7)
+    bar.ax.tick_params(labelsize=6)
+    ax.annotate("partial window\n(floor rescales)", xy=(lvr[-1], fees[-1]),
+                xytext=(lvr[-1] + 160, fees[-1] - 260), fontsize=6, color="0.85",
+                arrowprops={"arrowstyle": "->", "color": "0.7", "lw": 0.7})
+    fig.tight_layout()
+    return _save(fig, output_dir, "fee_lvr", png)
+
+
+def make_fee_tier(output_dir: Path, *, png: bool = False) -> Path:
+    """Net excess over the opening basket on both fee tiers."""
+    apply_style()
+    primary_rows = read_rows(MAIN_ANALYSIS / "windows.csv") + read_rows(
+        MAIN_ANALYSIS / "extra_benchmarks.csv"
+    )
+    contrast_rows = read_rows(CONTRAST_ANALYSIS / "windows.csv")
+    policies = ("hodl", "passive_narrow", "passive_wide", "full_range_v2",
+                "cost_aware", "tau_reset")
+    labels = ("hodl", "narrow", "wide", "full", "cost-aware", "recentring")
+    primary = policy_means(primary_rows, "net")
+    contrast = policy_means(contrast_rows, "net")
+    x = np.arange(len(policies))
+    fig, (left, right) = plt.subplots(1, 2, figsize=(7.16, 2.9), sharey=True)
+    for ax, means, title, color in (
+        (left, primary, "Primary pool, $0.05\\,\\%$", "#4dd0e1"),
+        (right, contrast, "Contrast pool, $0.30\\,\\%$", "#81c784"),
+    ):
+        ax.bar(x, [means[policy] for policy in policies], color=color, width=0.62)
+        ax.axhline(0.0, color="0.7", linewidth=0.8)
+        ax.set_xticks(x, labels, fontsize=7, rotation=25, ha="right")
+        ax.set_title(title, fontsize=9)
+        ax.set_yscale("symlog", linthresh=1000.0)
+        ax.tick_params(labelsize=7)
+    left.set_ylabel("Net excess over the\nopening basket, USDC", fontsize=8)
+    fig.suptitle("The higher fee tier turns the passive bands positive; recentring loses on both",
+                 fontsize=9)
+    fig.tight_layout()
+    return _save(fig, output_dir, "fee_tier", png)
+
+
 def make_all(output_dir: Path, *, png: bool = False) -> list[Path]:
     """Build every story figure and return the written paths."""
     return [
@@ -355,6 +615,11 @@ def make_all(output_dir: Path, *, png: bool = False) -> list[Path]:
         make_il_lvr(output_dir, png=png),
         make_decision_path(output_dir, png=png),
         make_testbed(output_dir, png=png),
+        make_learning_curves(output_dir, png=png),
+        make_risk_return(output_dir, png=png),
+        make_action_map(output_dir, png=png),
+        make_fee_lvr(output_dir, png=png),
+        make_fee_tier(output_dir, png=png),
     ]
 
 
