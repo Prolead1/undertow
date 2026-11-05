@@ -3,35 +3,37 @@
 
 Concentrated liquidity promises more fee income while the price stays inside a
 chosen band, and the same position that earns those fees is the position that
-loses to informed order flow. An LP who wants to do better than accept that
-must decide when to recenter, how wide to stay and how much risk to hedge, and
-each decision is expensive and uncertain.
+loses to informed order flow. An LP who wants to do better must decide when to
+recentre, how wide to stay and how much risk to hedge, and those decisions are
+costly, uncertain and dependent on one another.
 
-This report measures whether a risk-sensitive learned policy can make those
-decisions jointly better than the best rules written by hand, and where active
-management stops paying. Answering that required a world in which costs are
-measured rather than assumed, so we built a testbed from three years of
-recorded trades, with an exact replay engine for ground truth, a fast
-simulator for training, and a parity harness between them. The study then asked
-four questions: where fees fail, why a standard agent fails, whether a learned
-policy wins out of sample, and where the boundary between active and passive
-provision lies.
+This study asks whether a risk-sensitive learned policy can make those
+decisions jointly better than the best hand-written rules, and where active
+management stops paying. Answering that required costs to be measured rather
+than assumed, so we built a testbed from three years of recorded trades, with
+an exact replay engine for ground truth, a fast simulator for training and a
+parity harness between them. The questions were where fees fail, why the first
+policies failed, whether one policy does better, and where active management
+pays.
 
 The measured verdict is narrower than the bargain promised. On the
-$0.05\,\%$ pool in 2024 the liquidity leg of every rule ran a deficit
-against the pure buy-and-hold basket, and no strategy in the ladder beat
-that basket on PnL; active rebalancing fared worst. The learned policy
-reproduced the width its seeds preferred without learning to time, failed
-the pre-registered Sharpe test against the frozen static width (difference
-$-0.733$, interval $[-1.355,-0.041]$), and passed the tail test against every
-unhedged rule. Its best seed tied the static width on Sharpe and led it on
-CVaR, and the delta-matched hedge bought a flat tail at a carry cost. On this
-market, learning did not make active management pay; it produced a policy
-whose value is defence, and it priced the insurance.
+$0.05\,\%$ pool in 2024 the liquidity leg of the rule ladder finished below
+the pure buy-and-hold basket, and the rebalancing rules lost the most. The
+learned policy deployed one band and held it without learning to time, failed
+the Sharpe clause of the pre-registered rule against the frozen comparator
+(difference $-0.733$, interval $[-1.355,-0.041]$), and passed the tail clause
+against the unhedged rules. Its best seed matched the frozen comparator on
+Sharpe and led it on CVaR, while the delta-matched hedge bought a nearly flat
+tail at a carry cost. A higher fee tier turned the wide bands net positive
+while the rebalancing rules stayed behind, so the sign of passive provision is
+set by the fee tier rather than by the choice of rule. Learning did not make
+active management pay on this market. What the policy bought was defence, and
+the delta-matched hedge put a price on it.
 
-The boundary of the study is also a map for future work: the action space can
-be extended with continuous width and an explicit exit decision, the boundary
-sweep can cover more pairs and fee tiers, and latency, private order flow and
-the exact funding of a real venue can be modelled rather than proxied. Each
-extension is a re-run of the same testbed rather than a redesign of it, which
-is the point of building the testbed before asking the question.
+What remains open follows from the boundary the windows draw. The action space
+can admit continuous width and an explicit exit decision, the learned policy
+can be trained on the $0.30\,\%$ fee tier, and the repairs can be probed one
+at a time in a factorial ablation. Latency, private order flow and the exact
+funding of a real venue can be modelled rather than proxied. Those runs share
+the testbed, and the remaining question is whether the learned policy pays in
+a market that charges more per swap or moves more slowly.

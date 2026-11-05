@@ -13,7 +13,7 @@ The report is built from LaTeX with a wrapper that selects among
 
 \subsection{Program inventory}
 
-Table~\ref{tab:app:programs} lists every program and what it computes. The
+Table~\ref{tab:app:programs} lists the programs and their outputs. The
 analysis programs are deterministic given the artefacts they read; the
 learning runs are seeded. The repository exposes three console commands (data,
 simulator and dashboard), and the reproduction wrapper
@@ -37,7 +37,7 @@ appendix tables and the main-body numbers read.}
 data package & data pipeline: snapshot construction, quality checks and validation reports \\
 simulator package & simulator, exact backtester, parity harness, training and evaluation \\
 dashboard package & live inspection of runs, telemetry and rollouts; not used for any reported result \\
-configuration files & every experiment configuration (pools, splits, grids, costs, training) \\
+configuration files & all experiment configurations (pools, splits, grids, costs, training) \\
 \texttt{reproduce.sh} & main reproduction program: runs the stages below in order \\
 \texttt{analyze\_main\_run.py} & main joint run: per-window metrics, paired bootstrap intervals, action mix, per-regime tables, decomposition \\
 \texttt{static\_widths.py} & static one-shot widths on the training and evaluation splits \\
@@ -45,7 +45,7 @@ configuration files & every experiment configuration (pools, splits, grids, cost
 \texttt{boundary\_sweep.py} & per-window volatility and volume, gas and capital reruns, analytical LVR \\
 \texttt{contrast\_fee\_tier.py} & the full ladder on the $0.30\,\%$ pool \\
 \texttt{analyze\_regime\_ablation.py} & the regime-feature ablation arm \\
-\texttt{make\_appendix\_tables.py} & every table in Appendices~\ref{app:results} and \ref{app:ablations}, from the CSV artefacts \\
+\texttt{make\_appendix\_tables.py} & all tables in Appendices~\ref{app:results} and \ref{app:ablations}, from the CSV artefacts \\
 \texttt{make\_figures.py} & the main-body figures \\
 \texttt{build\_report.sh} & builds the report PDF from the LaTeX sources \\
 \bottomrule
@@ -80,8 +80,8 @@ The primary pool's snapshot is approximately $812$\,MB and the contrast
 pool's approximately $293$\,MB, partitioned by stream and block bucket. Each
 carries a manifest with row counts and block ranges and a validation report;
 Appendix~\ref{app:data} summarises both. The reproduction program does not
-re-fetch the data because the fetch step needs API credentials; every reported
-number is produced from the released snapshots and the recorded evaluation
+re-fetch the data because the fetch step needs API credentials; the reported
+numbers are produced from the released snapshots and the recorded evaluation
 artefacts under \texttt{results/}.
 
 \subsection{How to run}
@@ -110,14 +110,14 @@ not use. Reference runtimes measured during the study: one training seed of
 one million steps takes about $25$ to $40$ minutes with four parallel
 environment processes, so the main run across five seeds takes roughly two and a half
 hours and the ablation arm about three hours, including the validation scoring
-of every checkpoint. The full evaluation of one configuration over the thirteen
+of each checkpoint. The full evaluation of one configuration over the thirteen
 windows takes a few minutes; the boundary sweep's two hundred and sixty
 reruns take under an hour.
 
 \subsection{Verification}
 
 Three checks keep the reproductions honest. The accounting identity of
-Appendix~\ref{app:system} is asserted on every replay. The parity harness
+Appendix~\ref{app:system} is asserted on each replay. The parity harness
 bounds the distance between the two engines on the recorded tape. The test
 suite contains more than two thousand three hundred tests covering the data
 boundary, position mathematics, the exact fee engine, the environment,
