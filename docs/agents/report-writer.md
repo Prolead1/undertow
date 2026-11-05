@@ -64,7 +64,7 @@ Calibrate against the cited papers (`data/plagiarism_corpus/`). Read a page or t
 
 ## Non-negotiables
 
-1. **LaTeX, one column, spacious article layout, title page.** The report uses an `article` class at 11pt on A4, one column, with `setspace` (`\setstretch{1.25}`), paragraph separation, generous float and equation skips, and vector figures or TikZ. The bibliography stays numeric and IEEE-style through `IEEEtran.bst`, rendered as superscripts with the `cite` package's `super` option. Attach a citation directly to the preceding word (`word\cite{key}`, no space) so it reads as a superscript, not a bracketed marker. The first page is a full title page that carries: the words "Financial Engineering Project"; the title; the author "Thaker, Rahul"; and "Risk Management Institute, National University of Singapore". The paper starts on the next page. Tables use `booktabs`; units use `siunitx`. Wide figures span `\linewidth`; portrait diagrams stay around half the line width. Compile after every edit with `bash scripts/build_report.sh`; fix errors, unresolved references and visible layout breaks. `report/main.pdf` is committed and must be rebuilt and staged with every change to the sources.
+1. **LaTeX, one column, spacious article layout, title page.** The report uses an `article` class at 11pt on A4, one column, with `setspace` (the submission build is double-spaced, as the course requires), paragraph separation, generous float and equation skips, and vector figures or TikZ. The bibliography stays numeric and IEEE-style through `IEEEtran.bst`, rendered as superscripts with the `cite` package's `super` option. Attach a citation directly to the preceding word (`word\cite{key}`, no space) so it reads as a superscript, not a bracketed marker. The first page is the course's cover page: the words "Financial Engineering Project"; the title; the author "Thaker, Rahul"; the student ID; the itemized workload table and the original-contribution list required by the course. The paper starts on the next page. Tables use `booktabs`; units use `siunitx`. Wide figures span `\linewidth`; portrait diagrams stay around half the line width. Compile after every edit with `bash scripts/build_report.sh`; fix errors, unresolved references and visible layout breaks. `report/main.pdf` is committed and must be rebuilt and staged with every change to the sources.
 
 2. **Never copy text from any source**, including the project's own `docs/`. Eight consecutive words matching a source means restructure the sentence. Quotes only in quotation marks, one sentence at most, cited. Run `uv run python scripts/plagiarism_check.py` and resolve every external match before declaring a draft ready; Turnitin at submission is the final gate.
 
@@ -90,6 +90,14 @@ Calibrate against the cited papers (`data/plagiarism_corpus/`). Read a page or t
 | `report/sections/07_results.tex` | the four questions, in order |
 | `report/sections/08_discussion.tex` | active/passive boundary, threats to validity, what is not claimed |
 | `report/sections/09_conclusion.tex` | the story closed, future work |
+| `report/sections/A0_notation.tex` | appendix A: notation and glossary |
+| `report/sections/A1_data.tex` | appendix B: data collection and validation |
+| `report/sections/A2_derivations.tex` | appendix C: derivations |
+| `report/sections/A3_system_spec.tex` | appendix D: testbed specification |
+| `report/sections/A4_results_full.tex` | appendix E: complete per-window results |
+| `report/sections/A5_ablations.tex` | appendix F: ablation and boundary tables |
+| `report/sections/A6_reproducibility.tex` | appendix G: reproducibility and program inventory |
+| `report/generated/*.tex` | appendix tables generated from the result CSVs by `scripts/report/make_appendix_tables.py` |
 | `report/references.bib` | verified entries only |
 
 ## Mechanics

@@ -1,0 +1,113 @@
+# Sim config for the joint (band selection x hedge ratio) RL recipe on the
+# ETH/USDC 0.05 % pool (configs/eth_usdc_500.toml) — the primary study pool.
+#
+# Combines three config-level recipes; no code change:
+#   * ADR-038 one-shot band selection: min_rebalance_interval_steps = 1e9,
+#     width arms {50, 250, 1000}, discount_gamma = 0.9999, hold_bias = 0;
+#   * S20b joint hedge-ratio head: hedge.enabled + hedge.agent_ratio;
+#   * S21 risk-sensitive objective + validation selection: cvar penalty
+#     (lambda = 0.05) and val_sharpe checkpoint selection on the carved
+#     validation window.
+#
+# The action space is MultiDiscrete([4, 5]): a one-shot band choice at step 0
+# (hold + 3 widths) and a per-step short ratio in {0, 0.25, 0.5, 0.75, 1.0}.
+#
+# Why a 180-day validation window: the S21 run's 30-day window was one regime
+# and produced ties across seeds; six months spans several regimes and is
+# scored as 6 x 30-day episodes, while leaving 550 training days. Selection
+# still never touches the eval split. Lambda stays at the S21 calibration
+# (sweepable in S23).
+
+[episode]
+duration_days = 30
+step_minutes = 10
+agent_capital_usdc = 100000.0
+marginal_agent = true
+fee_tier_bps = 500
+tick_spacing = 10
+# One rebalance per episode: the band is chosen at step 0 and held (ADR-038).
+min_rebalance_interval_steps = 1000000000
+
+[action_grid]
+# Hold + 3 band-width arms: the step-0 band choice is a single categorical
+# decision (ADR-038).
+center_offsets = [0]
+widths = [50, 250, 1000]
+include_hold = true
+
+[gas]
+mint_units = 460000
+burn_units = 215000
+collect_units = 130000
+rebalance_swap_units = 150000
+
+[slippage]
+fixed_impact_bps = 5.0
+
+[reward]
+risk_penalty_lambda = 0.05
+risk_rolling_window_steps = 144
+risk_penalty_enabled = true
+# S21: penalize the trailing 5 % expected shortfall of per-step joint-equity
+# losses (positive loss magnitude -> -lambda * pnl_cvar); the hedge ratio
+# moves this term.
+risk_penalty_mode = "cvar"
+risk_cvar_alpha = 0.95
+normalize_by_capital = true
+fees_enabled = true
+gas_enabled = true
+slippage_enabled = true
+il_enabled = true
+
+[hedge]
+# S20b joint head: the agent chooses the short ratio each decision.
+enabled = true
+fee_bps = 5.0
+funding_enabled = true
+ratio = 1.0
+ratios = [0.0, 0.25, 0.5, 0.75, 1.0]
+agent_ratio = true
+
+[split]
+train_start_utc = 2022-01-01T00:00:00Z
+train_end_utc = 2023-12-31T00:00:00Z
+eval_start_utc = 2024-01-01T00:00:00Z
+eval_end_utc = 2024-12-31T00:00:00Z
+
+[training]
+algorithm = "ppo"
+seeds = [0, 1, 2, 3, 4]
+# ADR-038: the band payoff accrues over the full 30-day episode, so a
+# near-undiscounted gamma keeps the step-0 choice in the value targets.  The
+# interval gate already removes churn, so hold_bias is off (ADR-038).
+discount_gamma = 0.9999
+gae_lambda = 0.95
+clip_epsilon = 0.15
+hidden_size = 256
+n_hidden = 2
+parallel_envs = 4
+total_timesteps = 1000000
+checkpoint_freq_steps = 100000
+log_freq_steps = 10000
+# S21 validation-based checkpoint selection on the last 180 days of train.
+selection_metric = "val_sharpe"
+validation_days = 180
+# Stabilized PPO update recipe (ADR-036), retained (ADR-038).
+learning_rate = 0.0001
+batch_size = 512
+n_epochs = 4
+ent_coef = 0.001
+target_kl = 0.01
+hold_bias = 0.0
+vec_env = "subproc"
+
+[backtest]
+compute_decomposition = true
+log_decision_every_step = false
+
+[price]
+mode = "replay"
+
+[observation]
+# S23 regime-feature ablation: freeze the regime ordinal to a constant 0.
+regime_features = false

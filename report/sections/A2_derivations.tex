@@ -1,0 +1,230 @@
+\section{Derivations}
+\label{app:derivations}
+
+This appendix carries the mathematics behind the study: the value of a
+concentrated position, the two loss measures, the concentration factor, the
+fee and hedge accounting, the risk measure and the policy update. The results
+in the main body use these expressions as definitions, so the appendix doubles
+as a statement of exactly what was measured.
+
+\subsection{The value of a concentrated position}
+
+A constant-product pool with reserves $(x,y)$ quotes the invariant
+$xy=k$ and a price $P=y/x$. A Uniswap~v3 position replaces the full-range
+reserves with a liquidity constant $L$ attached to a band
+$[p_\ell,p_u]$ in price space; the band's boundaries are tick indices
+$i_\ell,i_u$, which correspond monotonically to $p_\ell,p_u$ through the
+pool's conversion between ticks and prices. The position's token amounts follow from the
+invariant in square-root coordinates. Writing $\sqrt{P}$ for the current
+square-root price,
+
+\begin{align}
+x(P) &= L\big(\sqrt{P}-\sqrt{p_\ell}\big),
+\label{eq:app-x}\\
+y(P) &= L\Big(\frac{1}{\sqrt{P}}-\frac{1}{\sqrt{p_u}}\Big),
+\label{eq:app-y}
+\end{align}
+so $x$ is the USDC amount and $y$ the WETH amount, matching the main body's
+token0/token1 convention. While $p_\ell\le P\le p_u$; outside the band the
+position holds only the token the price has moved toward. The mark value in
+USDC is $V(P)=x(P)+y(P)P$, which in range becomes
+
+\begin{equation}
+V(P) = L\Big(2\sqrt{P}-\sqrt{p_\ell}-\frac{P}{\sqrt{p_u}}\Big).
+\label{eq:app-value}
+\end{equation}
+
+The deposit is fixed at $W_0$ and the position is opened at the entry price
+$P_0$ with the current tick as the band's centre, so the liquidity is pinned
+by $V(P_0)=W_0$:
+
+\begin{equation}
+L = W_0 \Big/ \Big(2\sqrt{P_0}-\sqrt{p_\ell}-\frac{P_0}{\sqrt{p_u}}\Big).
+\label{eq:app-L}
+\end{equation}
+
+The position's exposure is the derivative of the value with respect to the
+price. In range,
+
+\begin{equation}
+\frac{\partial V}{\partial P} = y(P) = L\Big(\frac{1}{\sqrt{P}}-\frac{1}{\sqrt{p_u}}\Big),
+\qquad
+\frac{\partial^2 V}{\partial P^2} = -\frac{L}{2}\,P^{-3/2}<0.
+\label{eq:app-greeks}
+\end{equation}
+
+The LP is long the risky token while the price is low in the band, and short
+it while the price is high; the value is concave in the price because the
+position sells the asset that rises and buys the one that falls. Concavity is
+the source of the loss to arbitrage: no matter which way the price moves, the
+position underperforms a portfolio that would have rebalanced to the same
+exposure continuously.
+
+\subsection{Impermanent loss}
+
+The HODL benchmark holds the entry amounts $(x_0,y_0)=(x(P_0),y(P_0))$ fixed,
+so its value is $H(P)=x_0+y_0P$. Impermanent loss is the gap
+
+\begin{equation}
+\mathrm{IL}(P) = V(P)-H(P)\;\le\;0\quad\text{for }P\ne P_0,
+\label{eq:app-il}
+\end{equation}
+with equality at entry. Substituting \eqref{eq:app-value} and the entry
+amounts gives the closed form used by the evaluation:
+
+\begin{equation}
+\frac{V(P)}{W_0} = \frac{2\sqrt{P}-\sqrt{p_\ell}-P/\sqrt{p_u}}
+{2\sqrt{P_0}-\sqrt{p_\ell}-P_0/\sqrt{p_u}},
+\qquad
+\frac{H(P)}{W_0} = \frac{x_0}{W_0}+\frac{y_0}{W_0}P.
+\label{eq:app-il-closed}
+\end{equation}
+
+For a band symmetric in ticks around $P_0$, write $p_\ell=P_0/r$ and
+$p_u=P_0 r$ with $r=e^{\delta}$, where $\delta$ is the half-width in
+log-price and equals the half-width in ticks multiplied by the tick size. At
+the entry price the two legs are equal in value,
+
+\begin{equation}
+\frac{x_0}{W_0} = \frac{y_0P_0}{W_0} = \frac{1}{2},
+\qquad
+\frac{y_0}{W_0} = \frac{1}{2P_0},
+\label{eq:app-amounts}
+\end{equation}
+so the deposit is balanced at any symmetric width and
+$x_0/W_0+y_0P_0/W_0=1$ by construction.
+
+\subsection{Concentration and loss-versus-rebalancing}
+
+Consider a price that follows a geometric Brownian motion,
+$\mathrm{d}P_t=\mu P_t\,\mathrm{d}t+\sigma P_t\,\mathrm{d}W_t$. Let
+$R_t$ be the value of the continuously rebalanced portfolio that starts at
+$V(P_0)$ and holds the AMM's instantaneous exposure at every instant,
+$\mathrm{d}R_t=({\partial V}/{\partial P})\,\mathrm{d}P_t$. It\^o's lemma
+gives
+
+\begin{equation}
+\mathrm{d}V_t = \frac{\partial V}{\partial P}\,\mathrm{d}P_t
++ \frac{1}{2}\frac{\partial^2 V}{\partial P^2}\,\sigma^2P_t^2\,\mathrm{d}t,
+\label{eq:app-ito}
+\end{equation}
+so the gap to the rebalancing portfolio accumulates at
+
+\begin{equation}
+\mathrm{dLVR}_t = -\frac{1}{2}\frac{\partial^2 V}{\partial P^2}\,\sigma^2P_t^2\,\mathrm{d}t
+\;\ge\;0 ,
+\label{eq:app-lvr-general}
+\end{equation}
+which is the loss-versus-rebalancing rate of Milionis et al.\cite{milionis2022lvr}.
+Substituting the curvature of \eqref{eq:app-greeks}, an in-range concentrated
+position loses at the instantaneous rate
+
+\begin{equation}
+\mathrm{dLVR}_t = \frac{\sigma^2}{4}\,L\,\sqrt{P_t}\,\mathrm{d}t .
+\label{eq:app-lvr}
+\end{equation}
+
+The full-range position is the special case $p_\ell\to0$, $p_u\to\infty$ with
+$V=2L\sqrt{P}$, for which \eqref{eq:app-lvr} collapses to
+$\sigma^2V/8$, the rate in the LVR literature. Dividing the two rates and
+evaluating at the entry price, with both positions pinned to the same capital
+$W_0$, gives the position's concentration factor,
+
+\begin{equation}
+\kappa = \frac{\mathrm{dLVR}^{\text{concentrated}}}
+{\mathrm{dLVR}^{\text{full range}}}
+= \frac{1}{1-(p_\ell/p_u)^{1/4}}
+= \frac{1}{1-e^{-\delta/2}} ,
+\label{eq:app-kappa}
+\end{equation}
+so a band of half-width $\delta=0.012$ in log-price, the default open band of
+the replay (half-width $120$ ticks), carries an instantaneous LVR rate about
+$167$ times the full-range
+rate while it is in range. The factor is why a narrow band earns more fees and
+loses more to arbitrage at the same time, and why the fee tier, not the width
+alone, decides whether the position clears its own LVR.
+
+Fees modify the arbitrage relation. With a proportional fee $\iota$, a
+riskless arbitrageur only trades when the pool price deviates from the external
+price by more than the fee, so the pool price wanders inside a band of width
+proportional to $\iota$ around the external price before arbitrage is
+profitable. Fee income and the residual LVR are then two sides of the same
+threshold, which is the object the empirical fee-to-LVR ratio in
+Appendix~\ref{app:ablations} measures; the fee-adjusted arbitrage condition is
+derived by Milionis et al.\cite{milionis2023fees}.
+
+\subsection{Fee income and the liquidity share}
+
+While the price is inside the band, the position earns a proportional share of
+every swap fee. If the position's liquidity is $L$ and the pool's active
+liquidity is $L_{\text{active}}$, that share is the ratio $L/L_{\text{active}}$
+on each crossed tick segment. The exact engine does not approximate this ratio
+at the pool level: each swap is apportioned across the tick segments it
+crosses, and the position's fee accrual is the integer change in the inside
+fee-growth accumulator multiplied by its liquidity. Fee income over a step is
+therefore
+
+\begin{equation}
+f_t = \sum_{\text{segments } s} L_s \cdot
+\big(\Delta \text{feeGrowthInside}_s\big) \big/ 2^{128} ,
+\label{eq:app-fee}
+\end{equation}
+with $L_s=0$ outside the band and the $2^{128}$ divisor the protocol's
+fixed-point normalisation. The \emph{marginal-agent} assumption of the
+simulator replaces the sum with the position's share of the global fee growth
+while in range, which removes the segment bookkeeping at the cost of a small
+approximation bounded by the parity harness.
+
+\subsection{The hedge leg}
+
+The hedge shorts $h_t\,y(P_t)$ units of WETH through a perpetual swap, where
+$y$ is the LP's WETH amount. Its mark PnL over a step is
+
+\begin{equation}
+\pi_t = -\,h_{t-1}\,y(P_{t-1})\,\big(P_t-P_{t-1}\big),
+\label{eq:app-hedge-pnl}
+\end{equation}
+funding is $\phi_t=+h_{t-1}y(P_{t-1})P_{t-1}\,\rho_t$ when the eight-hour
+rate $\rho_t$, scaled to the step, is positive (the short collects it), and
+adjusting the position costs a taker fee $\tau_t\le0$ proportional to the
+change in short notional. The joint
+strategy value is $V_t+\text{fees}_t+\pi_t+\phi_t+\tau_t-g_t-S_t$. Because the
+hedge is linear in the price and the LP value is concave, the hedge removes
+the first-order exposure but cannot remove the curvature term
+\eqref{eq:app-lvr}: a delta-neutral LP still pays LVR. This is the structural
+reason the empirical hedge cuts the tail without repairing the mean.
+
+\subsection{Risk measure and the training objective}
+
+For a loss $L=-G$ on the episode gain $G$, conditional value-at-risk at level
+$\alpha$ is the mean of the worst $1-\alpha$ tail,
+
+\begin{equation}
+\mathrm{CVaR}_\alpha(L) = \frac{1}{1-\alpha}\int_\alpha^1
+\mathrm{VaR}_u(L)\,\mathrm{d}u
+= \min_{\nu\in\mathbb{R}}\Big\{\nu+\frac{1}{1-\alpha}\mathbb{E}\big[(L-\nu)^+\big]\Big\},
+\label{eq:app-cvar}
+\end{equation}
+the convex representation of Rockafellar and Uryasev\cite{rockafellar2000cvar};
+CVaR is a coherent risk measure in the sense of
+Artzner et al.\cite{artzner1999coherent}. The reward subtracts a multiple of a
+trailing empirical estimate of \eqref{eq:app-cvar} on per-step joint equity
+changes, with a one-day window, so the policy's gradient sees the same tail
+statistic the evaluation reports.
+
+Policy optimization uses the clipped surrogate of PPO\cite{schulman2017ppo}.
+With probability ratio $r_t(\theta)$ between the new and old policies and
+advantage $\hat A_t$ from generalized advantage estimation\cite{schulman2015gae},
+
+\begin{equation}
+\mathcal{L}(\theta) = \mathbb{E}\Big[
+\min\big(r_t(\theta)\hat A_t,\;
+\mathrm{clip}(r_t(\theta),1-\epsilon,1+\epsilon)\hat A_t\big)\Big]
+- c_v\,\mathbb{E}\big[(V_\theta(s_t)-\hat V_t)^2\big]
++ c_e\,\mathbb{E}\big[H(\pi_\theta(\cdot\mid s_t))\big],
+\label{eq:app-ppo}
+\end{equation}
+with clip $\epsilon=0.15$, value coefficient $c_v$ and entropy bonus $c_e$.
+The advantage is the exponentially weighted sum of one-step temporal-difference
+residuals with parameter $\lambda_{\mathrm{GAE}}=0.95$. The full training
+settings are the subject of Appendix~\ref{app:system}.

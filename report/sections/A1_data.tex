@@ -1,0 +1,126 @@
+\section{Data Collection and Validation}
+\label{app:data}
+
+The study replays recorded history rather than simulating a market from a
+fitted process, so the tape's provenance and its known defects are part of the
+result. This appendix records the pools, the feeds, the checks that were run
+and the two warnings that survived them.
+
+\subsection{Pools and window}
+
+Table~\ref{tab:app:pools} lists the two pools. Both are USDC/WETH pools on
+Ethereum mainnet; the token ordering is fixed by address, so USDC is token0
+and WETH is token1 in both, and every monetary quantity in the study is in
+USDC. The window is January 2022 to December 2024, with 2024 held out. The
+primary pool's higher activity is why it carries the learned policy; the
+contrast pool exists to price the fee tier.
+
+\begin{table}[tbp]
+\caption{The two pools and the recorded window. Deployment blocks are the
+factory creation blocks; the tape begins at the first event inside the
+window.}
+\label{tab:app:pools}
+\centering
+\small
+\begin{tabular}{@{}L{0.22\linewidth}L{0.36\linewidth}L{0.32\linewidth}@{}}
+\toprule
+\textbf{Setting} & \textbf{Primary pool} & \textbf{Contrast pool} \\
+\midrule
+Contract & \texttt{0x88e6a0\ldots f5640} & \texttt{0x8ad599\ldots e6d8} \\
+Fee tier & $0.05\,\%$ (500 pips) & $0.30\,\%$ (3000 pips) \\
+Tick spacing & $10$ & $60$ \\
+Deployment block & 12\,376\,729 & 12\,370\,624 \\
+Recorded window & 2022-01-01 to 2024-12-31 & 2022-01-01 to 2024-12-31 \\
+Training window & 2022-01-01 to 2023-12-31 & for selection only \\
+Evaluation window & 2024-01-01 to 2024-12-31 & 2024-01-01 to 2024-12-31 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{The recorded feeds}
+
+Each pool contributes an event tape of swaps, mints and burns; the window
+contains no collects whose position was opened inside it, so the tape's
+collect stream is empty and fee income is instead taken from the pool's
+fee-growth accounting, the settlement path the engine replays. Five global
+feeds join the tape: one-minute
+reference prices, per-block gas prices, regime labels, boundary snapshots of
+the tick lattice, and eight-hour perpetual funding. Table~\ref{tab:app:streams}
+counts the rows for both pools. The reference and regime feeds carry two
+symbols, \texttt{ETHUSDC} and \texttt{ETHUSDT}; the loader keeps one per
+dataset (the deeper \texttt{ETHUSDT} feed) so no observation mixes the two
+series.
+
+\begin{table}[tbp]
+\caption{Recorded rows per stream for the primary and contrast pools over
+2022--2024. The gas stream is chain-wide and shared; the reference and regime
+streams carry two symbols each, so the per-symbol count is half the row count;
+the lattice row counts boundary snapshot files, not rows.}
+\label{tab:app:streams}
+\centering
+\small
+\begin{tabular}{@{}L{0.26\linewidth}rrL{0.40\linewidth}@{}}
+\toprule
+\textbf{Stream} & \textbf{Primary} & \textbf{Contrast} & \textbf{Note} \\
+\midrule
+Swaps & 6\,862\,602 & 447\,714 & the priced event stream \\
+Mints & 119\,781 & 53\,510 & liquidity added \\
+Burns & 130\,516 & 53\,630 & liquidity removed \\
+Collects & 0 & 0 & none inside the window \\
+Gas & 7\,609\,726 & shared & base fee and priority fee per block \\
+Reference & 3\,156\,480 & shared & one-minute bars, two symbols \\
+Regime & 3\,156\,480 & shared & labels derived from the reference \\
+Funding & 3\,288 & shared & eight-hour perpetual rate \\
+Lattice snapshots & 2 & 2 & boundary states per pool \\
+\midrule
+Tape rows (swaps + mints + burns) & 7\,112\,899 & 554\,854 & validation totals \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The training split of the primary pool holds roughly $4.86$ million tape
+events, which is why the exact engine cannot train the policy and the fast
+simulator exists.
+
+\subsection{Validation and the two warnings}
+
+Fourteen checks ran on each dataset: block ordering, key uniqueness,
+monotonic timestamps, absence of future data, block contiguity, swap-sign
+convention, tick and price consistency, tick spacing, liquidity conservation,
+reference coverage, regime completeness, fee reconciliation, external
+cross-checks and route cross-checks. Ten were conclusive, of which two
+returned warnings; four could not be completed because the tape holds no
+position lifecycle and no external magnitude feed.
+
+The first warning concerns the sign convention. Of the primary pool's swaps,
+$128$ of $6\,862\,602$ report non-positive or same-signed token amounts, and
+$26$ of $447\,714$ do so on the contrast pool. These are subgraph artefacts
+around zero-amount swaps; the replay treats a same-signed row as a transfer
+of the reported magnitudes and the affected rows are a fraction of a basis
+point of the tape.
+
+The second warning concerns the edges of the reference feed. The first close
+lands at $59.999$ seconds past the window's first minute and the last inside
+the window at the final minute's close, so an as-of join against the exact
+boundary leaves the opening and closing minute without a fresh bar. The loader
+enforces the split wall and the replay warm-up covers the left edge, so no
+decision inside the window is affected.
+
+Two further limitations matter for the reported results. First, the subgraph
+does not expose the pool's active liquidity on swap rows, so the replay reads
+the boundary snapshot and the fee-growth stream for liquidity state instead of
+the swap rows. Second, no completed position lifecycle sits inside the window,
+so the fee reconciliation against collects was skipped; fee income is instead
+taken from the protocol's own fee-growth accounting, which is the settlement
+path the engine replays exactly.
+
+\subsection{Splits and evaluation windows}
+
+Training uses windows of thirty days resampled from the 2022--2023 lane, with
+the final 180 days of that lane carved out for checkpoint selection. The
+evaluation runs from 2024-01-01 to 2024-12-31 at midnight UTC, which tiles
+into twelve full thirty-day windows and a final partial window of five days,
+for thirteen episodes. Table~\ref{tab:appendix-lvr} in
+Appendix~\ref{app:ablations} lists the realised market state of each evaluation
+window; the window boundaries are fixed before any policy is scored, so no
+comparison selects favourable periods after the fact.

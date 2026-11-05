@@ -78,9 +78,31 @@ remains the final gate.
 - **Protocol.** Sharpe and CVaR at 5 % are primary; five seeds; walk-forward
   2022--2023 train / 2024 eval; see ADR-030.
 
+## Submission build
+
+The course requires a double-spaced A4 report of about sixty pages including
+appendices, a cover page with an itemized workload and the original
+contribution, and correctly named files. The report satisfies all three:
+`main.tex` uses `\doublespacing`; the cover page in `sections/titlepage.tex`
+carries the workload table and the contribution list; and the final PDF is
+copied under the author's name:
+
+```bash
+bash scripts/build_report.sh                      # builds report/main.pdf
+cp report/main.pdf report/Rahul_Thaker_Undertow_Report.pdf
+```
+
+The appendix tables under `report/generated/` are produced from the result
+CSVs by `scripts/report/make_appendix_tables.py`; `scripts/report/reproduce.sh`
+runs the full reproduction, from the analyses to the PDF.
+
 ## Current status
 
-- Sections 1--6 are drafted (framing, background, related work, formulation,
-  testbed, experimental design).
-- Section 7 (Results) is a stub while the multi-seed experiments run.
-- Sections 8--9 are drafted at the level that does not depend on results.
+- The full report is written: framing, background, related work, formulation,
+  testbed, experimental design, the four results questions, discussion and
+  conclusion.
+- Appendices A--G cover notation, data collection and validation, derivations,
+  the testbed specification, the complete per-window results, the ablation and
+  boundary tables, and reproducibility.
+- The cover page carries the itemized workload and original contributions.
+- The submission-named PDF is built from the same sources as `main.pdf`.

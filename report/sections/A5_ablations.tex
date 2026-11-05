@@ -1,0 +1,86 @@
+\section{Ablation and Boundary Tables}
+\label{app:ablations}
+
+The design section lists the probes that complete the study; this appendix
+carries their full tables. Every table is generated from the evaluation
+records by the reproduction program, so the numbers can be checked line by
+line against the analysis artefacts.
+
+\subsection{Static width selection}
+
+The protocol freezes the static width with the best Sharpe ratio on the
+training split. Table~\ref{tab:appendix-static-train} reports the three widths
+on the training windows and Table~\ref{tab:appendix-static-eval} their
+evaluation counterparts. The width of $50$ tick spacings wins the training
+selection, and its evaluation row is the frozen comparator used in the main
+text; the width of $250$ would have scored better on the evaluation year,
+which is exactly the selection risk the pre-registered rule guards against.
+
+\input{generated/appendix_static.tex}
+
+\subsection{The scripted recentring rules}
+
+The ladder's two active rules complete the comparison. Both recentre the band
+when the price moves; one does so whenever the price leaves the live band, the
+other at most daily and only when the estimated fee gain covers gas. Table
+\ref{tab:appendix-extra} reports their means, and their per-window rows are in
+Appendix~\ref{app:results}. They are the empirical case against timing on this
+pool: high fee income, larger realised losses.
+
+\input{generated/appendix_extra.tex}
+
+\subsection{Friction ablation}
+
+The friction ablation removes one cost term at a time from the same backtest
+ledger, so the differences are exact. Table
+\ref{tab:appendix-friction-wide} runs it on a one-shot band, Table
+\ref{tab:appendix-friction-tau} on the recentring rule, and Table
+\ref{tab:appendix-friction-contrast} repeats the first on the higher fee tier.
+Removing impermanent loss moves the one-shot band by thousands of USDC and the
+recentring rule by tens of thousands, while gas and slippage together move the
+one-shot band by less than forty. The cost that decides the result is the loss
+to arbitrage, not execution.
+
+\input{generated/appendix_friction.tex}
+
+\subsection{Fee-tier contrast}
+
+Table~\ref{tab:appendix-contrast} repeats the whole rule ladder on the
+$0.30\,\%$ pool. The fee tier is the one axis that flips the sign of the
+passive arithmetic: the wide, full-range and static bands finish ahead of the
+opening basket, while both recentring rules still lose several thousand USDC.
+The contrast pool's tape is smaller and its regime path is not identical to
+the primary pool's, so the comparison is between fee tiers on the same
+recorded year, not a controlled experiment on one tape.
+
+\input{generated/appendix_contrast.tex}
+
+\subsection{Boundary sweep}
+
+The sweep reruns the ladder at a quarter and four times the recorded gas cost
+and at a tenth and ten times the capital. Table~\ref{tab:appendix-lvr} first
+records the market state of each window: annualised realised volatility,
+swap notional, and the analytical full-range LVR floor. The four level tables
+then report the reruns. Two findings stand out. First, no gas price or capital
+level turns either recentring rule positive; cheap execution alone does not
+revive timing, and a larger book scales fees and losses together. Second, the
+best validation seed's (seed 3) Sharpe ratio stays between $1.40$ and $1.46$
+at every level, so its risk-adjusted result is not an artefact of the tested
+cost range.
+
+\input{generated/appendix_boundary.tex}
+
+\subsection{Regime-feature ablation}
+
+The final probe retrains the same recipe across the five seeds with the regime
+slot of the observation frozen to a constant. Table
+\ref{tab:appendix-noregime} reports the arm. Its mean Sharpe is $0.837$ against
+$0.563$ with the live feature, a paired difference of $+0.274$ whose interval
+$[-0.13,+0.68]$ includes zero, while its mean CVaR is \usdc{-32.89} against
+\usdc{-27.63}, a difference of \usdc{-5.26} with interval $[-6.21,-4.22]$ that
+excludes zero. The live label therefore buys tail protection without a
+detectable return cost. The arm also diverges more across seeds: one seed
+never deploys, two widen to the $1000$-spacing band, and the seed with the
+highest validation score finishes worst out of sample.
+
+\input{generated/appendix_noregime.tex}

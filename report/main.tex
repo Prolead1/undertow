@@ -19,7 +19,8 @@
 \usepackage{caption}
 \usepackage{titlesec}
 
-\setstretch{1.25}
+% Submission format: the course requires a double-spaced A4 report.
+\doublespacing
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{0.7em plus 0.15em minus 0.1em}
 
@@ -88,6 +89,9 @@
 concentrated liquidity, market making, loss-versus-rebalancing, impermanent
 loss, risk-sensitive reinforcement learning.
 
+\clearpage
+\tableofcontents
+
 \input{sections/01_introduction}
 \input{sections/02_background}
 \input{sections/03_related_work}
@@ -98,7 +102,18 @@ loss, risk-sensitive reinforcement learning.
 \input{sections/08_discussion}
 \input{sections/09_conclusion}
 
+\clearpage
 \bibliographystyle{IEEEtran}
 \bibliography{references}
+
+\clearpage
+\appendix
+\input{sections/A0_notation}
+\input{sections/A1_data}
+\input{sections/A2_derivations}
+\input{sections/A3_system_spec}
+\input{sections/A4_results_full}
+\input{sections/A5_ablations}
+\input{sections/A6_reproducibility}
 
 \end{document}

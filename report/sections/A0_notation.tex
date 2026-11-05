@@ -1,0 +1,71 @@
+\section{Notation and Glossary}
+\label{app:notation}
+
+Table~\ref{tab:notation} collects the symbols used in the derivations and the
+results. All monetary quantities are in USDC, the pool's token0, unless a
+caption says otherwise; prices are quoted in USDC per WETH, so a rise in
+$P_t$ is an appreciation of the risky asset.
+
+\begin{table}[tbp]
+\caption{Notation. Subscript $t$ marks a quantity at decision or event time
+$t$; the pool's discrete event index advances one row at a time through the
+recorded tape.}
+\label{tab:notation}
+\centering
+\small
+\begin{tabular}{@{}L{0.20\linewidth}L{0.72\linewidth}@{}}
+\toprule
+\textbf{Symbol} & \textbf{Meaning} \\
+\midrule
+$P_t$ & pool price at time $t$, in USDC per WETH \\
+$P_t^{\mathrm{ref}}$ & reference exchange price used for the as-of join \\
+$s_t$, $\sqrt{p}_t$ & square-root price, the pool's native coordinate \\
+$i_t$ & tick index, monotone in the price; the engine maps between the two with the pool's decimals \\
+$L$ & liquidity of a position, in the contract's integer units \\
+$x_t,\,y_t$ & position amounts of USDC, the numeraire (token0), and WETH, the risky asset (token1) \\
+$[i_\ell,\,i_u]$ & lower and upper tick of the live band \\
+$c_t$ & centre of the band, in tick-spacing units from the current tick \\
+$w_t$ & half-width of the band, in tick-spacing units \\
+$\kappa_t$ & indicator that the agent acts (recentres) at time $t$ \\
+$h_t$ & hedge ratio: short notional as a fraction of the LP's WETH delta \\
+$W_0$ & initial capital, \usdc{100000} per episode \\
+$V_t$ & mark value of the liquidity position \\
+$H_t$ & value of the opening deposit held as tokens, the HODL numeraire \\
+$G_t$ & cumulative gain, $V_t + \text{fees}_t - H_t$ before costs \\
+$f_t$ & fee income earned over step $t$, in USDC \\
+$\iota$ & fee tier, in pips; $0.05\,\%$ is $\iota=500$ \\
+$\sigma$ & annualised realised volatility of the reference price \\
+$\lambda$ & weight on the risk penalty in the reward \\
+$\alpha$ & CVaR level; the study reports $\alpha = 0.95$ \\
+$\mathrm{CVaR}_\alpha$ & conditional value-at-risk at level $\alpha$ \\
+$\gamma$ & discount factor \\
+$g_t$ & gas paid at time $t$, in USDC \\
+$S_t$ & slippage paid at time $t$, in USDC \\
+$\pi_t$ & mark PnL of the short perpetual position \\
+$\phi_t$ & funding paid or received on the short \\
+$\tau_t$ & taker cost of adjusting the short \\
+$\Delta$ & difference operator, $\Delta X_t = X_t - X_{t-1}$ \\
+$\delta$ & half-width of a band in log-price (Appendix~\ref{app:derivations}) \\
+$\kappa$ & concentration factor of a band relative to the full range \\
+$\mathrm{LVR}$ & loss-versus-rebalancing rate of the position \\
+$\mathcal{T}$ & one decision interval, ten minutes in the study \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The report uses the following abbreviations. An automated market maker (AMM)
+quotes prices from a deterministic rule instead of an order book; Uniswap~v3
+is the concentrated-liquidity AMM studied here\cite{adams2021uniswap}. A
+liquidity provider (LP) supplies the pool. Loss-versus-rebalancing (LVR) is
+the arbitrage loss the LP bears when the pool price is stale relative to the
+wider market\cite{milionis2022lvr}; impermanent loss (IL) is the same gap
+measured against a passive holding. A Markov decision process (MDP) is the
+sequential-decision model. Proximal policy optimization (PPO) is the training
+algorithm\cite{schulman2017ppo} and generalized advantage estimation (GAE)
+supplies its advantage estimates\cite{schulman2015gae}. Conditional
+value-at-risk (CVaR) at level $\alpha$ is the mean of the worst
+$1-\alpha$ fraction of outcomes; value-at-risk (VaR) is the corresponding
+quantile\cite{rockafellar2000cvar}. Total value locked (TVL) is the value of
+assets in a pool, maximal extractable value (MEV) is the profit available to
+block builders from ordering transactions, and a perpetual swap (perp) is the
+derivative used for the hedge.
