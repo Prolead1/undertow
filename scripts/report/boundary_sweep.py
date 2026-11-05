@@ -184,7 +184,11 @@ for axis in ("gas", "capital"):
     for level in sorted({r["level"] for r in rows if r["axis"] == axis}):
         parts = []
         for name in POLICIES:
-            sub = [r for r in rows if r["axis"] == axis and r["level"] == level and r["policy"] == name]
+            sub = [
+                r
+                for r in rows
+                if r["axis"] == axis and r["level"] == level and r["policy"] == name
+            ]
             parts.append(
                 f"{name}: pnl={mean(sub, 'total_pnl'):9.0f} "
                 f"sharpe={mean(sub, 'sharpe'):6.2f} net={mean(sub, 'net'):8.0f}"
@@ -192,7 +196,10 @@ for axis in ("gas", "capital"):
         print(f"{axis:<8} {level:<12} | " + " | ".join(parts), flush=True)
 
 # LVR versus default-band fee income, from the main run's decomposition.
-main = list(csv.DictReader(open("results/eth_usdc_500_joint_rl/analysis/windows.csv")))
+with Path("results/eth_usdc_500_joint_rl/analysis/windows.csv").open(
+    newline="", encoding="utf-8"
+) as handle:
+    main = list(csv.DictReader(handle))
 print("\n=== window LVR vs default-band fee income ===", flush=True)
 for index in range(1, 14):
     hodl = next(r for r in main if r["policy"] == "hodl" and int(r["window"]) == index)

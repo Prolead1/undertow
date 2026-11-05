@@ -15,8 +15,8 @@ from __future__ import annotations
 import argparse
 import csv
 import statistics
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any, Iterable, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 RESULTS = ROOT / "results"
@@ -72,10 +72,7 @@ def mean(values: Iterable[float]) -> float:
 def num(value: float, *, decimals: int = 0, signed: bool = True) -> str:
     """Format a number for the appendix tables (thin-space thousands)."""
     rounded = round(value, decimals)
-    if decimals:
-        text = f"{rounded:,.{decimals}f}"
-    else:
-        text = f"{rounded:,.0f}"
+    text = f"{rounded:,.{decimals}f}" if decimals else f"{rounded:,.0f}"
     text = text.replace(",", r"\,")
     if signed and not text.startswith("-"):
         text = "+" + text
@@ -281,7 +278,9 @@ def generate(out_dir: Path = OUT_DIR) -> list[Path]:
         "hedged_hodl_1.0",
     ):
         parts.append(
-            make_policy_windows_table(joint, policy, label=f"tab:appendix-{policy.replace('.', '-')}")
+            make_policy_windows_table(
+                joint, policy, label=f"tab:appendix-{policy.replace('.', '-')}"
+            )
         )
     for seed in range(5):
         parts.append(

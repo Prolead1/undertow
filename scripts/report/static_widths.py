@@ -10,6 +10,7 @@ passive LP benchmarks.
 
 import csv
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 from undertow.sim.backtest import run_backtest
@@ -92,7 +93,7 @@ with OUT.open("w", newline="", encoding="utf-8") as handle:
     writer.writerows(rows)
 
 
-def mean(values):
+def mean(values: Sequence[float]) -> float:
     return sum(values) / len(values)
 
 
@@ -101,10 +102,14 @@ for split in ("train", "eval"):
     for width in (50, 250, 1000):
         sub = [r for r in rows if r["split"] == split and r["width"] == width]
         print(
-            f"{split:<5} w{width:<5} n={len(sub):2d} pnl={mean([r['total_pnl'] for r in sub]):9.0f} "
-            f"sharpe={mean([r['sharpe'] for r in sub]):7.3f} mdd={mean([r['max_drawdown'] for r in sub]):7.4f} "
-            f"cvar={mean([r['cvar_95'] for r in sub]):8.2f} fees={mean([r['total_fees'] for r in sub]):8.0f} "
-            f"il={mean([r['total_il'] for r in sub]):8.0f} net={mean([r['net'] for r in sub]):8.0f}",
+            f"{split:<5} w{width:<5} n={len(sub):2d} "
+            f"pnl={mean([r['total_pnl'] for r in sub]):9.0f} "
+            f"sharpe={mean([r['sharpe'] for r in sub]):7.3f} "
+            f"mdd={mean([r['max_drawdown'] for r in sub]):7.4f} "
+            f"cvar={mean([r['cvar_95'] for r in sub]):8.2f} "
+            f"fees={mean([r['total_fees'] for r in sub]):8.0f} "
+            f"il={mean([r['total_il'] for r in sub]):8.0f} "
+            f"net={mean([r['net'] for r in sub]):8.0f}",
             flush=True,
         )
 print(f"\nDONE t={time.time()-t0:.0f}s -> {OUT}", flush=True)

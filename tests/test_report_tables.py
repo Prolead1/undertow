@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 import importlib.util
 import sys
 from pathlib import Path
@@ -194,10 +193,18 @@ def test_generate_writes_every_fragment(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(tables, "CONTRAST", contrast)
     monkeypatch.setattr(tables, "NOREGIME", noregime)
 
-    joint_policies = (
-        "hodl,passive_narrow,passive_wide,full_range_v2,hedged_hodl_1.0,"
-        "ppo_s0,ppo_s1,ppo_s2,ppo_s3,ppo_s4"
-    ).split(",")
+    joint_policies = [
+        "hodl",
+        "passive_narrow",
+        "passive_wide",
+        "full_range_v2",
+        "hedged_hodl_1.0",
+        "ppo_s0",
+        "ppo_s1",
+        "ppo_s2",
+        "ppo_s3",
+        "ppo_s4",
+    ]
     window_header = "policy,window,regime,total_pnl,sharpe,max_drawdown,cvar_95,net"
     _write_csv(
         joint / "windows.csv",
@@ -221,7 +228,7 @@ def test_generate_writes_every_fragment(tmp_path, monkeypatch) -> None:
             for policy in ("static_w50", "static_w250", "static_w1000")
         ],
     )
-    boundary_policies = "hodl,passive_wide,tau_reset,cost_aware,ppo_s3".split(",")
+    boundary_policies = ["hodl", "passive_wide", "tau_reset", "cost_aware", "ppo_s3"]
     _write_csv(
         joint / "boundary_sweep.csv",
         "axis,level,policy,window,regime,total_pnl,sharpe,cvar_95,n_rebalances,sigma,volume,lvr_usdc",

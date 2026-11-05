@@ -81,7 +81,11 @@ for name, policy in policies:
             if decision.height
             else None
         )
-        band = int(rebalance["width"][0]) if rebalance is not None and rebalance.height else -1
+        band = (
+            int(rebalance["width"][0])
+            if rebalance is not None and rebalance.height
+            else -1
+        )
         rows.append(
             {
                 "policy": name,
@@ -101,7 +105,11 @@ for name, policy in policies:
             f"sharpe={rows[-1]['sharpe']:7.3f} cvar={rows[-1]['cvar_95']:8.2f}",
             flush=True,
         )
-    print(f"policy {name:<14} done t={time.time() - t0:.0f}s (+{time.time() - t_pol:.0f}s)", flush=True)
+    print(
+        f"policy {name:<14} done t={time.time() - t0:.0f}s "
+        f"(+{time.time() - t_pol:.0f}s)",
+        flush=True,
+    )
 
 OUT.parent.mkdir(parents=True, exist_ok=True)
 with OUT.open("w", newline="", encoding="utf-8") as handle:
@@ -115,7 +123,10 @@ def mean(values: list[float]) -> float:
 
 
 print("\n=== 0.30 % contrast, mean over 13 eval windows ===", flush=True)
-print("policy          pnl     sharpe   maxdd   cvar95  nreb  band  fees      il       net", flush=True)
+print(
+    "policy          pnl     sharpe   maxdd   cvar95  nreb  band  fees      il       net",
+    flush=True,
+)
 for name, _ in policies:
     sub = [r for r in rows if r["policy"] == name]
     bands = Counter(r["band"] for r in sub)

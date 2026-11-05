@@ -5,9 +5,9 @@ results/eth_usdc_500_joint_rl/analysis/windows.csv and prints summary tables.
 """
 
 import csv
-import json
 import time
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 
 from undertow.sim.backtest import run_backtest
@@ -22,8 +22,8 @@ from undertow.sim.marketview import load_market_view
 from undertow.sim.metrics import cvar_of_equity_changes, max_drawdown, sharpe_ratio
 from undertow.sim.policies import (
     FullRangeV2Policy,
-    HODLPolicy,
     HedgedHODLPolicy,
+    HODLPolicy,
     PassiveNarrowPolicy,
     PassiveWidePolicy,
 )
@@ -64,9 +64,17 @@ for name, policy in policies:
         equity, dec, _curve = _joint_accounting(ledger)
         capital = float(ledger.initial_capital)
         decision = ledger.decision_log
-        rebalance = decision.filter(decision["action_type"] == "rebalance") if decision.height else None
+        rebalance = (
+            decision.filter(decision["action_type"] == "rebalance")
+            if decision.height
+            else None
+        )
         band = int(rebalance["width"][0]) if rebalance is not None and rebalance.height else None
-        ratios = Counter(float(v) for v in decision["hedge_ratio"].to_list()) if decision.height else Counter()
+        ratios = (
+            Counter(float(v) for v in decision["hedge_ratio"].to_list())
+            if decision.height
+            else Counter()
+        )
         row = {
             "policy": name,
             "window": index + 1,
@@ -88,7 +96,11 @@ for name, policy in policies:
             **{k: float(v) for k, v in dec.items()},
         }
         rows.append(row)
-    print(f"policy {name:<15} done t={time.time()-t_start:.0f}s (+{time.time()-t_pol:.0f}s)", flush=True)
+    print(
+        f"policy {name:<15} done t={time.time()-t_start:.0f}s "
+        f"(+{time.time()-t_pol:.0f}s)",
+        flush=True,
+    )
 
 columns = list(rows[0].keys())
 with (OUT_DIR / "windows.csv").open("w", newline="", encoding="utf-8") as handle:
@@ -97,11 +109,13 @@ with (OUT_DIR / "windows.csv").open("w", newline="", encoding="utf-8") as handle
     writer.writerows(rows)
 
 
-def mean(values):
+def mean(values: Sequence[float]) -> float:
     return sum(values) / len(values)
 
 
-def boot_ci(values, reps=10000, seed=7):
+def boot_ci(
+    values: Sequence[float], reps: int = 10000, seed: int = 7
+) -> tuple[float, float]:
     import random
 
     rng = random.Random(seed)
@@ -128,7 +142,10 @@ for name, _ in policies:
         flush=True,
     )
 
-print("\n=== paired per-window differences vs ppo_s3 (95% bootstrap CI over windows) ===", flush=True)
+print(
+    "\n=== paired per-window differences vs ppo_s3 (95% bootstrap CI over windows) ===",
+    flush=True,
+)
 base = {r["window"]: r for r in rows if r["policy"] == "ppo_s3"}
 for name, _ in policies:
     if name == "ppo_s3":
@@ -170,7 +187,8 @@ for name, _ in policies:
             continue
         parts.append(
             f"{regime}: n={len(rs)} pnl={mean([r['total_pnl'] for r in rs]):8.0f} "
-            f"sharpe={mean([r['sharpe'] for r in rs]):6.2f} cvar={mean([r['cvar_95'] for r in rs]):7.1f}"
+            f"sharpe={mean([r['sharpe'] for r in rs]):6.2f} "
+            f"cvar={mean([r['cvar_95'] for r in rs]):7.1f}"
         )
     print(f"{name:<15} " + " | ".join(parts), flush=True)
 
