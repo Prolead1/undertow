@@ -119,13 +119,11 @@ A rebalance converts inventory and pays for the privilege. Writing $V_t$ for the
 position value, $H_t$ for the fixed value of the opening deposit held
 passively, and the hedge cash flows as mark PnL $\pi_t$, funding $\phi_t$ and
 perp cost $\tau_t\le 0$, the reward is
-\begin{align}
-r_t = \frac{1}{W_0}\Big(
-  & \mathrm{fees}_t - \mathrm{gas}_t - \mathrm{slip}_t
-    + \Delta(V_t - H_t) \notag \\
-  & + \pi_t + \phi_t + \tau_t - \lambda\,\hat{c}_t \Big),
+\begin{equation}
+r_t = \frac{1}{W_0}\Big(\mathrm{fees}_t - \mathrm{gas}_t - \mathrm{slip}_t
+  + \Delta(V_t - H_t) + \pi_t + \phi_t + \tau_t - \lambda\,\hat{c}_t\Big),
 \label{eq:reward}
-\end{align}
+\end{equation}
 whose terms are defined in Table~\ref{tab:reward}. Dividing by the initial
 capital $W_0$ keeps value targets at a workable scale without hiding any cost.
 The excess is measured against the \emph{fixed} opening basket: $H_t$ is never
