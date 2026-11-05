@@ -4,10 +4,8 @@
 The four questions are answered in the order they were posed, on the
 $0.05\,\%$ (500 pips) ETH/USDC pool, over the thirteen windows of 2024 that
 no policy saw during training, and across five seeds where a learned policy
-is involved. Every number is measured on the exact backtester, with the
-frictions of the testbed charged on whichever leg is active. The tables
-name the window count and the units; the prose below interprets them rather
-than repeating them.
+is involved. Every statistic is measured on the exact backtester, with the
+frictions of the testbed charged on whichever leg is active.
 
 \subsection{Where the fees fail}
 
@@ -19,14 +17,14 @@ in deficit for every passive rule. The deficit narrows with the band, but it
 does not change sign: the best passive rule still finishes below the pure
 buy-and-hold basket.
 
-Concentration does exactly what the bargain advertises and no more. The fee
-and impermanent-loss columns of Table~\ref{tab:decomposition} rise and fall
-together as the band narrows, and their ratio stays close to flat across the
-span of widths. Concentrating capital raises both terms together and leaves
-the shortfall in place; what changes is the variance of the outcome, not its
-sign.
+Concentration changes the scale of the trade-off but not its direction. As
+the band narrows, both fee income and the magnitude of impermanent loss grow
+in rough proportion: their ratio stays close to flat across the span of widths
+in Table~\ref{tab:decomposition}. Concentrating capital therefore raises both
+terms together and leaves the shortfall in place; what changes is the
+variance of the outcome, not its sign.
 
-The windows agree with the average. The final column of
+The window-level results support the aggregate pattern. The final column of
 Table~\ref{tab:decomposition} counts the windows in which each passive rule's
 liquidity leg is negative; the count falls as the band widens but never
 reaches zero. The losses cluster where the price trends or jumps, while in
@@ -34,17 +32,17 @@ the range-bound windows the sign flips and fees cover the shortfall with room
 to spare. The regime split of Table~\ref{tab:regimes} shows the same pattern
 from the other direction.
 
-Acting does not repair the arithmetic; it deepens it. The two rebalancing
+Active rebalancing does not repair the arithmetic; it deepens it. The two rebalancing
 rules in Table~\ref{tab:decomposition} buy far more fee income than any
 one-shot rule by keeping the band close to the price, and they pay more for
 it in realised losses and execution costs, ending further behind the basket
 than every passive rule. \textsf{tau\_reset} loses in every regime; the
 cost-aware rule earns only in the bull windows. On this pool in this year,
 fee income does not pay for the price risk a position carries, and frequent
-action adds cost without changing the sign. Whether a policy can exploit any
-of it is the next question.
+action adds cost without changing the sign. Whether a learned policy can
+exploit this structure is examined next.
 
-The loss that does the damage is the one the position cannot avoid.
+The dominant cost is the one the position cannot avoid.
 Table~\ref{tab:friction} removes one cost term at a time from the same
 ledger. Without impermanent loss the recentring rule flips from a large loss
 to a large gain and the one-shot band gains materially; without gas and
@@ -53,7 +51,7 @@ recovers its execution costs alone. The one-shot rule loses to the basket
 because of price travel, not because of execution, and the recentring rule
 adds execution to a loss it has already made larger.
 
-The fee tier changes the sign. Table~\ref{tab:contrast} and
+A higher fee tier reverses the sign. Table~\ref{tab:contrast} and
 Fig.~\ref{fig:fee-tier} rerun the ladder on the $0.30\,\%$ pool: the wide and
 full-range arms and both static widths finish ahead of the opening basket,
 because a larger fee per unit of volume finally covers the loss to informed
@@ -155,9 +153,9 @@ collapse was not an optimisation accident. The reward gradient was
 dominated by the decision to act or hold, and the observation gave the
 policy no way to see where the price sat inside its band.
 
-The repairs were applied in sequence rather than as a factorial ablation,
-so the progression below measures the sequence of repairs, not the marginal
-effect of any single change. Three interface defects were fixed first: the
+The repairs were applied in sequence rather than as a factorial ablation, so
+the evidence measures the cumulative effect of that sequence, not the
+marginal effect of any single change. Three interface defects were fixed first: the
 observation gained the distance to each band edge and the band width; the
 reward was measured against the fixed opening basket instead of a basket
 that moved at each rebalance; and training windows were resampled from
@@ -173,7 +171,8 @@ made every seed hold for the whole episode with zero rebalances and turned a
 strongly negative return into a mildly negative one; the update stayed inside
 its trust region. The policy had learned to do nothing, which tied
 \textsf{hodl}. Reducing the action space to a one-shot band choice and
-lengthening the effective horizon gave the width decision a signal at last.
+lengthening the effective horizon finally gave the width decision a usable
+signal.
 The first pilot that genuinely chose a band matched the full-range rule's PnL
 with a higher Sharpe ratio and beat \textsf{hodl} on both.
 
@@ -183,18 +182,17 @@ that differed by seed. The seed selected on the training curve lost out of
 sample: the objective had never asked for tail protection, and selection had
 used the training return rather than a validation statistic. Adding a penalty
 on the conditional tail of joint equity and selecting checkpoints by
-validation Sharpe produced the final policy whose results fill the rest of
-this section.
+validation Sharpe produced the final policy evaluated below.
 
-The regime label is not what the policy learns from, but it shapes what it
-learns. A second arm trained across the five seeds with the regime feature
+The regime label is an input rather than a target, but it shapes what the
+policy learns. A second arm trained across the five seeds with the regime feature
 frozen to a constant. Its mean Sharpe is numerically higher, but the paired
 difference is indistinguishable from zero at this sample size, while its mean
 CVaR is worse by an interval that excludes zero; the live regime feature
 therefore buys tail protection rather than return. The ablated seeds also
 diverge more, from one that never deploys to two that widen to the
 $1000$-spacing band, and the arm's best validation seed finishes worst out of
-sample: the selection signal is thin even when the policy learns.
+sample: the selection signal remains weak even for a policy that learns.
 Appendix~\ref{app:ablations} reports the arm in full.
 
 \begin{figure}[tbp]
@@ -209,7 +207,7 @@ lose less.}
 
 \subsection{Whether one policy does better}
 
-The pre-registered comparison runs against the strongest hand-written
+The pre-registered comparison is made against the strongest hand-written
 rules, the best static width chosen on the training split, and a hedged
 benchmark with a matched delta. Table~\ref{tab:aggregate} sets out the
 levels and Table~\ref{tab:paired} the paired per-window differences that
@@ -226,8 +224,8 @@ best static width on the return axis.}
 \label{fig:risk-return}
 \end{figure}
 
-Start with the frozen comparator. On the training split the narrowest of the
-three width arms had the best Sharpe, so the protocol froze it;
+The frozen comparator provides the first test. On the training split the
+narrowest of the three width arms had the best Sharpe, so the protocol froze it;
 Appendix~\ref{app:ablations} lists the training and evaluation scores. The
 learned mean loses to that frozen width on the evaluation windows: the paired
 Sharpe difference is $-0.733$ with an interval of $[-1.355,-0.041]$ that
@@ -240,22 +238,22 @@ paired differences: every CVaR difference against an unhedged benchmark is
 positive with an interval that excludes zero. Against the delta-matched hedge
 the clause fails, with a paired interval that excludes zero in the other
 direction. Both clauses of the rule must hold for a positive verdict, so the
-study reports none. The evidence supports a reduction in tail risk, not a
+pre-registered rule yields none. The evidence supports a reduction in tail risk, not a
 superior return.
 
-The mean hides the best seed. The seed with the highest validation Sharpe
-during training deployed the $250$-spacing band for every window and held it;
+Aggregation across seeds obscures the strongest individual policy. The seed
+with the highest validation Sharpe during training deployed the
+$250$-spacing band for every window and held it;
 its row in Table~\ref{tab:aggregate} is the best seed. Its Sharpe is
 statistically indistinguishable from the frozen width while its CVaR is
 better by an interval that excludes zero, and it beats the delta-matched
 hedge on Sharpe while losing to it on CVaR. A single seed is not the
 pre-registered unit, and a seed chosen after seeing the evaluation windows
-could not carry the verdict. That seed did have the best validation Sharpe of
-the five on the training split, so at least its selection did not use the
-evaluation year.
+cannot carry the verdict. That seed did have the best validation Sharpe of the
+five on the training split, so its selection did not use the evaluation year.
 
-The seeds agree on the timing decision and disagree on width and hedge. Every
-seed deploys once, at the start of the episode, and holds:
+The seeds agree on timing and disagree on width and hedge. Every seed
+deploys once, at the start of the episode, and holds:
 Table~\ref{tab:actions} records one rebalance per episode for all five, with
 seed zero on the narrow band, three seeds on the $250$-spacing band in every
 window, and seed one on the $250$-spacing band in all but a single window. The
@@ -276,11 +274,11 @@ spent at each short ratio.}
 \end{figure}
 
 The worst window for the one-shot rules and the learned mean is the single
-high-volatility window, which Table~\ref{tab:regimes} returns to below. Raw
-PnL tells the same story as the tail across the year, and no paired PnL
-difference against the ladder excludes zero except the comparison with
-\textsf{tau\_reset}, so the return evidence is inconclusive at this sample
-size.
+high-volatility window; Table~\ref{tab:regimes} reports its PnL and tail loss
+by regime. Raw PnL and tail risk rank the policies consistently across the
+year. No paired PnL difference against the ladder excludes zero except the comparison
+with \textsf{tau\_reset}, so the return evidence remains inconclusive at this
+sample size.
 
 \begin{table}[tbp]
 \caption{Performance in the 2024 evaluation on the $0.05\,\%$ (500 pips) ETH/USDC
@@ -359,35 +357,35 @@ Every seed rebalanced exactly once per episode.}
 
 \subsection{Where active management pays}
 
-The regime map is the last answer, and it maps insurance rather than
-outperformance. Table~\ref{tab:regimes} splits the evaluation windows by
-their dominant label. The counts are uneven by construction, with five
+The regime split provides the final answer, and it identifies insurance
+rather than outperformance as the value of the hedge. Table~\ref{tab:regimes}
+splits the evaluation windows by their dominant label. The counts are uneven by construction, with five
 bear and five bull windows, two sideways windows and a single
 high-volatility window, so the high-volatility row of the table is a case
 study rather than a distribution.
 
-The quiet windows pay for feet that stay still. The sideways row of
-Table~\ref{tab:regimes} shows the one-shot bands earning their fee income
+In the quiet windows, passive holding is the better choice. The sideways row
+of Table~\ref{tab:regimes} shows the one-shot bands earning their fee income
 while the delta-matched hedge subtracts from the result; the learned seed
 keeps only a fraction of the available return. Fee income is at its most
 reliable when the price does not travel, and in those windows every unit of
 hedge costs more than it protects.
 
-The trending windows split by direction. In the bull row the full range earns
-the largest PnL while the learned seed gives up part of the rally: that is
-what a short does. In the bear row the ordering changes. The wide band gains
-by holding USDC through the fall, while the learned seed carries the best
-risk-adjusted profile on the panel and a bear CVaR far smaller than
-\textsf{hodl}'s. The tail panel of the table, not the PnL panel, is where the
-learned policy's bear case is made.
+The trending windows behave differently by direction. In the bull row the
+full range earns the largest PnL, while the learned seed gives up part of the
+rally through its short. In the bear row the ordering changes. The wide band
+gains by holding USDC through the fall, while the learned seed carries the
+best risk-adjusted profile on the panel and a bear CVaR far smaller than
+\textsf{hodl}'s. The learned policy's bear-market advantage lies in the tail
+panel rather than in the PnL panel.
 
 The single high-volatility window is where active management earns its
 premium. Every unhedged rule loses heavily; the learned seed loses roughly a
 quarter of the \textsf{hodl} loss and carries a much smaller tail, and no
 policy's Sharpe is positive there. The delta-matched hedge loses the least
-and makes the stressed quarter hurt least, at the largest hedge cost over the
-year. Widening the band or hedging the delta makes the stress hurt less;
-neither choice pays for itself in the quiet ones.
+and produces the smallest loss in the stressed window, at the largest hedge
+cost over the year. Widening the band or hedging the delta reduces the loss
+in stress; neither choice pays for itself in the quiet windows.
 
 The controlled sweep moves along both sides of the boundary.
 Table~\ref{tab:boundary} reruns the ladder at a quarter and four times the
@@ -395,13 +393,13 @@ recorded gas price and at a tenth and ten times the capital. No level turns
 the recentring rules positive in PnL: \textsf{tau\_reset} worsens as gas
 rises, and \textsf{cost\_aware}, whose gate suppresses moves as gas rises,
 stays small but negative across the gas levels. Cheap execution does not
-revive timing, and a larger book does not either, because fees and
+revive timing, and a larger book does not revive it either, because fees and
 impermanent loss scale with it while the fixed gas advantage stays small. The
 learned seed deploys once at every level and holds, with a stable Sharpe
 ratio.
 
-The fee tier is the axis that moves the passive sign, and the analytical LVR
-rate says why. With $0.125\,\sigma^2 V t$ as the floor under the value a
+The fee tier is the axis that reverses the passive sign, and the analytical
+LVR rate explains why. With $0.125\,\sigma^2 V t$ as the floor under the value a
 liquidity position loses to arbitrage\cite{milionis2022lvr}, the opening
 band's fee income covers that floor in every full window, and in the partial
 final window once the floor is scaled to its shorter length; the thinnest

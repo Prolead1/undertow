@@ -3,22 +3,22 @@
 
 \subsection{The boundary the windows draw}
 
-The four answers converge on a single boundary, and stress draws it. Passive
-provision paid in the quiet windows, where fee income is reliable and the
-unhedged bands keep it. Breadth mattered more than action in the trending
+The four answers converge on a single boundary that stress conditions
+define. Passive provision paid in the quiet windows, where fee income is
+reliable and the unhedged bands keep it. Breadth mattered more than action in the trending
 windows, because a wide band carries the market exposure that a narrow band
 sells away. The one high-volatility window reversed the ordering: the unhedged
 rules lost heavily, while the hedged and wider positions lost less. The
 learned policy sits on the defensive side of that boundary, and the premium it
 pays is visible in every calm window. Judged on tail risk the boundary moves
 in its favour; judged on PnL it stays with the passive bands.
-Table~\ref{tab:regimes} carries the numbers behind each clause.
+Table~\ref{tab:regimes} reports the PnL and tail loss behind each clause.
 
-The regime labels carry only the windows they label, and one
-high-volatility window cannot estimate a regime. The map is a description
-of the evaluation year, not a fitted boundary, and the study's inference
-rests on the paired intervals of the primary statistics rather than on any
-single regime cell.
+Each regime label applies only to the windows assigned to it, and a single
+high-volatility window cannot characterise a regime. The map is therefore a
+description of the evaluation year, not a fitted boundary, and the study's
+inference rests on the paired intervals of the primary statistics rather than
+on any single regime cell.
 
 \subsection{What the hedge buys and costs}
 
@@ -33,7 +33,8 @@ and no premium, and the two rebalancing rules trade at similar tails. Across
 the compared policies the ordering is monotone in protection and in cost.
 Funding was positive on average at every point because the short collected it;
 the mark loss on a short in a rising market and the perp fees outweighed that
-income. Table~\ref{tab:aggregate} carries the levels.
+income. Table~\ref{tab:aggregate} reports the corresponding PnL, Sharpe ratio
+and tail loss.
 
 The hedge does not improve the mean, it reshapes the tail, so its value
 depends on the risk budget the LP is managed against. A mandate that treats
@@ -44,10 +45,10 @@ passes the tail clause is a partial success rather than a failed idea.
 
 \subsection{Why timing collapsed to a deployment decision}
 
-The learned policy never learned to time; its seeds deployed one band and
-held it. The rebalancing benchmarks show why. On this fee tier and in this
-year, frequent recentring realises impermanent loss again and again, and the
-fees collected do not cover it: both active rules finish further behind the
+None of the trained seeds learned to time; each deployed one band and held
+it. The rebalancing benchmarks explain why. On this fee tier and in this
+year, frequent recentring repeatedly realises impermanent loss, and the fees
+collected do not cover it: both active rules finish further behind the
 basket than every one-shot rule, despite trading far more
 (Table~\ref{tab:decomposition}). Timing is not irrelevant in principle; it is
 dominated in this market.
@@ -61,7 +62,7 @@ boundary, and the width choice is the substitute for timing under those
 conditions. The action interface still admits the wider timing grid, so a
 future run can test the shift without a redesign.
 
-The study's evidence has a shape that limits it. The failure modes were
+The evidence base has limits that bound the claims. The failure modes were
 repaired in sequence rather than varied one at a time, so the ablation table
 reports the sequence and three targeted probes, not the marginal effect of
 every design choice. The boundary is drawn from the realised 2024 windows on
