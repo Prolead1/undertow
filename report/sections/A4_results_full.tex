@@ -1,0 +1,17 @@
+\section{Complete Per-Window Results}
+\label{app:results}
+
+The main body reports means over the evaluation windows. This appendix reports
+every window for every rule so a reader can see the dispersion behind each
+mean. Each table gives the window number, its dominant regime, PnL in USDC,
+the annualised Sharpe ratio, maximum drawdown as a percentage of capital, CVaR
+at the $5\,\%$ level in USDC per tape event, and the liquidity leg's net excess
+over the opening basket. The windows are the same for every rule; the final
+window is the five-day partial period, which is why its magnitudes are smaller.
+
+The tables cover the five benchmark rules, the five learned seeds of the main
+run, and the two scripted recentring rules that complete the pre-registered
+ladder. The learned seeds are evaluated at the checkpoint selected by
+validation Sharpe on the training lane, never on these windows.
+
+\input{generated/appendix_windows.tex}

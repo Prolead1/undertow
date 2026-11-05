@@ -1,0 +1,125 @@
+\section{Reproducibility}
+\label{app:repro}
+
+\subsection{Software}
+
+The project is written in Python 3.14 and managed with \texttt{uv}, which pins
+the environment from a lock file. The simulation and learning stack uses
+\texttt{numpy}, \texttt{polars} and \texttt{pyarrow} for data handling,
+\texttt{gymnasium} for the environment interface\cite{towers2024gymnasium},
+and \texttt{stable-baselines3} for the PPO trainer\cite{raffin2021stablebaselines3}.
+The report is built from LaTeX with a wrapper that selects among
+\texttt{tectonic}, \texttt{latexmk} and \texttt{pdflatex}.
+
+\subsection{Program inventory}
+
+Table~\ref{tab:app:programs} lists every program and what it computes. The
+analysis programs are deterministic given the artefacts they read; the
+learning runs are seeded. The repository exposes three console commands (data,
+simulator and dashboard), and the reproduction wrapper
+\texttt{scripts/report/reproduce.sh} is the single main program: it invokes
+the console commands and the analysis programs in order and rebuilds the
+report.
+
+\begin{table}[tbp]
+\caption{Program inventory. Package programs live under \texttt{src/undertow/},
+the analysis programs in \texttt{scripts/report/}, the configurations in
+\texttt{configs/}, and the report tooling in \texttt{report/} and
+\texttt{scripts/}. The analysis programs write the CSV artefacts that the
+appendix tables and the main-body numbers read.}
+\label{tab:app:programs}
+\centering
+\small
+\begin{tabular}{@{}L{0.34\linewidth}L{0.60\linewidth}@{}}
+\toprule
+\textbf{Program} & \textbf{What it computes} \\
+\midrule
+data package & data pipeline: snapshot construction, quality checks and validation reports \\
+simulator package & simulator, exact backtester, parity harness, training and evaluation \\
+dashboard package & live inspection of runs, telemetry and rollouts; not used for any reported result \\
+configuration files & every experiment configuration (pools, splits, grids, costs, training) \\
+\texttt{reproduce.sh} & main reproduction program: runs the stages below in order \\
+\texttt{analyze\_main\_run.py} & main joint run: per-window metrics, paired bootstrap intervals, action mix, per-regime tables, decomposition \\
+\texttt{static\_widths.py} & static one-shot widths on the training and evaluation splits \\
+\texttt{extra\_benchmarks.py} & the two scripted recentring rules on the evaluation windows \\
+\texttt{boundary\_sweep.py} & per-window volatility and volume, gas and capital reruns, analytical LVR \\
+\texttt{contrast\_fee\_tier.py} & the full ladder on the $0.30\,\%$ pool \\
+\texttt{analyze\_regime\_ablation.py} & the regime-feature ablation arm \\
+\texttt{make\_appendix\_tables.py} & every table in Appendices~\ref{app:results} and \ref{app:ablations}, from the CSV artefacts \\
+\texttt{make\_figures.py} & the four story figures of the main body \\
+\texttt{build\_report.sh} & builds the report PDF from the LaTeX sources \\
+\texttt{plagiarism\_check.py} & originality screen against the cited papers and the repository's own prose \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Code and artefact availability}
+
+The complete source code, the tests, the configurations and the LaTeX sources
+of this report are in the public repository at
+\url{https://github.com/Prolead1/undertow}; downloading the repository archive
+provides everything needed to rebuild the report from source. The large binary
+artefacts are published as release assets: the validated dataset snapshots at
+\url{https://github.com/Prolead1/undertow/releases/tag/data-v1} and the
+recorded evaluation outputs, including the trained checkpoints and training
+telemetry, at
+\url{https://github.com/Prolead1/undertow/releases/tag/results-v1}. They are
+excluded from version control because of their size. The archives unpack over
+the repository root:
+
+{\footnotesize
+\begin{verbatim}
+tar -xzf eth_usdc_500-data-v1.tar.gz -C data/datasets
+tar -xzf eth_usdc_3000-data-v1.tar.gz -C data/datasets
+tar -xzf results-v1.tar.gz -C .
+\end{verbatim}
+}
+
+The primary pool's snapshot is approximately $812$\,MB and the contrast
+pool's approximately $293$\,MB, partitioned by stream and block bucket. Each
+carries a manifest with row counts and block ranges and a validation report;
+Appendix~\ref{app:data} summarises both. The reproduction program does not
+re-fetch the data because the fetch step needs API credentials; every reported
+number is produced from the released snapshots and the recorded evaluation
+artefacts under \texttt{results/}.
+
+\subsection{How to run}
+
+From the repository root, the wrapper reproduces the analyses, tables,
+figures, PDF and checks:
+
+{\footnotesize
+\begin{verbatim}
+uv sync
+scripts/report/reproduce.sh            # analyses, tables, figures, PDF, checks
+scripts/report/reproduce.sh --train    # the above, after retraining both arms
+\end{verbatim}
+}
+
+The \texttt{--train} stage retrains the learned policy and the ablation arm;
+it takes several hours on the hardware below. The analyses take under an hour
+in total, and the report build takes seconds.
+
+\subsection{Hardware and runtimes}
+
+The experiments ran on the author's training machine: eight CPU cores,
+$30$\,GB of memory, Linux under WSL2, and a consumer GPU that the training did
+not use. Reference runtimes measured during the study: one training seed of
+one million steps takes about $25$ to $40$ minutes with four parallel
+environment processes, so the main run across five seeds takes roughly two and a half
+hours and the ablation arm about three hours, including the validation scoring
+of every checkpoint. The full evaluation of one configuration over the thirteen
+windows takes a few minutes; the boundary sweep's two hundred and sixty
+reruns take under an hour.
+
+\subsection{Verification}
+
+Three checks keep the reproductions honest. The accounting identity of
+Appendix~\ref{app:system} is asserted on every replay. The parity harness
+bounds the distance between the two engines on the recorded tape. The test
+suite contains more than two thousand three hundred tests covering the data
+boundary, position mathematics, the exact fee engine, the environment,
+training, evaluation and the command-line interfaces, at about $95\,\%$ line
+coverage. The originality screen compares the report's prose with the cited
+papers and the repository's own documents at a threshold of eight consecutive
+words; it reports no external matches.

@@ -109,3 +109,138 @@ name = "repo-agents"
 group = "internal"
 kind = "text"
 path = "AGENTS.md"
+
+# -- Additional cited papers (S23 literature expansion) ----------------------
+
+[[sources]]
+name = "heimbach2022risks"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2205.08904"
+file = "heimbach-2022risks.pdf"
+
+[[sources]]
+name = "capponi2021adoption"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2103.08842"
+file = "capponi-2021adoption.pdf"
+
+[[sources]]
+name = "angeris2020improved"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2003.10001"
+file = "angeris-2020improved.pdf"
+
+[[sources]]
+name = "angeris2019analysis"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/1911.03380"
+file = "angeris-2019analysis.pdf"
+
+[[sources]]
+name = "schlegel2022axioms"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2210.00048"
+file = "schlegel-2022axioms.pdf"
+
+[[sources]]
+name = "angeris2023geometry"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2308.08066"
+file = "angeris-2023geometry.pdf"
+
+[[sources]]
+name = "milionis2023fees"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2305.14604"
+file = "milionis-2023fees.pdf"
+
+[[sources]]
+name = "ma2024cost"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2402.18256"
+file = "ma-2024cost.pdf"
+
+[[sources]]
+name = "campbell2025optimal"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2508.08152"
+file = "campbell-2025optimal.pdf"
+
+[[sources]]
+name = "xu2021sok"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2103.12732"
+file = "xu-2021sok.pdf"
+
+[[sources]]
+name = "xu2025improving"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/2501.07508"
+file = "xu-2025improving.pdf"
+
+[[sources]]
+name = "gueant2019deep"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/1910.13205"
+file = "gueant-2019deep.pdf"
+
+[[sources]]
+name = "ganesh2019reinforcement"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/1911.05892"
+file = "ganesh-2019reinforcement.pdf"
+
+[[sources]]
+name = "zhang2019deep"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/1911.10107"
+file = "zhang-2019deep.pdf"
+
+[[sources]]
+name = "buehler2018deep"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/1802.03042"
+file = "buehler-2018deep.pdf"
+
+[[sources]]
+name = "tamar2015policy"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/1502.03919"
+file = "tamar-2015policy.pdf"
+
+[[sources]]
+name = "chow2014algorithms"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/1406.3339"
+file = "chow-2014algorithms.pdf"
+
+[[sources]]
+name = "schulman2015gae"
+group = "external"
+kind = "pdf"
+url = "https://arxiv.org/pdf/1506.02438"
+file = "schulman-2015gae.pdf"
+
+# -- Cited works without an open-access corpus copy ---------------------------
+#
+# almgren2001optimal, artzner1999coherent, avellaneda2008high,
+# mihatsch2002risk, rockafellar2000cvar and sutton2018reinforcement are cited
+# from published books or journals with no open-access PDF; the screen covers
+# them through prose review rather than a corpus match.

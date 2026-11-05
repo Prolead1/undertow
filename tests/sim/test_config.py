@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from datetime import UTC, datetime
 from pathlib import Path
@@ -734,6 +735,8 @@ def test_shipped_sim_configs_pair_with_their_data_pools() -> None:
         ("sim_eth_usdc_500_rl.toml", "eth_usdc_500.toml"),
         ("sim_eth_usdc_500_hedged.toml", "eth_usdc_500.toml"),
         ("sim_eth_usdc_500_hedged_risk.toml", "eth_usdc_500.toml"),
+        ("sim_eth_usdc_500_joint_rl.toml", "eth_usdc_500.toml"),
+        ("sim_eth_usdc_500_joint_noregime.toml", "eth_usdc_500.toml"),
         ("sim_eth_usdc_3000.toml", "eth_usdc_3000.toml"),
     ):
         sim = load_sim_config(repo_root / "configs" / sim_name)
@@ -742,6 +745,18 @@ def test_shipped_sim_configs_pair_with_their_data_pools() -> None:
         )
         assert sim.episode.fee_tier_bps == data.pool.fee_tier.value, sim_name
         assert sim.episode.tick_spacing == data.pool.tick_spacing, sim_name
+
+
+def test_ablation_config_only_differs_by_the_regime_gate() -> None:
+    """The ablation arm is the joint recipe with the regime feature gated off."""
+    repo_root = Path(__file__).resolve().parents[2]
+    joint = load_sim_config(repo_root / "configs" / "sim_eth_usdc_500_joint_rl.toml")
+    ablation = load_sim_config(
+        repo_root / "configs" / "sim_eth_usdc_500_joint_noregime.toml"
+    )
+    assert joint.observation.regime_features is True
+    assert ablation.observation.regime_features is False
+    assert dataclasses.replace(ablation, observation=joint.observation) == joint
 
 
 def test_primary_pool_config_carries_the_stabilized_recipe() -> None:

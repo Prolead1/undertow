@@ -1,0 +1,208 @@
+\section{Testbed Specification}
+\label{app:system}
+
+The report's claims rest on two engines and the check between them. This
+appendix specifies both engines, the parity harness, the cost models and the
+learning interface in enough detail to rebuild them.
+
+\subsection{The exact replay engine}
+
+The exact engine consumes the recorded tape at its own event granularity and
+asks the policy for a decision every ten minutes. Each decision is executed at
+the price observed \emph{before} the interval advances, matching the latency a
+live LP faces and keeping the simulator and the backtester on the same
+convention. The engine's state is the pool's integer tick lattice: liquidity
+is minted and burned on the exact ticks the tape reports, and a swap is
+apportioned across every tick segment it crosses. Fee accrual comes from the
+protocol's own fee-growth accumulators, which are 128-bit fixed-point integers
+that increase monotonically with every swap; the position's fee over a step is
+its liquidity multiplied by the change in the inside fee-growth value divided
+by the protocol's $2^{128}$ normalisation, exactly
+as the contract computes it. The ledger therefore satisfies an accounting
+identity by construction,
+
+\begin{equation}
+\text{fees} + \mathrm{IL} - \text{gas} - \text{slippage}
+= \text{strat\-egy excess over the opening basket},
+\label{eq:app-identity}
+\end{equation}
+and the identity is checked at every step of every replay.
+
+Three numerical details matter for exactness. First, liquidity arithmetic is
+done in Python integers, not floats, because a large gross liquidity in
+floating point carries a residue that can round a small delta to zero.
+Second, the initial position is deployed before the first decision for every
+policy, so the HODL benchmark has a definite token mix; the pure basket holds
+the same mix as tokens. Third, a rebalance that the position cannot afford is
+recorded as rejected and the position is held, mirroring an on-chain revert
+rather than forcing a sale.
+
+\subsection{The fast simulator}
+
+Training needs roughly $10^6$ decisions per seed, which the exact engine
+cannot supply within the study's budget. The simulator mirrors the same
+economics in floating point under a marginal-agent assumption: the agent's
+position never moves the pool price, and its fee share is its fraction of the
+active liquidity while in range. This removes the segment-level replay and
+raises throughput by more than an order of magnitude. The simulator runs either
+on the recorded events, the mode used for every result in this report, or on a
+regime-switching jump process calibrated to the training years; the calibrated
+mode is not exercised here because the study keeps the evaluation on recorded
+states.
+
+\subsection{The parity harness}
+
+Two engines are only useful together if their disagreement is bounded. The
+harness feeds both the same prices, positions and gas series and compares fees,
+impermanent loss, PnL, gas and slippage per step against a tolerance of
+$10^{-3}$ USDC. On the recorded data the residual fee drift is on the order of
+$10^{-7}$ USDC per step per seed, recorded with the engine validation
+($8.9\times10^{-8}$, $1.4\times10^{-7}$, $1.0\times10^{-7}$,
+$1.1\times10^{-7}$ for four seeds); impermanent loss matches exactly, and the
+pooled error is dominated by a single seed's tail but remains two orders of
+magnitude inside tolerance.
+
+A separate suite of thirteen look-ahead probes attacks the composed system at
+the seams where a look-ahead error would be easiest to hide: the split wall for
+slice access and tape access, the reference-price wall, the as-of regime
+probe, the gas and observation builders against future mutation, the sentinel
+values, episode truncation and the backtester's own future mutation. All
+thirteen pass on the shipped code.
+
+\subsection{Cost models}
+
+Gas is priced at each block's base fee plus a $3\,\%$ tip surcharge, converted
+at the block's reference ETH price, and charged as representative per-action
+units rather than per-transaction receipts. Table~\ref{tab:app:gas} lists the
+units. Slippage is proportional to the notional actually swapped: the pool fee
+tier plus a fixed five-basis-point impact. The hedge pays a five-basis-point
+taker fee on notional changes and the recorded eight-hour funding rate on the
+short.
+
+\begin{table}[tbp]
+\caption{Cost-model parameters. Gas units are per action and sweepable in the
+configuration; the tip and the slippage impact are the shipped values.}
+\label{tab:app:gas}
+\centering
+\small
+\begin{tabular}{@{}L{0.34\linewidth}L{0.22\linewidth}L{0.36\linewidth}@{}}
+\toprule
+\textbf{Parameter} & \textbf{Value} & \textbf{Charged on} \\
+\midrule
+Mint gas units & $460\,000$ & opening or rebalancing a position \\
+Burn gas units & $215\,000$ & closing the position \\
+Collect gas units & $130\,000$ & fee collection \\
+Rebalance swap units & $150\,000$ & the swap inside a rebalance \\
+Tip surcharge & $3\,\%$ of the base fee & every action \\
+Slippage impact & $5$ basis points & the swapped inventory \\
+Hedge taker fee & $5$ basis points & short notional adjustments \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{The learning interface}
+
+The observation is a fixed-order vector of twenty-four scaled features. Table
+\ref{tab:app:observation} lists them in order. The heavy-tailed dimensions are
+log-compressed so every input reaches the policy at order one. The regime slot
+is the ordinal of the as-of label; the ablation arm in
+Appendix~\ref{app:ablations} freezes that slot to a constant.
+
+\begin{table}[tbp]
+\caption{The observation vector, in order. The right column gives the feature
+in words; the regime slot is the only categorical entry.}
+\label{tab:app:observation}
+\centering
+\small
+\begin{tabular}{@{}rrL{0.62\linewidth}@{}}
+\toprule
+\textbf{\#} & \textbf{Slot} & \textbf{Feature} \\
+\midrule
+1 & price & pool price \\
+2 & sqrt price & square-root price \\
+3 & tick & current tick \\
+4 & $r_{1h}$ & one-hour reference return \\
+5 & $r_{24h}$ & twenty-four-hour reference return \\
+6 & $\sigma_{24h}$ & twenty-four-hour realised volatility \\
+7 & in range & whether the live band covers the price \\
+8 & value & position value in USDC \\
+9 & fees0 & uncollected fees in USDC \\
+10 & fees1 & uncollected fees in WETH \\
+11 & IL & IL against the opening basket, as a fraction of capital \\
+12 & liquidity & active pool liquidity \\
+13 & fee tier & pool fee tier in pips \\
+14 & gas & recent base fee plus priority fee \\
+15 & ETH price & recent reference price \\
+16 & regime & as-of regime ordinal \\
+17 & step & decision index in the episode \\
+18 & remaining & decisions left in the episode \\
+19 & $d_\ell$ & distance to the lower bound, in tick spacings \\
+20 & $d_u$ & distance to the upper bound, in tick spacings \\
+21 & width & band width, in tick spacings \\
+22 & hedge ratio & current short ratio \\
+23 & hedge equity & hedge account equity, as a fraction of capital \\
+24 & funding & recent eight-hour funding rate \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Actions are factored. The general grid pairs nine centre offsets with ten
+widths and a hold option; the study's configuration, after the timing finding,
+restricts the centre to zero and the width to three arms, and adds the hedge
+ratio as an independent head. An action is therefore one of four LP choices
+(hold or one of three widths) crossed with five hedge ratios, a
+$\mathrm{MultiDiscrete}([4,5])$ space. Table~\ref{tab:app:action} lists the
+arms.
+
+\begin{table}[tbp]
+\caption{The restricted action grid of the study. Widths are half-widths in
+tick spacings; the hedge ratio is the short notional as a fraction of the LP's
+WETH delta, and it is chosen at every decision.}
+\label{tab:app:action}
+\centering
+\small
+\begin{tabular}{@{}L{0.34\linewidth}L{0.32\linewidth}L{0.28\linewidth}@{}}
+\toprule
+\textbf{Head} & \textbf{Options} & \textbf{Meaning} \\
+\midrule
+LP action & hold, deploy $50$, $250$, $1000$ & deploy once, then hold \\
+Hedge ratio & $0$, $0.25$, $0.5$, $0.75$, $1.0$ & short share of the delta \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Training settings}
+
+Table~\ref{tab:app:training} lists the optimization settings. Five seeds are
+trained per configuration and the checkpoint with the highest validation
+Sharpe on the last 180 days of the training lane is the one evaluated. The
+configuration was fixed before the evaluation year was scored.
+
+\begin{table}[tbp]
+\caption{Optimization settings for every learned policy in the study.}
+\label{tab:app:training}
+\centering
+\small
+\begin{tabular}{@{}L{0.42\linewidth}L{0.50\linewidth}@{}}
+\toprule
+\textbf{Setting} & \textbf{Value} \\
+\midrule
+Algorithm & clipped PPO with GAE \\
+Seeds & $0$ to $4$, trained independently \\
+Timesteps per seed & $1\,000\,000$ \\
+Discount factor $\gamma$ & $0.9999$ \\
+GAE parameter $\lambda_{\mathrm{GAE}}$ & $0.95$ \\
+Clip range $\epsilon$ & $0.15$ \\
+Learning rate & $10^{-4}$ \\
+Batch size & $512$ \\
+Epochs per update & $4$ \\
+Entropy coefficient & $0.001$ \\
+Target KL & $0.01$ \\
+Network & two hidden layers of $256$ units \\
+Parallel environments & $4$, one process each \\
+Checkpoint interval & $100\,000$ steps \\
+Selection metric & validation Sharpe, last $180$ days of training \\
+Risk penalty & CVaR at $5\,\%$, weight $\lambda=0.05$, one-day window \\
+\bottomrule
+\end{tabular}
+\end{table}

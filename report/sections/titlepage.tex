@@ -1,31 +1,81 @@
 \begin{titlepage}
 \thispagestyle{empty}
 \begin{center}
-\vspace*{1.2cm}
+\vspace*{0.6cm}
 
 {\large\scshape Financial Engineering Project\par}
 
-\vspace{3cm}
+\vspace{1.6cm}
 
-{\Huge\bfseries
-Making Concentrated Liquidity Pay\par}
+{\Huge\bfseries Making Concentrated Liquidity Pay\par}
 
-\vspace{0.8cm}
+\vspace{0.6cm}
 
 {\Large\itshape Risk-Sensitive Reinforcement Learning on Uniswap~v3\par}
 
-\vspace{3cm}
+\vspace{1.6cm}
 
-{\LARGE Thaker, Rahul\par}
+{\LARGE Thaker Rahul Dilipkumar\par}
+\vspace{0.3cm}
+{\large Student ID: A0294733W\par}
+{\large Email: \texttt{e1348871@u.nus.edu}\par}
 
-\vspace{1.5cm}
+\vspace{0.5cm}
 
 {\large Risk Management Institute\par}
 {\large National University of Singapore\par}
 
+\vspace{0.9cm}
+
+\begin{minipage}{0.86\linewidth}
+\centering\small
+\begin{tabular}{@{}L{0.62\linewidth}r@{}}
+\toprule
+\textbf{Itemized workload} & \textbf{Hours} \\
+\midrule
+Data collection, ingestion and validation & 45 \\
+Literature review & 35 \\
+Programming: pipeline, simulator, exact engine, RL environment, evaluation, tests, report tooling & 110 \\
+Experiments, analysis, report writing and review & 30 \\
+\midrule
+\textbf{Total workload} & \textbf{220} \\
+\bottomrule
+\end{tabular}
+\end{minipage}
+
+\vspace{0.9cm}
+
+\begin{minipage}{0.92\linewidth}
+\small
+\textbf{Original contribution.} This project has the following original
+contributions:
+\begin{itemize}\setlength\itemsep{0.15em}
+  \item An exact, parity-checked testbed for concentrated-liquidity research:
+  an integer fee-growth replay engine, a fast training simulator, and a harness
+  that bounds their fee drift to about $10^{-7}$ USDC per step on recorded
+  data.
+  \item A joint risk-sensitive reinforcement-learning formulation in which one
+  policy chooses the band width and the hedge ratio, with CVaR used both as a
+  training penalty and as the checkpoint-selection statistic across five seeds.
+  \item The first measurement at the level of a policy, to our knowledge, of
+  learned hedge ratios in concentrated-liquidity provision, replayed against recorded
+  on-chain events with gas, fees and slippage applied to both the liquidity
+  and the hedge leg.
+  \item An empirical active/passive boundary across two fee tiers, with an
+  analytical loss-versus-rebalancing overlay, showing where the fee tier flips
+  the passive sign and why recentring is dominated on the primary pool.
+  \item A diagnostic account of why a standard agent fails on this task, which
+  interface repairs restore learning, and an ablation showing the regime input
+  buys tail protection rather than return.
+\end{itemize}
+\end{minipage}
+
 \vfill
 
-{\large \today\par}
-\vspace*{1.2cm}
+{\small Workload hours are estimated from the repository history (302 commits
+across 30 working days), the code base (about 76\,000 lines including tests)
+and the recorded compute log.\par}
+
+\vspace*{0.5cm}
 \end{center}
 \end{titlepage}
