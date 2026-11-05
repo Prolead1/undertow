@@ -26,8 +26,9 @@ single regime cell.
 \subsection{What the hedge buys and costs}
 
 The hedge is insurance, and the study compares policies that sit at three
-points along the same protection-and-cost trade-off, though not as a
-controlled hedge ablation. At full delta match on the opening band the floor is nearly flat:
+points along a single trade-off between protection and cost, though not as a
+controlled hedge ablation. At full delta match on the opening band the floor
+is nearly flat:
 CVaR falls from \usdc{-59.65} to \usdc{-3.15} and the maximum drawdown from
 $12.2\,\%$ to $2.7\,\%$, and the bill is an average \usdc{-2731} of hedge
 flows and a total PnL of \usdc{-1996}. At the learned seed's partial ratios
@@ -66,16 +67,15 @@ boundary, and the width choice is the substitute for timing under those
 conditions. The action interface still admits the wider timing grid, so a
 future run can test the shift without a redesign.
 
-Much of the pre-registered protocol was not run: the controlled sweep across
-volatility, volume relative to liquidity, fee tier, gas and capital, the
-$0.30\,\%$ (3000 pips) contrast pool, and the ablations of the regime
-features, the frictions and the fee tiers. The failure modes were repaired in
-sequence rather than
-varied one at a time, so none of the ablation rows isolates a single change. The boundary above
-is drawn from the realised 2024 windows on the primary pool alone, and the
-regime with one window is reported as a case study.
-\pending{the boundary sweep, the $0.30\,\%$ contrast pool, and the ablations of
-the regime features, the frictions and the fee tiers}
+The study's evidence has a shape that limits it. The failure modes were
+repaired in sequence rather than varied one at a time, so the ablation table
+reports the sequence and three targeted probes, not the marginal effect of
+every design choice. The boundary is drawn from the realised 2024 windows on
+one pool pair; the $0.30\,\%$ tier is measured for the rule-based ladder but
+not retrained with the learned policy; and the regime with a single window is
+a case study. What remains open is a factorial ablation of the repairs, a
+controlled volatility and volume sweep, and a learned policy on the contrast
+tier, all re-runs of the same testbed.
 
 \subsection{Threats to validity}
 

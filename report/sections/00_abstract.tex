@@ -7,18 +7,18 @@ gas, fees or slippage.
 
 We study those decisions as a risk-sensitive reinforcement learning problem
 on three years of recorded on-chain trades from the $0.05\,\%$ (500 pips)
-ETH/USDC pool, with 2024 held out and all frictions charged. The study asks
+ETH/USDC pool, with 2024 held out and frictions charged. The study asks
 where fees fall short of losses, why a standard learner fails, whether one
 policy can manage the band and the hedge jointly, and where active
 management pays.
 
-Fees fail to cover impermanent loss at every width. Two rebalancing rules
-lose far more than one-shot deployment. A standard learner collapsed into
-churn; after repairs, five seeds learned to deploy one band and hold. The
+Fees fail to cover impermanent loss at every width on the primary pool; the
+$0.30\,\%$ tier turns the wide bands net positive, while rebalancing loses on
+both. A standard learner collapsed into churn; after repairs, five seeds
+learned to deploy one band and hold. The
 mean learned policy fails the pre-registered Sharpe test against the frozen
 best static width ($-0.73$, CI $[-1.36,-0.04]$) and earns less, but cuts
 CVaR against every unhedged rule ($+23.7$ to $+34.2$). A delta-matched
-hedge cuts the tail to $-3.15$ from $-59.65$ at an average hedge cost of
-$2\,731$ per window. The best seed ties the static width on Sharpe and leads on tail
-risk. On this pool, active management buys insurance in stress and pays for
-it in calm.
+hedge cuts the tail to $-3.15$ from $-59.65$ for $2\,731$ per window. The
+best seed ties the static width on Sharpe and leads on tail risk. Active
+management buys insurance in stress and pays for it in calm.

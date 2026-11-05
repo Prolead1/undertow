@@ -49,6 +49,69 @@ fee income does not pay for the price risk a position carries, and frequent
 action adds cost without changing the sign. Whether a policy can exploit any
 of it is the next question.
 
+The loss that does the damage is the one the position cannot avoid. Removing
+the impermanent-loss term from the ledger turns the churning rule from a
+\usdc{17680} loss into a \usdc{31224} gain and raises the one-shot band to
+\usdc{5172}; removing gas and slippage moves the one-shot band by less than
+\usdc{40} but the churner by \usdc{14093}. The one-shot rule loses to the
+basket because of price travel, not because of execution, and the recentring
+rule adds execution to a loss it has already made larger.
+
+The fee tier changes the sign. On the $0.30\,\%$ pool the wide, full-range and
+static-width arms net between \usdc{338} and \usdc{734} against the opening
+basket,
+because a larger fee per unit of volume finally covers the loss to informed
+flow; the two rebalancing rules lose more than \usdc{2000} there as well. The
+contrast shows what the primary pool would need: the same widths, on a tier
+that pays six times as much per swap, cross from deficit to surplus.
+
+\begin{table}[tbp]
+\caption{Friction ablation on the $0.05\,\%$ pool over the thirteen evaluation
+windows, mean PnL in USDC with Sharpe in parentheses. The one-shot rule is
+\textsf{passive\_wide}; the recentring rule is \textsf{tau\_reset}. \textsf{no
+IL} removes the impermanent-loss term, \textsf{no gas} and \textsf{no
+slippage} remove their cost term, and \textsf{flat gas} re-prices every
+rebalance at a flat 30 gwei base fee plus a 3\,\% tip at \usdc{3000} per ETH.}
+\label{tab:friction}
+\centering
+\small
+\begin{tabular}{@{}L{0.28\linewidth}rr@{}}
+\toprule
+\textbf{Variant} & \textbf{one-shot wide} & \textbf{recentring} \\
+\midrule
+full & $+1\,623$ (1.53) & $-17\,680$ ($-5.81$) \\
+no IL & $+5\,172$ (1.65) & $+31\,224$ (12.84) \\
+no gas & $+1\,659$ (1.53) & $-8\,908$ ($-3.02$) \\
+no slippage & $+1\,624$ (1.53) & $-12\,359$ ($-3.91$) \\
+flat gas & $+1\,583$ (1.53) & $-18\,303$ ($-6.32$) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[tbp]
+\caption{The rule ladder on the $0.30\,\%$ (3000 pips) tier, mean over the
+thirteen evaluation windows. Net is the liquidity leg's excess over the
+opening basket; the two static rows are the price-equivalent of the primary
+pool's $250$- and $1000$-spacing arms at this pool's spacing of $60$.}
+\label{tab:contrast}
+\centering
+\small
+\begin{tabular}{@{}L{0.38\linewidth}rrr@{}}
+\toprule
+\textbf{Rule} & \textbf{PnL} & \textbf{Sharpe} & \textbf{Net} \\
+\midrule
+\textsf{hodl} opening band & $+1\,361$ & 2.06 & $-109$ \\
+\textsf{passive\_narrow} ($\pm5\,\%$) & $+1\,432$ & 2.89 & $-38$ \\
+\textsf{passive\_wide} ($\pm20\,\%$) & $+1\,808$ & 3.33 & $+338$ \\
+\textsf{full\_range\_v2} & $+2\,188$ & 1.30 & $+719$ \\
+static width $42$ spacings & $+1\,893$ & 3.45 & $+423$ \\
+static width $167$ spacings & $+2\,204$ & 1.97 & $+734$ \\
+\textsf{tau\_reset} & $-20\,702$ & $-15.89$ & $-22\,172$ \\
+\textsf{cost\_aware} & $-2\,101$ & $-0.27$ & $-3\,571$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \begin{table}[tbp]
 \caption{Fee income against impermanent loss on the thirteen evaluation
 windows, mean per window in USDC. Fees, impermanent loss, gas and slippage
@@ -67,7 +130,7 @@ negative.}
 \textsf{passive\_narrow} & $+4\,266$ & $-5\,435$ & $-37$ & $-1\,206$ & $0$ & 5/13 \\
 \textsf{passive\_wide} & $+2\,921$ & $-3\,549$ & $-37$ & $-665$ & $0$ & 4/13 \\
 \textsf{full\_range\_v2} & $+362$ & $-430$ & $-37$ & $-106$ & $0$ & 3/13 \\
-\textsf{tau\_reset} & $+43\,029$ & $-48\,904$ & $-14\,093$ & $-19\,969$ & $0$ & 13/13 \\
+\textsf{tau\_reset} & $+43\,029$ & $-48\,904$ & $-14\,093$ & $-19\,968$ & $0$ & 13/13 \\
 \textsf{cost\_aware} & $+19\,833$ & $-22\,038$ & $-2\,075$ & $-4\,280$ & $0$ & 10/13 \\
 \bottomrule
 \end{tabular}
@@ -121,6 +184,18 @@ protection, and selection had used the training return rather than a
 validation statistic. Adding a penalty on the conditional tail of joint
 equity and selecting checkpoints by validation Sharpe produced the final
 policy whose results fill the rest of this section.
+
+The regime label is not what the policy learns from, but it shapes what it
+learns. A second arm trained across the five seeds with the regime feature
+frozen to a constant reaches a mean Sharpe of $0.837$ and a mean CVaR of
+\usdc{-32.89}, against $0.563$ and \usdc{-27.63} with the live label. The
+Sharpe difference is not distinguishable at this sample size (paired interval
+$[-0.13,+0.68]$) while the ablated arm's CVaR is \usdc{5.3} worse (paired
+interval for the difference $[-6.2,-4.2]$), so the
+live regime feature buys tail protection rather than return. The ablated seeds
+also diverge more, from one that never deploys to two that widen to the
+$1000$-spacing band, and the arm's best validation seed finishes worst out of
+sample: the selection signal is thin even when the policy learns.
 
 \subsection{Whether one policy does better}
 
@@ -302,14 +377,52 @@ $-3.40$. The delta-matched hedge loses \usdc{1330} with a CVaR of
 Widening the band or hedging the delta makes the stressed quarter hurt
 less; neither choice pays for itself in the quiet ones.
 
-The evidence stops at the realised windows. The controlled sweep across
-volatility, volume relative to liquidity, fee tier, gas and capital that
-the protocol set out for this question was not run, and the evaluation year
-contains only one high-volatility window. The map above is therefore the
-part of the boundary the data can draw: passive breadth wins the level,
-insurance wins the tail, and the learning result sits between them.
-\pending{the boundary sweep across volatility, volume relative to
-liquidity, fee tier, gas and capital}
+The controlled sweep moves along both sides of the boundary.
+Table~\ref{tab:boundary} reruns the ladder at a quarter and four times the
+recorded gas price and at a tenth and ten times the capital. No level turns
+the recentring rules positive in PnL. \textsf{tau\_reset} runs from \usdc{-11613} at
+quarter gas to \usdc{-40032} at four times the recorded price, and
+\textsf{cost\_aware}, whose gate suppresses moves as gas rises, stays between
+\usdc{-2953} and \usdc{-1419} across the gas levels. Cheap
+execution does not revive timing, and a larger book does not either, because
+fees and impermanent loss scale with it while the fixed gas advantage stays
+small. The learned seed deploys once at every level and holds; its Sharpe
+ratio stays between $1.40$ and $1.46$.
+
+The fee tier is the axis that moves the passive sign, and the analytical LVR
+rate says why. With $0.125\,\sigma^2 V t$ as the floor under the value a
+liquidity position loses to arbitrage\cite{milionis2022lvr}, the opening band's
+fee income covers
+that floor in every full window, and in the partial final window once the
+floor is scaled to its shorter length; the thinnest full-window margins
+(ratios of $1.5$ and $1.8$)
+fall in the two windows with the least fee income. On this fee tier the same
+widths still lose to the opening basket, and the $0.30\,\%$ tier is where they
+cross into surplus. The evaluation year holds one high-volatility
+window, so the stress row stays a case study and the boundary drawn here holds
+for this pair, this year and the tested ranges.
+
+\begin{table}[tbp]
+\caption{The boundary sweep on the $0.05\,\%$ pool, mean over the thirteen
+evaluation windows: PnL in USDC with Sharpe in parentheses. The gas levels
+scale the per-action gas cost; the capital levels scale the book. The last
+column is the best validation seed of the main run.}
+\label{tab:boundary}
+\centering
+\small
+\begin{tabular}{@{}L{0.15\linewidth}rrrrr@{}}
+\toprule
+\textbf{Level} & \textsf{hodl} & \textsf{wide} & \textsf{tau\_reset} & \textsf{cost\_aware} & best seed \\
+\midrule
+Gas $\times0.25$ & $+735$ (0.65) & $+1\,651$ (1.53) & $-11\,613$ ($-3.72$) & $-2\,953$ ($-0.54$) & $+203$ (1.42) \\
+Gas $\times1$ & $+735$ (0.65) & $+1\,623$ (1.53) & $-17\,680$ ($-5.81$) & $-1\,992$ ($-0.24$) & $+175$ (1.42) \\
+Gas $\times4$ & $+735$ (0.65) & $+1\,509$ (1.53) & $-40\,032$ ($-12.85$) & $-1\,419$ (0.01) & $+65$ (1.42) \\
+Capital 10k & $+81$ (0.68) & $+128$ (1.53) & $-6\,764$ ($-15.37$) & $-195$ ($-0.10$) & $-13$ (1.46) \\
+Capital 100k & $+735$ (0.65) & $+1\,623$ (1.53) & $-17\,680$ ($-5.81$) & $-1\,992$ ($-0.24$) & $+175$ (1.42) \\
+Capital 1M & $+1\,384$ (0.46) & $+16\,213$ (1.51) & $-162\,687$ ($-5.47$) & $-54\,962$ ($-1.35$) & $+2\,003$ (1.40) \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \begin{table}[tbp]
 \caption{Mean PnL (top panel) and mean CVaR at $5\,\%$ (bottom panel) in
